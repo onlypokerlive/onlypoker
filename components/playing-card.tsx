@@ -14,13 +14,13 @@ const RANK_LABEL: Record<string, string> = {
 type Size = 'sm' | 'md' | 'lg'
 
 const SIZES: Record<Size, string> = {
-  sm: 'h-11 w-8 text-sm rounded-md',
+  sm: 'h-12 w-9 text-xs rounded-md',
   md: 'h-16 w-12 text-lg rounded-lg',
   lg: 'h-20 w-14 text-xl rounded-lg',
 }
 
 const PIP_SIZES: Record<Size, string> = {
-  sm: 'text-base',
+  sm: 'text-sm',
   md: 'text-2xl',
   lg: 'text-3xl',
 }
@@ -59,7 +59,7 @@ export function PlayingCard({
   return (
     <div
       className={cn(
-        'relative flex flex-col justify-between border border-black/10 bg-white p-1 font-serif font-bold leading-none shadow-md',
+        'relative flex flex-col justify-between overflow-hidden border border-black/10 bg-white p-1 font-serif font-bold leading-none shadow-md',
         SIZES[size],
         isRed ? 'text-red-600' : 'text-neutral-900',
         className,

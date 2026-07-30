@@ -46,6 +46,28 @@ def create_hand(starting_stacks: list[int], small_blind: int, big_blind: int):
     )
 
 
+def initial_positions(state) -> dict[str, int]:
+    """Derive small blind, big blind, and button seat indices from the *initial*
+    posted bets of a freshly created hand. This must be called right after
+    ``create_hand`` (before any action), because it reads ``state.bets`` which
+    at that point holds exactly the posted blinds.
+
+    pokerkit posts blinds as actual bets:
+      - 3+ players: bets = [SB, BB, 0, ...]  -> button is the last seat.
+      - heads-up:   bets = [BB, SB]          -> button is the small blind seat.
+    """
+    bets = list(state.bets)
+    n = len(bets)
+    posted = [(i, b) for i, b in enumerate(bets) if b]
+    posted.sort(key=lambda t: t[1])  # smallest bet == small blind
+    sb_i = posted[0][0] if posted else 0
+    bb_i = posted[-1][0] if len(posted) > 1 else (1 % n)
+    # Heads-up: the button is the small blind. Otherwise the button is the
+    # seat immediately before the small blind.
+    button_i = sb_i if n == 2 else (sb_i - 1) % n
+    return {"sb": sb_i, "bb": bb_i, "button": button_i}
+
+
 def dumps(state) -> str:
     return base64.b64encode(pickle.dumps(state)).decode("ascii")
 

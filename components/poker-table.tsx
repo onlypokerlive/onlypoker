@@ -8,24 +8,24 @@ import type { GameView } from "@/lib/poker-api"
 // Seat positions around an oval, indexed by number of seats.
 // Values are percentage-based [top, left] anchor points.
 const LAYOUTS: Record<number, Array<{ top: string; left: string }>> = {
-  1: [{ top: "82%", left: "50%" }],
+  1: [{ top: "88%", left: "50%" }],
   2: [
-    { top: "82%", left: "50%" },
-    { top: "10%", left: "50%" },
+    { top: "88%", left: "50%" },
+    { top: "8%", left: "50%" },
   ],
   3: [
-    { top: "82%", left: "50%" },
-    { top: "18%", left: "20%" },
-    { top: "18%", left: "80%" },
+    { top: "88%", left: "50%" },
+    { top: "12%", left: "22%" },
+    { top: "12%", left: "78%" },
   ],
   4: [
-    { top: "82%", left: "50%" },
-    { top: "50%", left: "8%" },
-    { top: "10%", left: "50%" },
-    { top: "50%", left: "92%" },
+    { top: "88%", left: "50%" },
+    { top: "46%", left: "9%" },
+    { top: "8%", left: "50%" },
+    { top: "46%", left: "91%" },
   ],
   5: [
-    { top: "82%", left: "50%" },
+    { top: "88%", left: "50%" },
     { top: "55%", left: "8%" },
     { top: "12%", left: "28%" },
     { top: "12%", left: "72%" },
@@ -81,24 +81,25 @@ export function PokerTable({ view }: { view: GameView }) {
   const showdown = view.phase === "handover"
 
   return (
-    <div className="relative mx-auto aspect-[4/5] w-full max-w-md sm:aspect-[3/2] sm:max-w-3xl">
+    <div className="relative mx-auto aspect-[3/4] w-full max-w-sm sm:aspect-[3/2] sm:max-w-3xl">
       {/* Felt */}
       <div className="absolute inset-4 rounded-[45%] border-8 border-[#4a2c17] bg-[radial-gradient(ellipse_at_center,hsl(150_45%_22%),hsl(150_50%_14%))] shadow-[inset_0_0_60px_rgba(0,0,0,0.6)]">
         <div className="absolute inset-6 rounded-[45%] border border-accent/20" />
       </div>
 
-      {/* Center: pot + board */}
-      <div className="absolute left-1/2 top-1/2 flex -translate-x-1/2 -translate-y-1/2 flex-col items-center gap-3">
+      {/* Center: pot + board. Anchored slightly above the middle so the board
+          never collides with the bottom ("you") seat on tall mobile ovals. */}
+      <div className="absolute left-1/2 top-[42%] flex w-full -translate-x-1/2 -translate-y-1/2 flex-col items-center gap-2 px-2">
         <div className="rounded-full bg-background/70 px-4 py-1 text-center backdrop-blur">
           <span className="text-[10px] uppercase tracking-widest text-muted-foreground">Pot</span>
           <div className="font-mono text-lg font-bold text-accent">{view.pot.toLocaleString()}</div>
         </div>
-        <div className="flex min-h-[3.5rem] items-center gap-1.5">
+        <div className="flex min-h-[3rem] flex-wrap items-center justify-center gap-1">
           {view.board.length > 0 ? (
-            view.board.map((c, i) => <PlayingCard key={i} card={c} size="md" />)
+            view.board.map((c, i) => <PlayingCard key={i} card={c} size="sm" />)
           ) : (
             <span className="text-xs text-muted-foreground/70">
-              {view.phase === "hand" ? "Dealing..." : "Waiting for next hand"}
+              {view.phase === "hand" ? "Community cards" : "Waiting for next hand"}
             </span>
           )}
         </div>

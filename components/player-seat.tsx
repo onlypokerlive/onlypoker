@@ -19,7 +19,7 @@ export function PlayerSeat({
   return (
     <div
       className={cn(
-        "flex w-32 flex-col items-center gap-1 rounded-xl border p-2 transition-all",
+        "flex w-24 flex-col items-center gap-1 rounded-xl border p-1.5 transition-all sm:w-32 sm:p-2",
         player.isActor
           ? "border-accent bg-accent/10 shadow-[0_0_18px_hsl(var(--accent)/0.45)]"
           : "border-border/60 bg-card/80",

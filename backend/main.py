@@ -166,6 +166,7 @@ def _start_hand(room: dict[str, Any]) -> None:
 
     room["handPlayerIds"] = hand_ids
     room["handStartStacks"] = start_stacks
+    room["positions"] = poker.initial_positions(state)
     room["stateB64"] = poker.dumps(state)
     room["phase"] = "hand"
     room["lastResults"] = []
@@ -206,9 +207,8 @@ def _build_view(room: dict[str, Any], viewer_id: str | None) -> dict[str, Any]:
         board = poker.board_cards(state)
         pot = poker.pot_total(state, room["handStartStacks"])
         street = poker.street_name(state)
-        n = len(hand_ids)
-        sb_i, bb_i = 0, 1
-        button_i = (n - 1) if n > 2 else 0
+        pos = room.get("positions") or poker.initial_positions(state)
+        sb_i, bb_i, button_i = pos["sb"], pos["bb"], pos["button"]
         actor_i = state.actor_index
         if actor_i is not None:
             actor_id = hand_ids[actor_i]

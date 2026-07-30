@@ -15,8 +15,8 @@ export function ActionBar({
   busy: boolean
 }) {
   const legal = view.legal
-  const min = legal.minRaise ?? 0
-  const max = legal.maxRaise ?? 0
+  const min = legal?.minRaise ?? 0
+  const max = legal?.maxRaise ?? 0
   const [raiseTo, setRaiseTo] = useState(min)
 
   useEffect(() => {
