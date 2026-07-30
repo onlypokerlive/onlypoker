@@ -22,6 +22,7 @@ export interface PlayerView {
   isBigBlind: boolean
   cardsCount: number
   cards: string[] | null
+  allIn?: boolean
 }
 
 export interface LegalActions {
@@ -64,6 +65,90 @@ export interface Session {
   roomId: string
   playerId: string
   isHost: boolean
+}
+
+// --- Flattened view consumed by the UI components -------------------------
+// The backend returns a nested RoomView; components use this flattened shape.
+export interface GameView {
+  roomId: string
+  roomName: string
+  phase: Phase
+  smallBlind: number
+  bigBlind: number
+  startingChips: number
+  handNumber: number
+  maxSeats: number
+  players: PlayerView[]
+  board: string[]
+  pot: number
+  street: string
+  actorId: string | null
+  isHost: boolean
+  isYourTurn: boolean
+  you: PlayerView | null
+  lastResults: HandResult[]
+  message: string | null
+  legal: {
+    canFold: boolean
+    canCheck: boolean
+    canRaise: boolean
+    callAmount: number
+    minRaise: number | null
+    maxRaise: number | null
+  } | null
+}
+
+function resultsMessage(results: HandResult[], players: PlayerView[]): string | null {
+  if (!results.length) return null
+  const winners = results.filter((r) => r.delta > 0)
+  if (!winners.length) return null
+  const names = winners.map((w) => `${w.name} (+${w.delta.toLocaleString()})`)
+  return `${names.join(", ")} won the pot`
+}
+
+export function toGameView(v: RoomView, playerId: string | null): GameView {
+  const you = v.you
+  const isYourTurn = !!(playerId && v.actorId === playerId && v.legal)
+  const legal = v.legal
+    ? {
+        canFold: v.legal.canFold,
+        // The backend exposes a single "check or call". It's a check when the
+        // amount owed is zero.
+        canCheck: v.legal.canCheckOrCall && v.legal.callAmount === 0,
+        canRaise: v.legal.canRaise,
+        callAmount: v.legal.callAmount,
+        minRaise: v.legal.canRaise ? v.legal.minRaise : null,
+        maxRaise: v.legal.canRaise ? v.legal.maxRaise : null,
+      }
+    : null
+
+  // Derive an all-in flag per player for display.
+  const players = v.players.map((p) => ({
+    ...p,
+    allIn: p.inHand && p.chips === 0,
+  })) as PlayerView[]
+
+  return {
+    roomId: v.room.id,
+    roomName: v.room.name,
+    phase: v.room.phase,
+    smallBlind: v.room.smallBlind,
+    bigBlind: v.room.bigBlind,
+    startingChips: v.room.startingChips,
+    handNumber: v.room.handNumber,
+    maxSeats: v.room.maxSeats,
+    players,
+    board: v.board,
+    pot: v.pot,
+    street: v.street,
+    actorId: v.actorId,
+    isHost: !!you?.isHost,
+    isYourTurn,
+    you: players.find((p) => p.isYou) ?? null,
+    lastResults: v.lastResults,
+    message: resultsMessage(v.lastResults, players),
+    legal,
+  }
 }
 
 async function req<T>(url: string, options?: RequestInit): Promise<T> {
