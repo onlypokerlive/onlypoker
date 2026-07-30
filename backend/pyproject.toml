@@ -1,0 +1,10 @@
+[project]
+name = "backend"
+version = "0.1.0"
+description = "Texas Hold'em poker backend powered by pokerkit"
+requires-python = ">=3.12"
+dependencies = [
+    "fastapi[standard]>=0.128.1",
+    "pokerkit>=0.6.0",
+    "upstash-redis>=1.2.0",
+]
