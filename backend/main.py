@@ -167,6 +167,15 @@ def _start_hand(room: dict[str, Any]) -> None:
     room["handPlayerIds"] = hand_ids
     room["handStartStacks"] = start_stacks
     room["positions"] = poker.initial_positions(state)
+    # Seat indices (within handPlayerIds) of players who folded this hand.
+    # Tracked explicitly because pokerkit clears every player's status once the
+    # hand ends, so the final state can't distinguish a fold from a showdown
+    # loss.
+    room["foldedSeats"] = []
+    # Hole cards are fixed for the whole hand in Hold'em, so snapshot them at
+    # deal time. pokerkit mucks the losing hand at showdown (clearing its
+    # cards), but we still want to reveal every non-folded hand.
+    room["handHoleCards"] = [poker.hole_cards(state, i) for i in range(len(hand_ids))]
     room["stateB64"] = poker.dumps(state)
     room["phase"] = "hand"
     room["lastResults"] = []
@@ -217,21 +226,31 @@ def _build_view(room: dict[str, Any], viewer_id: str | None) -> dict[str, Any]:
         if viewer_index is not None and actor_i == viewer_index:
             legal = poker.legal_actions(state)
 
+        folded_seats = set(room.get("foldedSeats", []))
+        stored_holes = room.get("handHoleCards") or []
+        # A showdown only happens when at least two players reach the end
+        # without folding. If everyone else folded, the winner keeps cards hidden.
+        went_to_showdown = (len(hand_ids) - len(folded_seats)) >= 2
         engine_by_pid: dict[str, dict[str, Any]] = {}
         for i, pid in enumerate(hand_ids):
-            in_hand = bool(state.statuses[i])
-            hole = poker.hole_cards(state, i)
-            reveal = (pid == viewer_id) or (hand_over and in_hand and len(hole) > 0)
+            folded = i in folded_seats
+            in_hand = not folded
+            # Hole cards are fixed for the hand; prefer the snapshot taken at
+            # deal time (pokerkit mucks losers at showdown).
+            hole = stored_holes[i] if i < len(stored_holes) else poker.hole_cards(state, i)
+            # You always see your own cards. At showdown, reveal every hand that
+            # did not fold.
+            reveal = (pid == viewer_id) or (hand_over and went_to_showdown and not folded)
             engine_by_pid[pid] = {
                 "index": i,
                 "inHand": in_hand,
-                "folded": not in_hand,
+                "folded": folded,
                 "bet": int(state.bets[i]),
                 "isActor": actor_i == i,
                 "isButton": i == button_i,
                 "isSmallBlind": i == sb_i,
                 "isBigBlind": i == bb_i,
-                "cardsCount": len(hole),
+                "cardsCount": 0 if folded else len(hole),
                 "cards": hole if reveal else None,
             }
     else:
@@ -413,6 +432,11 @@ async def take_action(room_id: str, body: ActionBody) -> dict[str, Any]:
             poker.apply_action(state, body.action, body.amount)
         except poker.ActionError as exc:
             raise fastapi.HTTPException(400, str(exc))
+
+        if body.action == "fold":
+            folded = room.setdefault("foldedSeats", [])
+            if viewer_index not in folded:
+                folded.append(viewer_index)
 
         if poker.is_hand_over(state):
             room["stateB64"] = poker.dumps(state)  # keep for showdown reveal
