@@ -1,8 +1,13 @@
 """Texas Hold'em backend.
 
 FastAPI service that runs the pokerkit engine and stores all room / game state
-in Upstash Redis. The frontend talks to this via ``/api/*`` (Vercel strips the
-prefix, so routes here are declared without it).
+in Upstash Redis. The frontend talks to this via ``/api/*``.
+
+Vercel's ``services`` model routes ``/api/*`` to this backend WITHOUT stripping
+the prefix, so the whole app is mounted under ``/api`` (see ``asgi_app`` at the
+bottom of this file). Individual routes are declared without the prefix; the
+mount adds it. The entrypoint referenced by ``vercel.json`` and the local dev
+launcher is ``main:asgi_app``.
 """
 
 from __future__ import annotations
@@ -460,3 +465,17 @@ async def toggle_sit_out(room_id: str, body: ActionBody) -> dict[str, Any]:
         p["sittingOut"] = not p.get("sittingOut")
         await save_room(room)
         return _build_view(room, body.playerId)
+
+
+# --------------------------------------------------------------------------- #
+# ASGI entrypoint
+# --------------------------------------------------------------------------- #
+# Vercel's `services` model routes `/api/*` to this backend and preserves the
+# path (it does NOT strip `/api`). To keep every route matching, we mount the
+# whole app under `/api`. The mount strips `/api` before dispatching, so a
+# request to `/api/rooms` resolves the `@app.post("/rooms")` route above.
+#
+# The local dev proxy (frontend/next.config.mjs) also targets `/api`, so dev
+# and production behave identically. Use `main:asgi_app` as the entrypoint.
+asgi_app = fastapi.FastAPI(title="Texas Hold'em Poker (root)")
+asgi_app.mount("/api", app)

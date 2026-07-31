@@ -10,11 +10,15 @@ const nextConfig = {
     // DEV-ONLY proxy. In the local sandbox the Python (FastAPI) backend runs as
     // a separate process on port 8000 and we proxy /api/* to it. This is gated
     // behind POKER_DEV_PROXY so it is NEVER active in production: on Vercel the
-    // root vercel.json (experimentalServices) routes /api to the backend
-    // service before Next.js is reached, so no rewrite is needed or wanted.
+    // root vercel.json `services` config routes /api to the backend service
+    // before Next.js is reached, so no rewrite is needed or wanted.
+    //
+    // The prefix is PRESERVED (/api/* -> backend /api/*) to match Vercel's
+    // `services` routing, which does not strip the prefix. The backend mounts
+    // its app under /api (see backend/main.py `asgi_app`).
     if (process.env.POKER_DEV_PROXY !== "1") return []
     const backend = process.env.POKER_BACKEND_URL || "http://127.0.0.1:8000"
-    return [{ source: "/api/:path*", destination: `${backend}/:path*` }]
+    return [{ source: "/api/:path*", destination: `${backend}/api/:path*` }]
   },
 }
 
