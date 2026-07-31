@@ -351,7 +351,11 @@ export function PokerTable({
             <span className="text-[10px] uppercase tracking-widest text-muted-foreground">Pot</span>
             <div className="font-mono text-lg font-bold text-accent">{view.pot.toLocaleString()}</div>
           </div>
-          <div className="flex min-h-[3rem] flex-wrap items-center justify-center gap-1">
+          <div
+            data-testid="board"
+            data-cards={view.board.length}
+            className="flex min-h-[3rem] flex-wrap items-center justify-center gap-1"
+          >
           {view.board.length > 0 ? (
             // Small on narrow phones: five cards at the sm size leave a
             // nine-handed table no room between the board and the seats.

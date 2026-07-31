@@ -406,6 +406,43 @@ def _auto_deal_due(room: dict[str, Any]) -> bool:
     )
 
 
+def _next_button(room: dict[str, Any], eligible: list[str]) -> str:
+    """The seat that takes the button for the next hand.
+
+    The button moves one *seat* clockwise, not one *player*: we walk ``order``
+    from where it was and stop at the first player still in, so busting out
+    doesn't drag the button backwards. Deriving it instead from the hand number
+    — which is what this used to do — meant the opening seat jumped to an
+    arbitrary place every time the field changed size, and the blinds stopped
+    going round evenly.
+    """
+    order = room["order"]
+    previous = room.get("buttonId")
+    if previous not in order:
+        # First hand of the tournament (or a room saved before the button was
+        # tracked). Putting it on the last seat makes the first seat the small
+        # blind, which is where a table naturally starts.
+        return eligible[-1]
+    start = order.index(previous)
+    for step in range(1, len(order) + 1):
+        pid = order[(start + step) % len(order)]
+        if pid in eligible:
+            return pid
+    return eligible[-1]  # unreachable: eligible is a subset of order
+
+
+def _seat_order(button_id: str, eligible: list[str]) -> list[str]:
+    """Players in posting order, small blind first, as pokerkit expects.
+
+    Heads-up the button *is* the small blind, so it opens the hand. Otherwise
+    the small blind is the next seat along and the button acts last.
+    """
+    i = eligible.index(button_id)
+    if len(eligible) == 2:
+        return [button_id, eligible[(i + 1) % 2]]
+    return eligible[i + 1 :] + eligible[: i + 1]
+
+
 def _start_hand(room: dict[str, Any]) -> None:
     now = time.time()
     room["autoDealAt"] = None
@@ -416,15 +453,24 @@ def _start_hand(room: dict[str, Any]) -> None:
             400, "Need at least two players with chips to start a hand."
         )
     _apply_level(room, now)
-    n = len(eligible)
-    k = room["handNumber"] % n
-    hand_ids = eligible[k:] + eligible[:k]  # index 0 == small blind
+    button_id = _next_button(room, eligible)
+    room["buttonId"] = button_id
+    hand_ids = _seat_order(button_id, eligible)  # index 0 == small blind
     start_stacks = [room["players"][pid]["chips"] for pid in hand_ids]
     state = poker.create_hand(start_stacks, room["smallBlind"], room["bigBlind"])
 
     room["handPlayerIds"] = hand_ids
     room["handStartStacks"] = start_stacks
-    room["positions"] = poker.initial_positions(state)
+    # Positions are known from the order we just built — the small blind is
+    # whoever we put first — so they are recorded, not deduced. Reading them
+    # back off the posted bets only works while the blinds are the only forced
+    # bets on the table, which stops being true the moment a straddle or a bomb
+    # pot ante shows up.
+    room["positions"] = {
+        "sb": 0,
+        "bb": 1,
+        "button": hand_ids.index(button_id),
+    }
     # Seat indices (within handPlayerIds) of players who folded this hand.
     # Tracked explicitly because pokerkit clears every player's status once the
     # hand ends, so the final state can't distinguish a fold from a showdown
@@ -688,6 +734,11 @@ def _build_view(room: dict[str, Any], viewer_id: str | None) -> dict[str, Any]:
                 "index": i,
                 "inHand": in_hand,
                 "folded": folded,
+                # What is actually left behind the line right now. The room's
+                # copy is only rewritten when the hand settles, so serving that
+                # one shows everybody their stack from before they bet — and an
+                # all-in player still reading full stack until showdown.
+                "chips": int(state.stacks[i]),
                 "bet": int(state.bets[i]),
                 "isActor": actor_i == i,
                 "isButton": i == button_i,
@@ -851,6 +902,8 @@ async def create_room(body: CreateRoomBody) -> dict[str, Any]:
         "autoDealPaused": False,
         "bustOrder": [],
         "standings": [],
+        # Seat holding the button. Advances one seat per hand; see _next_button.
+        "buttonId": None,
     }
     await save_room(room)
     return {"roomId": room_id, "playerId": host_id, "isHost": True}

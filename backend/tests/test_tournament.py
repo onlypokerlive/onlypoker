@@ -375,6 +375,10 @@ def test_last_player_standing_wins_the_tournament(client, clock):
     assert [s["place"] for s in standings] == [1, 2]
     assert standings[0]["chips"] == 2000
     assert standings[1]["chips"] == 0
+    # The hand that ends a tournament is the one everybody talks about, so its
+    # result has to survive the close — the table shows it beside the podium.
+    assert len(view["lastResults"]) == 2
+    assert any(r["delta"] > 0 for r in view["lastResults"])
 
 
 def test_placings_follow_bust_order(clock):
@@ -856,6 +860,161 @@ def test_showdown_flag_is_false_while_a_hand_is_running(client, clock):
     room_id, ids = table(client, 3, actionSeconds=0, levelMinutes=0)
     start(client, room_id, ids[0])
     assert state(client, room_id, ids[0])["wentToShowdown"] is False
+
+
+# --------------------------------------------------------------------------- #
+# The button
+# --------------------------------------------------------------------------- #
+def _deal_sequence(seats, busts=None):
+    """Small blind for each of ten hands, with players leaving along the way.
+
+    ``busts`` maps a hand number to the player who is gone from that hand on.
+    """
+    busts = busts or {}
+    room = {"order": list(seats), "buttonId": None}
+    field = list(seats)
+    small_blinds = []
+    for hand in range(10):
+        if hand in busts:
+            field = [p for p in field if p != busts[hand]]
+        room["buttonId"] = main._next_button(room, field)
+        small_blinds.append((main._seat_order(room["buttonId"], field)[0], list(field)))
+    return small_blinds
+
+
+def test_the_button_advances_one_seat_per_hand():
+    assert [sb for sb, _ in _deal_sequence("ABCDE")] == list("ABCDEABCDE")
+
+
+def test_the_button_keeps_advancing_when_a_player_busts():
+    """Losing a player must not send the button backwards or skip a live seat.
+
+    Deriving the opening seat from ``handNumber % len(eligible)`` — which is what
+    this used to do — jumped to an arbitrary seat every time the field changed
+    size, so the blinds stopped going round evenly.
+    """
+    sequence = _deal_sequence("ABCDE", busts={6: "C"})
+    for (previous, _), (current, field) in zip(sequence, sequence[1:]):
+        if previous not in field:
+            continue  # they left; the button moved past their empty seat
+        expected = field[(field.index(previous) + 1) % len(field)]
+        assert current == expected, f"{previous} -> {current}, expected {expected}"
+
+
+def test_everyone_still_at_the_table_pays_the_same_blinds():
+    sequence = _deal_sequence("ABCDE", busts={6: "C"})
+    survivors = [p for p in "ABDE"]
+    counts = [sum(1 for sb, _ in sequence if sb == p) for p in survivors]
+    assert max(counts) - min(counts) <= 1, dict(zip(survivors, counts))
+
+
+def test_heads_up_the_button_is_the_small_blind():
+    """Heads-up the button posts the small blind and acts first preflop."""
+    assert main._seat_order("A", ["A", "B"]) == ["A", "B"]
+    assert main._seat_order("B", ["A", "B"]) == ["B", "A"]
+
+
+def test_positions_are_recorded_not_deduced(client, clock):
+    """The seat order is built small-blind-first, so the positions are known.
+
+    Reading them back off the posted bets only works while blinds are the only
+    forced bets on the table — a straddle or a bomb pot ante breaks that.
+    """
+    room_id, ids = table(client, 4)
+    start(client, room_id, ids[0])
+    room = client.portal.call(main.load_room, room_id)
+    assert room["positions"] == {"sb": 0, "bb": 1, "button": 3}
+    assert room["handPlayerIds"][3] == room["buttonId"]
+
+    view = state(client, room_id, ids[0])
+    seats = {p["id"]: p for p in view["players"]}
+    assert seats[room["handPlayerIds"][0]]["isSmallBlind"] is True
+    assert seats[room["handPlayerIds"][1]]["isBigBlind"] is True
+    assert seats[room["buttonId"]]["isButton"] is True
+
+
+def test_the_button_survives_the_field_changing_size(client, clock):
+    """End to end, with somebody stepping out halfway — the discriminating case.
+
+    A field that never changes size rotates correctly under either algorithm.
+    Sitting a player out is the cheap way to change it mid-run.
+    """
+    room_id, ids = table(client, 4, actionSeconds=0, levelMinutes=0)
+    seen = []
+    for hand in range(6):
+        start(client, room_id, ids[0])
+        room = client.portal.call(main.load_room, room_id)
+        seen.append((room["handPlayerIds"][0], list(room["handPlayerIds"])))
+        fold_until_hand_over(client, room_id, ids)
+        if hand == 1:
+            assert client.post(
+                f"/api/rooms/{room_id}/sit",
+                json={"playerId": ids[3], "action": "sit"},
+            ).status_code == 200
+
+    assert all(a[0] != b[0] for a, b in zip(seen, seen[1:])), seen
+    for (previous, _), (current, field) in zip(seen, seen[1:]):
+        if previous not in field:
+            continue
+        expected = field[(field.index(previous) + 1) % len(field)]
+        assert current == expected, f"{previous} -> {current}, expected {expected}"
+
+
+# --------------------------------------------------------------------------- #
+# Stacks
+# --------------------------------------------------------------------------- #
+def test_a_wager_comes_off_the_stack_straight_away(client, clock):
+    """The number under a name has to be what that player could still bet.
+
+    The room's copy of everyone's chips is only rewritten when the hand
+    settles, so the view reads the engine instead. Serving the stored copy
+    showed every stack as it was before the first blind went in, for the whole
+    hand.
+    """
+    room_id, ids = table(client, 3)
+    start(client, room_id, ids[0])
+
+    view = state(client, room_id, ids[0])
+    sb = next(p for p in view["players"] if p["isSmallBlind"])
+    bb = next(p for p in view["players"] if p["isBigBlind"])
+    assert (sb["chips"], sb["bet"]) == (995, 5)
+    assert (bb["chips"], bb["bet"]) == (990, 10)
+
+    actor = view["actorId"]
+    assert act(client, room_id, actor, "raise", 100).status_code == 200
+    raiser = next(
+        p for p in state(client, room_id, ids[0])["players"] if p["id"] == actor
+    )
+    assert (raiser["chips"], raiser["bet"]) == (900, 100)
+
+
+def test_an_all_in_player_reads_as_empty_before_the_hand_ends(client, clock):
+    """Nothing left behind the line is what makes the all-in badge appear."""
+    room_id, ids = table(client, 3)
+    start(client, room_id, ids[0])
+    actor = state(client, room_id, ids[0])["actorId"]
+    assert act(client, room_id, actor, "raise", 1000).status_code == 200
+
+    shoved = next(
+        p for p in state(client, room_id, ids[0])["players"] if p["id"] == actor
+    )
+    assert (shoved["chips"], shoved["bet"]) == (0, 1000)
+    # Broke for this hand, not eliminated: the pot has not been pushed yet.
+    assert shoved["out"] is False
+    assert shoved["inHand"] is True
+
+
+def test_the_stack_settles_to_the_stored_total_once_the_hand_is_over(client, clock):
+    """The two sources of truth must agree the moment the hand closes."""
+    room_id, ids = table(client, 3, actionSeconds=0, levelMinutes=0)
+    start(client, room_id, ids[0])
+    fold_until_hand_over(client, room_id, ids)
+
+    view = state(client, room_id, ids[0])
+    stored = client.portal.call(main.load_room, room_id)["players"]
+    for player in view["players"]:
+        assert player["chips"] == stored[player["id"]]["chips"]
+    assert sum(p["chips"] for p in view["players"]) == 3000
 
 
 # --------------------------------------------------------------------------- #

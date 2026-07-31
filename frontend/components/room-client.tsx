@@ -3,7 +3,7 @@
 import { useCallback, useEffect, useRef, useState } from "react"
 import { useRouter } from "next/navigation"
 import { toast } from "sonner"
-import { Pause, Play } from "lucide-react"
+import { Pause, Play, Volume2, VolumeX } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { Spinner } from "@/components/ui/spinner"
 import { PokerTable } from "@/components/poker-table"
@@ -14,6 +14,8 @@ import { RoomLobby } from "@/components/room-lobby"
 import { HandResults } from "@/components/hand-results"
 import { TournamentResults } from "@/components/tournament-results"
 import { useSecondsLeft } from "@/lib/use-countdown"
+import { useTableEvents } from "@/lib/use-table-events"
+import { useRunout } from "@/lib/use-runout"
 import {
   pokerApi,
   toGameView,
@@ -90,6 +92,9 @@ export function RoomClient({ roomId }: { roomId: string }) {
 
   const secondsLeft = useSecondsLeft(view?.actionDeadlineMs ?? null)
   const autoDealIn = useSecondsLeft(view?.autoDealAtMs ?? null)
+  const { soundOn, setSoundOn } = useTableEvents(view)
+  // An all-in arrives as a finished board in one response. Deal it out.
+  const { board: shownBoard, revealing } = useRunout(view)
 
   async function withBusy(fn: () => Promise<void>) {
     if (busy) return
@@ -167,7 +172,21 @@ export function RoomClient({ roomId }: { roomId: string }) {
             {error && <span className="ml-2 text-destructive">{error}</span>}
           </span>
         </div>
-        {!finished && <BlindClock view={view} />}
+        <div className="flex shrink-0 items-center gap-1.5">
+          {/* On the table, not buried in settings: this gets used with other
+              people in the room, and the person who needs it needs it now. */}
+          <Button
+            variant="ghost"
+            size="icon"
+            onClick={() => setSoundOn(!soundOn)}
+            aria-pressed={soundOn}
+            aria-label={soundOn ? "Mute the table" : "Unmute the table"}
+            className="text-muted-foreground"
+          >
+            {soundOn ? <Volume2 /> : <VolumeX />}
+          </Button>
+          {!finished && <BlindClock view={view} />}
+        </div>
       </header>
 
       {view.phase === "lobby" ? (
@@ -175,14 +194,25 @@ export function RoomClient({ roomId }: { roomId: string }) {
           <RoomLobby view={view} onStart={handleStart} busy={busy} />
         </div>
       ) : finished ? (
-        <div className="flex flex-1 items-center justify-center">
+        // The hand that ends a tournament is the one everybody talks about, and
+        // it used to be the only one nobody ever saw: the podium replaced it
+        // outright. Show what won before who won.
+        <div className="flex flex-1 flex-col items-center justify-center gap-3 overflow-y-auto py-2">
+          <HandResults view={view} title="The final hand" className="shrink-0" />
           <TournamentResults view={view} />
         </div>
       ) : (
         <>
-          <PokerTable view={view} revealed={revealed} secondsLeft={secondsLeft} />
+          <PokerTable
+            view={{ ...view, board: shownBoard }}
+            revealed={revealed}
+            secondsLeft={secondsLeft}
+          />
 
-          {view.phase === "handover" && <HandResults view={view} />}
+          {/* Held back while the board is still coming out: the panel names the
+              winner, and reading it before the river lands gives the ending
+              away. */}
+          {view.phase === "handover" && !revealing && <HandResults view={view} />}
 
           {/* Pinned to the bottom: on a short phone the table scrolls, but the
               buttons must stay reachable while the shot clock runs. */}
@@ -274,7 +304,10 @@ export function RoomClient({ roomId }: { roomId: string }) {
                 view={view}
                 onAction={handleAction}
                 busy={busy}
-                secondsLeft={view.isYourTurn ? secondsLeft : null}
+                // Passed whoever is on the clock, not just you: knowing the
+                // player you are waiting on has seven seconds left is the
+                // difference between waiting and wondering.
+                secondsLeft={secondsLeft}
               />
             )}
           </div>
