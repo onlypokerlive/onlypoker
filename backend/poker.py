@@ -10,9 +10,10 @@ from __future__ import annotations
 
 import base64
 import pickle
+from collections import Counter
 from typing import Any
 
-from pokerkit import Automation, NoLimitTexasHoldem
+from pokerkit import Automation, NoLimitTexasHoldem, StandardHighHand
 
 # Everything is automated except the actual player betting decisions
 # (fold / check-call / bet-raise). pokerkit will post blinds, deal hole and
@@ -164,6 +165,81 @@ def pot_total(state, hand_start_stacks: list[int]) -> int:
     committed = sum(hand_start_stacks) - sum(int(s) for s in state.stacks)
     front = sum(int(b) for b in state.bets)
     return max(0, committed - front)
+
+
+# --------------------------------------------------------------------------- #
+# Hand naming
+# --------------------------------------------------------------------------- #
+_RANKS = "23456789TJQKA"
+_SINGULAR = {
+    "2": "deuce", "3": "three", "4": "four", "5": "five", "6": "six",
+    "7": "seven", "8": "eight", "9": "nine", "T": "ten", "J": "jack",
+    "Q": "queen", "K": "king", "A": "ace",
+}
+_PLURAL = {
+    "2": "deuces", "3": "threes", "4": "fours", "5": "fives", "6": "sixes",
+    "7": "sevens", "8": "eights", "9": "nines", "T": "tens", "J": "jacks",
+    "Q": "queens", "K": "kings", "A": "aces",
+}
+
+
+def _straight_ends(ranks: list[str]) -> tuple[str, str]:
+    """Low and high card of a straight, naming the wheel as ace-to-five."""
+    order = sorted(_RANKS.index(r) for r in ranks)
+    if order == [0, 1, 2, 3, 12]:  # A-2-3-4-5: the ace plays low
+        return "A", "5"
+    return _RANKS[order[0]], _RANKS[order[-1]]
+
+
+def _describe(cards: list[str], label: str) -> str:
+    """Turn pokerkit's category into what a player would say out loud."""
+    ranks = [c[:-1] for c in cards]
+    counts = Counter(ranks)
+    # Most repeated first, then highest — so pairs come before kickers.
+    grouped = sorted(counts.items(), key=lambda kv: (-kv[1], -_RANKS.index(kv[0])))
+    high = max(ranks, key=lambda r: _RANKS.index(r))
+
+    if label == "High card":
+        return f"{_SINGULAR[high].capitalize()} high"
+    if label == "One pair":
+        return f"Pair of {_PLURAL[grouped[0][0]]}"
+    if label == "Two pair":
+        return f"Two pair, {_PLURAL[grouped[0][0]]} and {_PLURAL[grouped[1][0]]}"
+    if label == "Three of a kind":
+        return f"Three of a kind, {_PLURAL[grouped[0][0]]}"
+    if label == "Four of a kind":
+        return f"Four of a kind, {_PLURAL[grouped[0][0]]}"
+    if label == "Full house":
+        return f"Full house, {_PLURAL[grouped[0][0]]} over {_PLURAL[grouped[1][0]]}"
+    if label == "Flush":
+        return f"Flush, {_SINGULAR[high]} high"
+    if label in ("Straight", "Straight flush"):
+        low, top = _straight_ends(ranks)
+        if label == "Straight flush":
+            return (
+                "Royal flush"
+                if top == "A"
+                else f"Straight flush, {_SINGULAR[low]} to {_SINGULAR[top]}"
+            )
+        return f"Straight, {_SINGULAR[low]} to {_SINGULAR[top]}"
+    return label
+
+
+def evaluate_hand(hole: list[str], board: list[str]) -> dict[str, Any] | None:
+    """Best five cards a player can make, and what that hand is called.
+
+    Returns None when the hand can't be evaluated (not enough cards dealt, or
+    pokerkit rejects the input), because a missing name is never worth failing
+    a showdown over.
+    """
+    if len(hole) + len(board) < 5:
+        return None
+    try:
+        hand = StandardHighHand.from_game("".join(hole), "".join(board))
+    except Exception:
+        return None
+    cards = [card_str(c) for c in hand.cards]
+    return {"cards": cards, "name": _describe(cards, hand.entry.label.value)}
 
 
 def street_name(state) -> str:

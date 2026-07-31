@@ -1,7 +1,7 @@
 // Shared client for the FastAPI poker backend. All requests go to /api/* which
 // Vercel routes to the Python service.
 
-export type Phase = 'lobby' | 'hand' | 'handover'
+export type Phase = 'lobby' | 'hand' | 'handover' | 'finished'
 
 export interface PlayerView {
   id: string
@@ -22,7 +22,43 @@ export interface PlayerView {
   isBigBlind: boolean
   cardsCount: number
   cards: string[] | null
+  /** The shot clock played this hand for them at least once. */
+  timedOut: boolean
+  /** Out of chips — eliminated from the tournament. */
+  out: boolean
+  /** Sat out by the shot clock rather than by choice. */
+  autoSatOut: boolean
+  /**
+   * Whether benching them would still leave a table that can deal. False
+   * heads-up, where sitting out would strand the tournament.
+   */
+  canSitOut: boolean
   allIn?: boolean
+}
+
+/** A rung on the blind ladder. */
+export interface BlindLevel {
+  number: number
+  smallBlind: number
+  bigBlind: number
+}
+
+export interface LevelView extends BlindLevel {
+  totalLevels: number
+  durationSec: number
+  /** Seconds until the clock crosses into the next level. */
+  secondsLeft: number | null
+  /** Set when the clock advanced mid-hand: these blinds apply on the next deal. */
+  pending: BlindLevel | null
+  next: BlindLevel | null
+  isLast: boolean
+}
+
+export interface Standing {
+  place: number
+  playerId: string
+  name: string
+  chips: number
 }
 
 export interface LegalActions {
@@ -38,6 +74,10 @@ export interface HandResult {
   playerId: string
   name: string
   delta: number
+  /** What they held, e.g. "Two pair, queens and sixes". Showdowns only. */
+  handName?: string
+  /** The five cards that made it. */
+  handCards?: string[]
 }
 
 export interface RoomView {
@@ -50,6 +90,14 @@ export interface RoomView {
     startingChips: number
     handNumber: number
     maxSeats: number
+    /** Seconds allowed per decision. 0 means no shot clock. */
+    actionSeconds: number
+    /** Minutes per blind level. 0 means the blinds never move. */
+    levelMinutes: number
+    /** Pause between hands before the next is dealt automatically. */
+    autoDealSeconds: number
+    /** The host stopped automatic dealing. */
+    autoDealPaused: boolean
   }
   players: PlayerView[]
   board: string[]
@@ -58,6 +106,16 @@ export interface RoomView {
   actorId: string | null
   legal: LegalActions | null
   lastResults: HandResult[]
+  standings: Standing[]
+  /** The finished hand was actually shown down (not won by everyone folding). */
+  wentToShowdown: boolean
+  level: LevelView | null
+  /** Absolute server time (seconds) when the current decision expires. */
+  actionDeadline: number | null
+  /** Absolute server time (seconds) when the next hand deals itself. */
+  autoDealAt: number | null
+  /** Server clock at the moment this view was built, for skew correction. */
+  serverTime: number
   you: PlayerView | null
 }
 
@@ -78,6 +136,10 @@ export interface GameView {
   startingChips: number
   handNumber: number
   maxSeats: number
+  actionSeconds: number
+  levelMinutes: number
+  autoDealSeconds: number
+  autoDealPaused: boolean
   players: PlayerView[]
   board: string[]
   pot: number
@@ -87,6 +149,14 @@ export interface GameView {
   isYourTurn: boolean
   you: PlayerView | null
   lastResults: HandResult[]
+  standings: Standing[]
+  wentToShowdown: boolean
+  level: LevelView | null
+  /** Both deadlines are rebased onto the browser's clock at fetch time, so a
+   *  phone with the wrong time still counts down correctly. */
+  actionDeadlineMs: number | null
+  levelEndsAtMs: number | null
+  autoDealAtMs: number | null
   message: string | null
   legal: {
     canFold: boolean
@@ -128,6 +198,16 @@ export function toGameView(v: RoomView, playerId: string | null): GameView {
     allIn: p.inHand && p.chips === 0,
   })) as PlayerView[]
 
+  // Rebase the server's absolute deadlines onto this browser's clock. The
+  // offset also absorbs request latency, which is what we want: it makes the
+  // countdown err slightly short rather than long.
+  const skewMs = Date.now() - v.serverTime * 1000
+  const actionDeadlineMs =
+    v.actionDeadline != null ? v.actionDeadline * 1000 + skewMs : null
+  const autoDealAtMs = v.autoDealAt != null ? v.autoDealAt * 1000 + skewMs : null
+  const levelEndsAtMs =
+    v.level?.secondsLeft != null ? Date.now() + v.level.secondsLeft * 1000 : null
+
   return {
     roomId: v.room.id,
     roomName: v.room.name,
@@ -137,6 +217,10 @@ export function toGameView(v: RoomView, playerId: string | null): GameView {
     startingChips: v.room.startingChips,
     handNumber: v.room.handNumber,
     maxSeats: v.room.maxSeats,
+    actionSeconds: v.room.actionSeconds,
+    levelMinutes: v.room.levelMinutes,
+    autoDealSeconds: v.room.autoDealSeconds,
+    autoDealPaused: v.room.autoDealPaused,
     players,
     board: v.board,
     pot: v.pot,
@@ -146,6 +230,12 @@ export function toGameView(v: RoomView, playerId: string | null): GameView {
     isYourTurn,
     you: players.find((p) => p.isYou) ?? null,
     lastResults: v.lastResults,
+    standings: v.standings ?? [],
+    wentToShowdown: !!v.wentToShowdown,
+    level: v.level,
+    actionDeadlineMs,
+    levelEndsAtMs,
+    autoDealAtMs,
     message: resultsMessage(v.lastResults, players),
     legal,
   }
@@ -176,6 +266,10 @@ export interface CreateRoomInput {
   smallBlind: number
   bigBlind: number
   password: string
+  /** Minutes per blind level; 0 keeps the blinds fixed. */
+  levelMinutes: number
+  /** Seconds per decision; 0 removes the shot clock. */
+  actionSeconds: number
 }
 
 export const pokerApi = {
@@ -204,16 +298,25 @@ export const pokerApi = {
     playerId: string,
     action: string,
     amount?: number,
+    // Stamps the decision with the hand it was made for, so a slow or retried
+    // request can't be applied to whatever hand is running when it lands.
+    handNumber?: number,
   ) =>
     req<RoomView>(`/api/rooms/${roomId}/action`, {
       method: 'POST',
-      body: JSON.stringify({ playerId, action, amount }),
+      body: JSON.stringify({ playerId, action, amount, handNumber }),
     }),
 
   toggleSitOut: (roomId: string, playerId: string) =>
     req<RoomView>(`/api/rooms/${roomId}/sit`, {
       method: 'POST',
       body: JSON.stringify({ playerId, action: 'sit' }),
+    }),
+
+  setAutoDeal: (roomId: string, playerId: string, paused: boolean) =>
+    req<RoomView>(`/api/rooms/${roomId}/autodeal`, {
+      method: 'POST',
+      body: JSON.stringify({ playerId, action: paused ? 'pause' : 'resume' }),
     }),
 }
 

@@ -11,15 +11,17 @@ const RANK_LABEL: Record<string, string> = {
   T: '10',
 }
 
-type Size = 'sm' | 'md' | 'lg'
+type Size = 'xs' | 'sm' | 'md' | 'lg'
 
 const SIZES: Record<Size, string> = {
+  xs: 'h-8 w-6 text-[9px] rounded',
   sm: 'h-12 w-9 text-xs rounded-md',
   md: 'h-16 w-12 text-lg rounded-lg',
   lg: 'h-20 w-14 text-xl rounded-lg',
 }
 
 const PIP_SIZES: Record<Size, string> = {
+  xs: 'text-[10px]',
   sm: 'text-sm',
   md: 'text-2xl',
   lg: 'text-3xl',
@@ -28,14 +30,17 @@ const PIP_SIZES: Record<Size, string> = {
 export function PlayingCard({
   card,
   size = 'md',
+  faceDown = false,
   className,
 }: {
   card?: string | null
   size?: Size
+  /** Force the back of the card even when its value is known. */
+  faceDown?: boolean
   className?: string
 }) {
   // Face-down card
-  if (!card) {
+  if (!card || faceDown) {
     return (
       <div
         className={cn(
@@ -56,18 +61,32 @@ export function PlayingCard({
   const label = RANK_LABEL[rank] ?? rank
   const symbol = SUIT_SYMBOL[suit] ?? ''
 
+  const ariaLabel = `${label} of ${
+    { s: 'spades', h: 'hearts', d: 'diamonds', c: 'clubs' }[suit]
+  }`
+  const face = cn(
+    'relative overflow-hidden border border-black/10 bg-white font-serif font-bold leading-none shadow-md',
+    SIZES[size],
+    isRed ? 'text-red-600' : 'text-neutral-900',
+    className,
+  )
+
+  // At the smallest size the three-band face has nowhere to go and clips, so
+  // it drops to rank over suit — still unmistakable in a five-card row.
+  if (size === 'xs') {
+    return (
+      <div
+        className={cn(face, 'flex flex-col items-center justify-center gap-px')}
+        aria-label={ariaLabel}
+      >
+        <span>{label}</span>
+        <span className="text-[1.1em]">{symbol}</span>
+      </div>
+    )
+  }
+
   return (
-    <div
-      className={cn(
-        'relative flex flex-col justify-between overflow-hidden border border-black/10 bg-white p-1 font-serif font-bold leading-none shadow-md',
-        SIZES[size],
-        isRed ? 'text-red-600' : 'text-neutral-900',
-        className,
-      )}
-      aria-label={`${label} of ${
-        { s: 'spades', h: 'hearts', d: 'diamonds', c: 'clubs' }[suit]
-      }`}
-    >
+    <div className={cn(face, 'flex flex-col justify-between p-1')} aria-label={ariaLabel}>
       <div className="flex flex-col items-start">
         <span>{label}</span>
         <span className="-mt-0.5 text-[0.7em]">{symbol}</span>

@@ -1,33 +1,67 @@
-# pokerkit
+# onlypoker
 
-This is a [Next.js](https://nextjs.org) project bootstrapped with [v0](https://v0.app).
+Private No-Limit Texas Hold'em sit & go tables. Create a table, share one link,
+and play from your phones — no accounts, no downloads.
 
-## Built with v0
+## How a game runs
 
-This repository is linked to a [v0](https://v0.app) project. You can continue developing by visiting the link below -- start new chats to make changes, and v0 will push commits directly to this repo. Every merge to `main` will automatically deploy.
+- **Blinds climb on a clock.** The host picks the opening blinds and how long a
+  level lasts. Blinds move up one rung of the ladder each level; a level that
+  expires mid-hand takes effect on the next deal.
+- **Every decision has a shot clock.** 20 seconds by default. Running out checks
+  when checking is free, and folds otherwise, so one player looking away never
+  stalls the table.
+- **Hole cards stay face down.** You hold a control to look at your hand, and it
+  hides again the moment you let go, switch apps, or the next hand is dealt —
+  nobody reads your cards over your shoulder.
+- **Last player with chips wins**, and the final standings list who went out and
+  when.
 
-[Continue working on v0 →](https://v0.app/chat/projects/prj_itUZ8FrVJA4B50mxA2epE8MlCXDs)
+Both clocks are enforced by the server, so every phone agrees on the time and a
+closed tab cannot dodge the shot clock.
 
-## Getting Started
+## Layout
 
-First, run the development server:
+| Path        | What it is                                                        |
+| ----------- | ----------------------------------------------------------------- |
+| `frontend/` | Next.js app (App Router, Tailwind v4). Talks to `/api/*`.          |
+| `backend/`  | FastAPI service wrapping the `pokerkit` engine. Mounted at `/api`. |
+
+Game state lives in Upstash Redis: each request unpickles the pokerkit state,
+applies at most one action, and writes it back, which keeps the engine
+authoritative and works on serverless.
+
+## Running it locally
 
 ```bash
-npm run dev
-# or
-yarn dev
-# or
-pnpm dev
+cd frontend && npm run dev
 ```
 
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+That starts both processes: the Python backend on port 8000 and Next.js on
+3000, with `/api/*` proxied to the backend. It creates the backend virtualenv on
+first run (needs `uv`, or falls back to `python3 -m venv`).
 
-You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
+Without Upstash credentials the backend keeps rooms in memory (see
+`backend/devstore.py`), so local development needs no external services. Rooms
+disappear when the process restarts.
 
-## Learn More
+## Tests
 
-To learn more, take a look at the following resources:
+```bash
+cd backend && .venv/bin/python -m pytest tests/ -q
+```
 
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
-- [v0 Documentation](https://v0.app/docs) - learn about v0 and how to use it.
+Covers the blind ladder, both clocks, per-player card redaction, and the
+tournament endgame.
+
+## Deploying
+
+`vercel.json` describes two Vercel services: `frontend/` and `backend/`
+(entrypoint `main:asgi_app`). Requests to `/api/*` go to the backend with the
+prefix intact, which is why the FastAPI app is mounted under `/api`.
+
+**The backend needs `KV_REST_API_URL` and `KV_REST_API_TOKEN`** (the Upstash
+integration sets both). Without them a deployed backend refuses to boot rather
+than falling back to the in-memory store: every serverless invocation would get
+its own empty copy, so players would watch rooms appear and disappear at random
+instead of seeing one clear error.

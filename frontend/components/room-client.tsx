@@ -3,12 +3,17 @@
 import { useCallback, useEffect, useRef, useState } from "react"
 import { useRouter } from "next/navigation"
 import { toast } from "sonner"
+import { Pause, Play } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { Spinner } from "@/components/ui/spinner"
 import { PokerTable } from "@/components/poker-table"
 import { ActionBar } from "@/components/action-bar"
+import { BlindClock } from "@/components/blind-clock"
+import { HoleCards } from "@/components/hole-cards"
 import { RoomLobby } from "@/components/room-lobby"
 import { HandResults } from "@/components/hand-results"
+import { TournamentResults } from "@/components/tournament-results"
+import { useSecondsLeft } from "@/lib/use-countdown"
 import {
   pokerApi,
   toGameView,
@@ -26,6 +31,7 @@ export function RoomClient({ roomId }: { roomId: string }) {
   const [view, setView] = useState<GameView | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)
+  const [revealed, setRevealed] = useState(false)
   const pausePollRef = useRef(false)
 
   // Resolve session from local storage; if absent, send to join page.
@@ -63,6 +69,28 @@ export function RoomClient({ roomId }: { roomId: string }) {
     return () => clearInterval(id)
   }, [session, refresh])
 
+  const handNumber = view?.handNumber
+  const phase = view?.phase
+  // A new deal means new cards: never carry a reveal across hands. The phase
+  // matters as much as the number — the hand ends first, and up to a full
+  // handover would pass with the cards still up if we only watched the deal.
+  useEffect(() => setRevealed(false), [handNumber, phase])
+
+  // Put the cards away the moment the app is no longer in front of the player —
+  // switching apps or locking the phone should not leave a hand on screen.
+  useEffect(() => {
+    const hide = () => setRevealed(false)
+    window.addEventListener("blur", hide)
+    document.addEventListener("visibilitychange", hide)
+    return () => {
+      window.removeEventListener("blur", hide)
+      document.removeEventListener("visibilitychange", hide)
+    }
+  }, [])
+
+  const secondsLeft = useSecondsLeft(view?.actionDeadlineMs ?? null)
+  const autoDealIn = useSecondsLeft(view?.autoDealAtMs ?? null)
+
   async function withBusy(fn: () => Promise<void>) {
     if (busy) return
     setBusy(true)
@@ -86,10 +114,34 @@ export function RoomClient({ roomId }: { roomId: string }) {
 
   const handleAction = (action: "fold" | "check" | "call" | "raise", amount?: number) =>
     withBusy(async () => {
-      if (!session) return
+      if (!session || !view) return
       // The backend treats check and call as a single "call" action.
       const backendAction = action === "check" ? "call" : action
-      const raw = await pokerApi.action(roomId, session.playerId, backendAction, amount)
+      const raw = await pokerApi.action(
+        roomId,
+        session.playerId,
+        backendAction,
+        amount,
+        view.handNumber,
+      )
+      setView(toGameView(raw, session.playerId))
+    })
+
+  const handleSitToggle = () =>
+    withBusy(async () => {
+      if (!session) return
+      const raw = await pokerApi.toggleSitOut(roomId, session.playerId)
+      setView(toGameView(raw, session.playerId))
+    })
+
+  const handleAutoDealToggle = () =>
+    withBusy(async () => {
+      if (!session || !view) return
+      const raw = await pokerApi.setAutoDeal(
+        roomId,
+        session.playerId,
+        !view.autoDealPaused,
+      )
       setView(toGameView(raw, session.playerId))
     })
 
@@ -102,40 +154,128 @@ export function RoomClient({ roomId }: { roomId: string }) {
     )
   }
 
+  const you = view.you
+  const finished = view.phase === "finished"
+
   return (
     <main className="mx-auto flex min-h-svh w-full max-w-4xl flex-col gap-4 px-3 py-4">
-      <header className="flex items-center justify-between gap-2">
+      <header className="flex items-start justify-between gap-2">
         <div className="flex flex-col">
           <h1 className="font-serif text-lg font-bold leading-tight text-foreground">{view.roomName}</h1>
           <span className="text-xs text-muted-foreground">
-            Blinds {view.smallBlind}/{view.bigBlind}
-            {view.handNumber > 0 && ` · Hand #${view.handNumber}`}
+            {view.handNumber > 0 ? `Hand #${view.handNumber}` : "Not started"}
+            {error && <span className="ml-2 text-destructive">{error}</span>}
           </span>
         </div>
-        {error && <span className="text-xs text-destructive">{error}</span>}
+        {!finished && <BlindClock view={view} />}
       </header>
 
       {view.phase === "lobby" ? (
         <div className="flex flex-1 items-center justify-center">
           <RoomLobby view={view} onStart={handleStart} busy={busy} />
         </div>
+      ) : finished ? (
+        <div className="flex flex-1 items-center justify-center">
+          <TournamentResults view={view} />
+        </div>
       ) : (
         <>
-          <PokerTable view={view} />
+          <PokerTable view={view} revealed={revealed} secondsLeft={secondsLeft} />
 
           {view.phase === "handover" && <HandResults view={view} />}
 
-          <div className="mt-auto">
-            {view.phase === "handover" && view.isHost ? (
-              <Button onClick={handleStart} disabled={busy} size="lg" className="w-full">
-                Deal next hand
-              </Button>
-            ) : view.phase === "handover" ? (
-              <div className="flex h-16 items-center justify-center rounded-xl border border-border/60 bg-card/60 text-sm text-muted-foreground">
-                Waiting for host to deal the next hand…
+          {/* Pinned to the bottom: on a short phone the table scrolls, but the
+              buttons must stay reachable while the shot clock runs. */}
+          <div className="sticky bottom-0 z-20 mt-auto -mx-3 flex flex-col gap-2 border-t border-border/40 bg-background/90 px-3 pb-[max(0.5rem,env(safe-area-inset-bottom))] pt-2 backdrop-blur">
+            {view.phase === "hand" && (
+              <HoleCards
+                cards={you?.cards ?? null}
+                revealed={revealed}
+                onRevealChange={setRevealed}
+                folded={you?.folded}
+              />
+            )}
+
+            {/* Sat out by the clock, you are no longer dealt in — so the way
+                back has to be visible whatever the table is doing. */}
+            {you?.sittingOut && !you.out && (
+              <div className="flex items-center justify-between gap-3 rounded-xl border border-primary/40 bg-primary/10 px-3 py-2">
+                <span className="text-sm text-foreground">
+                  {you.autoSatOut
+                    ? "You were sat out after missing your turn."
+                    : you.inHand
+                      ? "You sit out from the next hand."
+                      : "You are sitting out."}
+                </span>
+                <Button size="sm" onClick={handleSitToggle} disabled={busy}>
+                  Sit back in
+                </Button>
               </div>
+            )}
+
+            {view.phase === "handover" ? (
+              <>
+                {view.isHost ? (
+                  <div className="flex gap-2">
+                    <Button
+                      onClick={handleStart}
+                      disabled={busy}
+                      size="lg"
+                      className="flex-1"
+                    >
+                      {autoDealIn != null && !view.autoDealPaused
+                        ? `Deal now · ${Math.ceil(autoDealIn)}s`
+                        : "Deal next hand"}
+                    </Button>
+                    <Button
+                      variant="outline"
+                      size="lg"
+                      onClick={handleAutoDealToggle}
+                      disabled={busy}
+                      aria-label={
+                        view.autoDealPaused
+                          ? "Resume dealing automatically"
+                          : "Pause between hands"
+                      }
+                    >
+                      {view.autoDealPaused ? <Play /> : <Pause />}
+                    </Button>
+                  </div>
+                ) : (
+                  <div className="flex h-16 items-center justify-center rounded-xl border border-border/60 bg-card/60 text-sm text-muted-foreground">
+                    {view.autoDealPaused
+                      ? "The host paused between hands…"
+                      : autoDealIn != null
+                        ? `Next hand in ${Math.ceil(autoDealIn)}s`
+                        : "Dealing the next hand…"}
+                  </div>
+                )}
+                {!you?.sittingOut && (
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    onClick={handleSitToggle}
+                    // Heads-up there is nobody left to play, so the server
+                    // refuses. Say so on the button instead of on an error.
+                    disabled={busy || you?.canSitOut === false}
+                    title={
+                      you?.canSitOut === false
+                        ? "The table needs at least two players to keep dealing."
+                        : undefined
+                    }
+                    className="self-center text-muted-foreground"
+                  >
+                    Sit out next hand
+                  </Button>
+                )}
+              </>
             ) : (
-              <ActionBar view={view} onAction={handleAction} busy={busy} />
+              <ActionBar
+                view={view}
+                onAction={handleAction}
+                busy={busy}
+                secondsLeft={view.isYourTurn ? secondsLeft : null}
+              />
             )}
           </div>
         </>
