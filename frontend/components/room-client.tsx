@@ -13,6 +13,7 @@ import { HoleCards } from "@/components/hole-cards"
 import { RoomLobby } from "@/components/room-lobby"
 import { HandResults } from "@/components/hand-results"
 import { RabbitHunt } from "@/components/rabbit-hunt"
+import { ShowCards } from "@/components/show-cards"
 import { TournamentResults } from "@/components/tournament-results"
 import { useSecondsLeft } from "@/lib/use-countdown"
 import { useTableEvents } from "@/lib/use-table-events"
@@ -216,6 +217,7 @@ export function RoomClient({ roomId }: { roomId: string }) {
           {view.phase === "handover" && !revealing && (
             <div className="flex flex-col gap-2">
               <HandResults view={view} />
+              <ShowCards view={view} roomId={roomId} onShown={refresh} />
               <RabbitHunt
                 roomId={roomId}
                 handNumber={view.handNumber}

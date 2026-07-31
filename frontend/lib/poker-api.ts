@@ -21,7 +21,18 @@ export interface PlayerView {
   isSmallBlind: boolean
   isBigBlind: boolean
   cardsCount: number
-  cards: string[] | null
+  /**
+   * The hand as this viewer is allowed to see it, or null for nothing at all.
+   * A null *entry* is a card still face down — that happens when a player
+   * turned over one card and kept the other.
+   */
+  cards: (string | null)[] | null
+  /**
+   * Cards this player has turned face up by choice. Present on your own seat
+   * as well, because you always see your whole hand — the cards alone cannot
+   * tell you what everyone else can see.
+   */
+  shownIndices: number[]
   /** The shot clock played this hand for them at least once. */
   timedOut: boolean
   /** Out of chips — eliminated from the tournament. */
@@ -305,6 +316,13 @@ export const pokerApi = {
     req<RoomView>(`/api/rooms/${roomId}/action`, {
       method: 'POST',
       body: JSON.stringify({ playerId, action, amount, handNumber }),
+    }),
+
+  /** Turn your own cards face up after the hand. There is no way back. */
+  showCards: (roomId: string, playerId: string, indices: number[]) =>
+    req<RoomView>(`/api/rooms/${roomId}/show`, {
+      method: 'POST',
+      body: JSON.stringify({ playerId, indices }),
     }),
 
   /** The board that would have come, once the hand is safely over. */

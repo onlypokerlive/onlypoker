@@ -482,6 +482,9 @@ def _start_hand(room: dict[str, Any]) -> None:
     # deal time. pokerkit mucks the losing hand at showdown (clearing its
     # cards), but we still want to reveal every non-folded hand.
     room["handHoleCards"] = [poker.hole_cards(state, i) for i in range(len(hand_ids))]
+    # Cards players chose to turn over last hand. Showing is for the hand it
+    # belongs to; a new deal takes them back off the table.
+    room["shownSeats"] = {}
     room["stateB64"] = poker.dumps(state)
     room["phase"] = "hand"
     room["lastResults"] = []
@@ -730,6 +733,10 @@ def _build_view(room: dict[str, Any], viewer_id: str | None) -> dict[str, Any]:
             # You always see your own cards. At showdown, reveal every hand that
             # did not fold.
             reveal = (pid == viewer_id) or (hand_over and went_to_showdown and not folded)
+            # Cards the player chose to turn over after the hand — the bluff
+            # they want credit for, or the one card that keeps everyone
+            # guessing. Only some of a hand may be shown, so this is per card.
+            shown = set(room.get("shownSeats", {}).get(str(i), []))
             engine_by_pid[pid] = {
                 "index": i,
                 "inHand": in_hand,
@@ -744,8 +751,17 @@ def _build_view(room: dict[str, Any], viewer_id: str | None) -> dict[str, Any]:
                 "isButton": i == button_i,
                 "isSmallBlind": i == sb_i,
                 "isBigBlind": i == bb_i,
-                "cardsCount": 0 if folded else len(hole),
-                "cards": hole if reveal else None,
+                # A folded hand still has cards to turn over if its owner wants
+                # the credit, so the count follows what is on the table rather
+                # than whether they are still in it.
+                "cardsCount": len(hole) if (not folded or shown) else 0,
+                "cards": hole
+                if reveal
+                else ([c if j in shown else None for j, c in enumerate(hole)] if shown else None),
+                # Which cards this player has turned face up. Needed on your own
+                # seat too: you always see your whole hand, so the cards alone
+                # cannot tell you what the rest of the table can see.
+                "shownIndices": sorted(shown),
                 "timedOut": i in timed_out_seats,
             }
     else:
@@ -773,6 +789,7 @@ def _build_view(room: dict[str, Any], viewer_id: str | None) -> dict[str, Any]:
             "cardsCount": 0,
             "cards": None,
             "timedOut": False,
+            "shownIndices": [],
             "out": p["chips"] <= 0,
             # Sat out by the shot clock rather than by choice, so the UI can
             # explain what happened and offer the way back in.
@@ -937,6 +954,44 @@ async def join_room(room_id: str, body: JoinBody) -> dict[str, Any]:
         room["order"].append(player_id)
         await save_room(room)
     return {"roomId": room_id, "playerId": player_id, "isHost": False}
+
+
+class ShowBody(BaseModel):
+    playerId: str
+    # Which of your two cards to turn over: [0], [1] or both.
+    indices: list[int] = Field(min_length=1, max_length=2)
+
+
+@app.post("/rooms/{room_id}/show")
+async def show_cards(room_id: str, body: ShowBody) -> dict[str, Any]:
+    """Turn your own cards face up after the hand.
+
+    Half of what makes a home game a home game: the bluff nobody would believe
+    unless you prove it, and the single card shown to keep them guessing. Only
+    your own hand, only the one just played, and only until the next deal.
+
+    There is no way back. Once a card is public the table has seen it, so the
+    client asks before sending rather than offering an undo that cannot exist.
+    """
+    async with _RoomLock(room_id):
+        room = await load_room(room_id)
+        if not room:
+            raise fastapi.HTTPException(404, "Room not found.")
+        if room["phase"] != "handover":
+            raise fastapi.HTTPException(400, "There is no hand to show right now.")
+        hand_ids = room.get("handPlayerIds") or []
+        if body.playerId not in hand_ids:
+            raise fastapi.HTTPException(403, "You were not in that hand.")
+        seat = hand_ids.index(body.playerId)
+        held = len((room.get("handHoleCards") or [[]])[seat])
+        if any(i < 0 or i >= held for i in body.indices):
+            raise fastapi.HTTPException(400, "You do not have that card.")
+        shown = room.setdefault("shownSeats", {})
+        # Adding rather than replacing: showing one card and then the other is
+        # a normal thing to do, and the first one is already public.
+        shown[str(seat)] = sorted(set(shown.get(str(seat), [])) | set(body.indices))
+        await save_room(room)
+        return _build_view(room, body.playerId)
 
 
 @app.get("/rooms/{room_id}/rabbit")

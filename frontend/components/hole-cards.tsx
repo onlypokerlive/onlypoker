@@ -26,7 +26,7 @@ export function HoleCards({
   folded,
   className,
 }: {
-  cards: string[] | null
+  cards: (string | null)[] | null
   revealed: boolean
   onRevealChange: (next: boolean) => void
   folded?: boolean

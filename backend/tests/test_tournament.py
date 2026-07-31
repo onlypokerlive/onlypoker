@@ -863,6 +863,80 @@ def test_showdown_flag_is_false_while_a_hand_is_running(client, clock):
 
 
 # --------------------------------------------------------------------------- #
+# Showing cards
+# --------------------------------------------------------------------------- #
+def show(client, room_id, player_id, indices):
+    return client.post(
+        f"/api/rooms/{room_id}/show", json={"playerId": player_id, "indices": indices}
+    )
+
+
+def seat_of(client, room_id, player_id, viewer):
+    return next(p for p in state(client, room_id, viewer)["players"] if p["id"] == player_id)
+
+
+def test_you_can_turn_over_one_card_and_keep_the_other(client, clock):
+    """Showing one card is a move, not a half-measure — it has to be possible."""
+    room_id, ids = table(client, 3, actionSeconds=0, levelMinutes=0)
+    start(client, room_id, ids[0])
+    fold_until_hand_over(client, room_id, ids)
+    room = client.portal.call(main.load_room, room_id)
+    shower = room["handPlayerIds"][0]
+    real = room["handHoleCards"][0]
+
+    assert show(client, room_id, shower, [0]).status_code == 200
+    watcher = next(p for p in ids if p != shower)
+    seen = seat_of(client, room_id, shower, watcher)
+    assert seen["cards"] == [real[0], None]
+
+    # The second card can follow; the first one is already public.
+    assert show(client, room_id, shower, [1]).status_code == 200
+    assert seat_of(client, room_id, shower, watcher)["cards"] == real
+
+
+def test_showing_is_only_ever_your_own_hand(client, clock):
+    room_id, ids = table(client, 3, actionSeconds=0, levelMinutes=0)
+    start(client, room_id, ids[0])
+    fold_until_hand_over(client, room_id, ids)
+    room = client.portal.call(main.load_room, room_id)
+    a, b = room["handPlayerIds"][0], room["handPlayerIds"][1]
+    # There is no field for whose hand to show, and that is the point: the
+    # route only ever acts on the caller's own seat.
+    show(client, room_id, a, [0, 1])
+    assert seat_of(client, room_id, b, a)["cards"] is None
+
+
+def test_a_new_deal_takes_shown_cards_back_off_the_table(client, clock):
+    room_id, ids = table(client, 3, actionSeconds=0, levelMinutes=0)
+    start(client, room_id, ids[0])
+    fold_until_hand_over(client, room_id, ids)
+    room = client.portal.call(main.load_room, room_id)
+    shower = room["handPlayerIds"][0]
+    show(client, room_id, shower, [0, 1])
+
+    start(client, room_id, ids[0])
+    watcher = next(p for p in ids if p != shower)
+    assert seat_of(client, room_id, shower, watcher)["cards"] is None
+
+
+def test_nothing_can_be_shown_while_the_hand_is_running(client, clock):
+    room_id, ids = table(client, 3, actionSeconds=0, levelMinutes=0)
+    start(client, room_id, ids[0])
+    room = client.portal.call(main.load_room, room_id)
+    res = show(client, room_id, room["handPlayerIds"][0], [0])
+    assert res.status_code == 400
+
+
+def test_somebody_who_was_not_in_the_hand_cannot_show(client, clock):
+    room_id, ids = table(client, 3, actionSeconds=0, levelMinutes=0)
+    # Sit one player out so the hand is dealt without them.
+    client.post(f"/api/rooms/{room_id}/sit", json={"playerId": ids[2], "action": "sit"})
+    start(client, room_id, ids[0])
+    fold_until_hand_over(client, room_id, ids)
+    assert show(client, room_id, ids[2], [0]).status_code == 403
+
+
+# --------------------------------------------------------------------------- #
 # Rabbit hunt
 # --------------------------------------------------------------------------- #
 def test_the_rabbit_hunt_deals_the_board_that_never_came(client, clock):

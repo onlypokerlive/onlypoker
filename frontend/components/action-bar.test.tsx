@@ -26,6 +26,7 @@ function player(overrides: Partial<PlayerView> = {}): PlayerView {
     cardsCount: 2,
     cards: null,
     timedOut: false,
+    shownIndices: [],
     out: false,
     autoSatOut: false,
     canSitOut: true,
