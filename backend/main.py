@@ -956,6 +956,35 @@ async def join_room(room_id: str, body: JoinBody) -> dict[str, Any]:
     return {"roomId": room_id, "playerId": player_id, "isHost": False}
 
 
+class WatchBody(BaseModel):
+    password: str = Field(min_length=1, max_length=64)
+
+
+@app.post("/rooms/{room_id}/watch")
+async def watch_room(room_id: str, body: WatchBody) -> dict[str, Any]:
+    """Pull up a chair without taking a seat.
+
+    A spectator is simply an id that belongs to nobody at the table. That is
+    the whole implementation, and it is safe by construction: ``_build_view``
+    only ever reveals a hand to the player holding it or at a showdown, so an
+    id matching no seat sees exactly what someone standing behind the table
+    sees. They are not written into the room either, which keeps them out of
+    the seat count, the deal, and the standings.
+    """
+    room = await load_room(room_id)
+    if not room:
+        raise fastapi.HTTPException(404, "Room not found.")
+    # Still a private table. Watching is not a way around the password.
+    if not _verify_password(body.password, room["passwordHash"]):
+        raise fastapi.HTTPException(403, "Incorrect room password.")
+    return {
+        "roomId": room_id,
+        "playerId": f"watch-{secrets.token_urlsafe(9)}",
+        "isHost": False,
+        "spectator": True,
+    }
+
+
 class ShowBody(BaseModel):
     playerId: str
     # Which of your two cards to turn over: [0], [1] or both.

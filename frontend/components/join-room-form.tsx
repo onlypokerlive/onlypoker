@@ -2,7 +2,7 @@
 
 import { useState } from 'react'
 import { useRouter } from 'next/navigation'
-import { LogIn } from 'lucide-react'
+import { Eye, LogIn } from 'lucide-react'
 
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
@@ -16,25 +16,28 @@ export function JoinRoomForm({ roomId }: { roomId: string }) {
   const [error, setError] = useState<string | null>(null)
   const [loading, setLoading] = useState(false)
 
-  async function handleSubmit(e: React.FormEvent) {
-    e.preventDefault()
+  async function enter(as: 'player' | 'spectator') {
     setError(null)
-    if (!name.trim()) return setError('Enter a display name.')
+    if (as === 'player' && !name.trim()) return setError('Enter a display name.')
     if (!password.trim()) return setError('Enter the room password.')
 
     setLoading(true)
     try {
-      const session = await pokerApi.joinRoom(
-        roomId,
-        name.trim(),
-        password.trim(),
-      )
+      const session =
+        as === 'player'
+          ? await pokerApi.joinRoom(roomId, name.trim(), password.trim())
+          : await pokerApi.watchRoom(roomId, password.trim())
       saveSession(session)
       router.push(`/room/${session.roomId}`)
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Could not join the room.')
       setLoading(false)
     }
+  }
+
+  function handleSubmit(e: React.FormEvent) {
+    e.preventDefault()
+    void enter('player')
   }
 
   return (
@@ -71,6 +74,21 @@ export function JoinRoomForm({ roomId }: { roomId: string }) {
       <Button type="submit" size="lg" disabled={loading} className="w-full">
         <LogIn data-icon="inline-start" />
         {loading ? 'Joining…' : 'Take a seat'}
+      </Button>
+
+      {/* Turning up once the table is full, or after it has started, used to be
+          a dead end. Watching needs no seat and no name — but it still needs
+          the password, because the table is private either way. */}
+      <Button
+        type="button"
+        variant="ghost"
+        size="sm"
+        disabled={loading}
+        onClick={() => enter('spectator')}
+        className="text-muted-foreground"
+      >
+        <Eye data-icon="inline-start" />
+        Just watch
       </Button>
     </form>
   )

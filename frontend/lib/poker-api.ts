@@ -134,6 +134,8 @@ export interface Session {
   roomId: string
   playerId: string
   isHost: boolean
+  /** Watching rather than playing: no seat, no chips, no cards. */
+  spectator?: boolean
 }
 
 // --- Flattened view consumed by the UI components -------------------------
@@ -291,6 +293,13 @@ export const pokerApi = {
     req<Session>(`/api/rooms/${roomId}/join`, {
       method: 'POST',
       body: JSON.stringify({ name, password }),
+    }),
+
+  /** Watch without taking a seat. Still needs the password. */
+  watchRoom: (roomId: string, password: string) =>
+    req<Session>(`/api/rooms/${roomId}/watch`, {
+      method: 'POST',
+      body: JSON.stringify({ password }),
     }),
 
   getState: (roomId: string, playerId?: string) =>

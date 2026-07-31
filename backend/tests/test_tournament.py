@@ -863,6 +863,61 @@ def test_showdown_flag_is_false_while_a_hand_is_running(client, clock):
 
 
 # --------------------------------------------------------------------------- #
+# Spectators
+# --------------------------------------------------------------------------- #
+def watch(client, room_id, password="secret"):
+    return client.post(f"/api/rooms/{room_id}/watch", json={"password": password})
+
+
+def test_a_spectator_sees_the_table_but_nobody_s_cards(client, clock):
+    room_id, ids = table(client, 3)
+    start(client, room_id, ids[0])
+    viewer = watch(client, room_id).json()["playerId"]
+
+    view = state(client, room_id, viewer)
+    assert view["you"] is None
+    assert view["legal"] is None
+    # Every hand at the table is somebody else's.
+    assert all(p["cards"] is None for p in view["players"])
+    assert all(p["cardsCount"] == 2 for p in view["players"])
+
+
+def test_a_spectator_sees_a_showdown_like_everyone_else(client, clock):
+    """Cards turned face up are public. A spectator is part of that public."""
+    room_id, ids = table(client, 3, actionSeconds=0, levelMinutes=0)
+    start(client, room_id, ids[0])
+    viewer = watch(client, room_id).json()["playerId"]
+    fold_until_hand_over(client, room_id, ids)
+
+    view = state(client, room_id, viewer)
+    if view["wentToShowdown"]:
+        assert any(p["cards"] for p in view["players"])
+
+
+def test_watching_still_needs_the_password(client, clock):
+    room_id, _ = table(client, 2)
+    assert watch(client, room_id, password="wrong").status_code == 403
+
+
+def test_a_spectator_never_joins_the_table(client, clock):
+    room_id, ids = table(client, 3)
+    before = client.portal.call(main.load_room, room_id)
+    viewer = watch(client, room_id).json()["playerId"]
+    # Polling as a spectator runs the clocks, which is fine and wanted — but it
+    # must never write them into the room.
+    state(client, room_id, viewer)
+    after = client.portal.call(main.load_room, room_id)
+    assert list(after["players"]) == list(before["players"])
+    assert after["order"] == before["order"]
+    assert viewer not in after["players"]
+
+
+def test_spectators_do_not_use_up_seats(client, clock):
+    room_id, _ = table(client, main.MAX_SEATS)
+    assert watch(client, room_id).status_code == 200
+
+
+# --------------------------------------------------------------------------- #
 # Showing cards
 # --------------------------------------------------------------------------- #
 def show(client, room_id, player_id, indices):

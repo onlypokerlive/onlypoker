@@ -164,6 +164,11 @@ export function RoomClient({ roomId }: { roomId: string }) {
 
   const you = view.you
   const finished = view.phase === "finished"
+  // No seat at this table. Everything below that belongs to a player — your
+  // hand, sitting out, acting — has to be gated on this and not on optional
+  // chaining: `!you?.sittingOut` is *true* for a spectator, which is how you
+  // end up offering a chair to somebody who does not have one.
+  const spectating = !you
 
   return (
     <main className="mx-auto flex min-h-svh w-full max-w-4xl flex-col gap-4 px-3 py-4">
@@ -231,13 +236,21 @@ export function RoomClient({ roomId }: { roomId: string }) {
           {/* Pinned to the bottom: on a short phone the table scrolls, but the
               buttons must stay reachable while the shot clock runs. */}
           <div className="sticky bottom-0 z-20 mt-auto -mx-3 flex flex-col gap-2 border-t border-border/40 bg-background/90 px-3 pb-[max(0.5rem,env(safe-area-inset-bottom))] pt-2 backdrop-blur">
-            {view.phase === "hand" && (
-              <HoleCards
-                cards={you?.cards ?? null}
-                revealed={revealed}
-                onRevealChange={setRevealed}
-                folded={you?.folded}
-              />
+            {spectating ? (
+              // Say it plainly. Somebody who is watching and does not know it
+              // spends the night waiting for cards that are never coming.
+              <div className="flex h-12 items-center justify-center rounded-xl border border-dashed border-border/60 text-sm text-muted-foreground">
+                You are watching this table
+              </div>
+            ) : (
+              view.phase === "hand" && (
+                <HoleCards
+                  cards={you?.cards ?? null}
+                  revealed={revealed}
+                  onRevealChange={setRevealed}
+                  folded={you?.folded}
+                />
+              )
             )}
 
             {/* Sat out by the clock, you are no longer dealt in — so the way
@@ -294,7 +307,7 @@ export function RoomClient({ roomId }: { roomId: string }) {
                         : "Dealing the next hand…"}
                   </div>
                 )}
-                {!you?.sittingOut && (
+                {!spectating && !you?.sittingOut && (
                   <Button
                     variant="ghost"
                     size="sm"
