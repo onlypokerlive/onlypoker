@@ -12,6 +12,7 @@ import { BlindClock } from "@/components/blind-clock"
 import { HoleCards } from "@/components/hole-cards"
 import { RoomLobby } from "@/components/room-lobby"
 import { HandResults } from "@/components/hand-results"
+import { RabbitHunt } from "@/components/rabbit-hunt"
 import { TournamentResults } from "@/components/tournament-results"
 import { useSecondsLeft } from "@/lib/use-countdown"
 import { useTableEvents } from "@/lib/use-table-events"
@@ -212,7 +213,16 @@ export function RoomClient({ roomId }: { roomId: string }) {
           {/* Held back while the board is still coming out: the panel names the
               winner, and reading it before the river lands gives the ending
               away. */}
-          {view.phase === "handover" && !revealing && <HandResults view={view} />}
+          {view.phase === "handover" && !revealing && (
+            <div className="flex flex-col gap-2">
+              <HandResults view={view} />
+              <RabbitHunt
+                roomId={roomId}
+                handNumber={view.handNumber}
+                boardLength={view.board.length}
+              />
+            </div>
+          )}
 
           {/* Pinned to the bottom: on a short phone the table scrolls, but the
               buttons must stay reachable while the shot clock runs. */}

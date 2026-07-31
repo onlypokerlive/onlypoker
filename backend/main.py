@@ -939,6 +939,28 @@ async def join_room(room_id: str, body: JoinBody) -> dict[str, Any]:
     return {"roomId": room_id, "playerId": player_id, "isHost": False}
 
 
+@app.get("/rooms/{room_id}/rabbit")
+async def rabbit_hunt(room_id: str) -> dict[str, Any]:
+    """The board that would have come, once the hand is safely over.
+
+    Pure curiosity — knowing the river you folded away changes nothing and is
+    the most-requested thing in a home game. It is also the one route in this
+    file that must never run a moment early: the deck it reads from is the
+    unplayed future, so serving it while anyone can still act would hand a
+    player the turn card before they bet on it. Hence the phase gate, and hence
+    it reads without taking the lock or writing anything back.
+    """
+    room = await load_room(room_id)
+    if not room:
+        raise fastapi.HTTPException(404, "Room not found.")
+    if room["phase"] not in ("handover", "finished") or not room.get("stateB64"):
+        raise fastapi.HTTPException(400, "Wait for the hand to finish.")
+    state = poker.loads(room["stateB64"])
+    if not poker.is_hand_over(state):
+        raise fastapi.HTTPException(400, "Wait for the hand to finish.")
+    return {"handNumber": room["handNumber"], "streets": poker.would_have_come(state)}
+
+
 @app.get("/rooms/{room_id}/state")
 async def get_state(room_id: str, playerId: str | None = None) -> dict[str, Any]:
     room = await load_room(room_id)

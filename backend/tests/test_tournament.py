@@ -863,6 +863,68 @@ def test_showdown_flag_is_false_while_a_hand_is_running(client, clock):
 
 
 # --------------------------------------------------------------------------- #
+# Rabbit hunt
+# --------------------------------------------------------------------------- #
+def test_the_rabbit_hunt_deals_the_board_that_never_came(client, clock):
+    """It has to be the real board, or the feature is a lie worth nothing.
+
+    pokerkit burns a card before every street, so the flop is not the top three
+    cards off the deck — it is the three after the burn. This walks the same
+    deck the engine would have and checks it against what the engine actually
+    deals when the hand is allowed to continue.
+    """
+    room_id, ids = table(client, 3, actionSeconds=0, levelMinutes=0)
+    start(client, room_id, ids[0])
+
+    # Read the deck mid-hand, then let the same hand run on and compare.
+    room = client.portal.call(main.load_room, room_id)
+    state = main.poker.loads(room["stateB64"])
+    predicted = main.poker.would_have_come(state)
+    assert [s["street"] for s in predicted] == ["flop", "turn", "river"]
+
+    fold_until_hand_over(client, room_id, ids)
+    played = client.portal.call(main.load_room, room_id)
+    board = main.poker.board_cards(main.poker.loads(played["stateB64"]))
+    dealt = [c for street in predicted for c in street["cards"]]
+    # Whatever of the board actually came out has to match the prediction.
+    assert dealt[: len(board)] == board
+
+
+def test_the_rabbit_hunt_only_covers_the_streets_still_missing(client, clock):
+    room_id, ids = table(client, 3, actionSeconds=0, levelMinutes=0)
+    start(client, room_id, ids[0])
+    fold_until_hand_over(client, room_id, ids)
+
+    res = client.get(f"/api/rooms/{room_id}/rabbit")
+    assert res.status_code == 200, res.text
+    board = state(client, room_id, ids[0])["board"]
+    expected = {0: 3, 3: 2, 4: 1, 5: 0}[len(board)]
+    assert len(res.json()["streets"]) == expected
+
+
+def test_the_rabbit_hunt_refuses_to_run_while_anyone_can_still_act(client, clock):
+    """The deck it reads from is the unplayed future.
+
+    Serving it mid-hand would hand a player the turn card before they bet on
+    it, which is the one way this feature could break the game.
+    """
+    room_id, ids = table(client, 3, actionSeconds=0, levelMinutes=0)
+    start(client, room_id, ids[0])
+    res = client.get(f"/api/rooms/{room_id}/rabbit")
+    assert res.status_code == 400
+    assert "finish" in res.json()["detail"]
+
+
+def test_the_rabbit_hunt_does_not_touch_the_room(client, clock):
+    room_id, ids = table(client, 3, actionSeconds=0, levelMinutes=0)
+    start(client, room_id, ids[0])
+    fold_until_hand_over(client, room_id, ids)
+    before = client.portal.call(main.load_room, room_id)
+    client.get(f"/api/rooms/{room_id}/rabbit")
+    assert client.portal.call(main.load_room, room_id) == before
+
+
+# --------------------------------------------------------------------------- #
 # The button
 # --------------------------------------------------------------------------- #
 def _deal_sequence(seats, busts=None):

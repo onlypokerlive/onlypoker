@@ -307,6 +307,12 @@ export const pokerApi = {
       body: JSON.stringify({ playerId, action, amount, handNumber }),
     }),
 
+  /** The board that would have come, once the hand is safely over. */
+  rabbitHunt: (roomId: string) =>
+    req<{ handNumber: number; streets: { street: string; cards: string[] }[] }>(
+      `/api/rooms/${roomId}/rabbit`,
+    ),
+
   toggleSitOut: (roomId: string, playerId: string) =>
     req<RoomView>(`/api/rooms/${roomId}/sit`, {
       method: 'POST',

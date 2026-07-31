@@ -242,6 +242,40 @@ def evaluate_hand(hole: list[str], board: list[str]) -> dict[str, Any] | None:
     return {"cards": cards, "name": _describe(cards, hand.entry.label.value)}
 
 
+# Cards each remaining street would have been dealt, given how much board is
+# already out. Hold'em only ever stops at one of these.
+_REMAINING_STREETS = {
+    0: (("flop", 3), ("turn", 1), ("river", 1)),
+    3: (("turn", 1), ("river", 1)),
+    4: (("river", 1),),
+    5: (),
+}
+
+
+def would_have_come(state) -> list[dict[str, Any]]:
+    """The board that never happened, for a hand that ended early.
+
+    The deck is still sitting in the state we serialize, in order, so this is
+    pure arithmetic — but it has to account for the burn. pokerkit burns a card
+    before every street (``CARD_BURNING`` is automated), so the flop is not the
+    top three cards, it is the three *after* the burn. Verified against the
+    engine: dealing a flop consumes ``deck[0]`` and lays ``deck[1:4]``.
+
+    Reading only; nothing here touches the state.
+    """
+    deck = [card_str(c) for c in state.deck_cards]
+    out: list[dict[str, Any]] = []
+    at = 0
+    for name, count in _REMAINING_STREETS.get(len(board_cards(state)), ()):
+        at += 1  # the burn
+        cards = deck[at : at + count]
+        if len(cards) < count:
+            break  # a deck this short means something is wrong; say nothing
+        out.append({"street": name, "cards": cards})
+        at += count
+    return out
+
+
 def street_name(state) -> str:
     if not state.status or state.street_index is None:
         return "showdown"
