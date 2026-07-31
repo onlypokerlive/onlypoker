@@ -61,6 +61,8 @@ function view(overrides: Partial<GameView> = {}): GameView {
     lastResults: [],
     standings: [],
     wentToShowdown: false,
+    sevenDeuceWin: null,
+    sevenDeucePending: false,
     level: null,
     actionDeadlineMs: null,
     levelEndsAtMs: null,

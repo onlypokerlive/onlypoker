@@ -289,6 +289,9 @@ class CreateRoomBody(BaseModel):
     # Blow the hand up every N deals: everybody antes and it starts on the
     # flop. 0 turns it off.
     bombPotEvery: int = Field(default=0, ge=0, le=50)
+    # Big blinds each other player owes whoever wins with 7-2 offsuit.
+    # 0 turns the rule off.
+    sevenDeuce: int = Field(default=0, ge=0, le=20)
 
 
 class JoinBody(BaseModel):
@@ -570,6 +573,8 @@ def _start_hand(room: dict[str, Any]) -> None:
     # Cards players chose to turn over last hand. Showing is for the hand it
     # belongs to; a new deal takes them back off the table.
     room["shownSeats"] = {}
+    room["sevenDeucePaid"] = False
+    room["sevenDeuceWin"] = None
     room["stateB64"] = poker.dumps(state)
     room["phase"] = "hand"
     room["lastResults"] = []
@@ -606,12 +611,94 @@ def _settle_hand(room: dict[str, Any], state) -> None:
     room["lastResults"] = results
     room["phase"] = "handover"
     room["actionDeadline"] = None
+    # Before the busts are recorded: the bonus is a transfer that can empty a
+    # stack, and a player taken to zero by it is out like any other.
+    _pay_seven_deuce(room)
     _record_busts(room)
     # One player holding every chip ends the tournament.
     if len(_eligible_player_ids(room)) < 2:
         _finish_tournament(room)
     else:
         _arm_auto_deal(room)
+
+
+def _is_seven_deuce(hole: list[str]) -> bool:
+    """Seven-deuce offsuit — the worst hand in hold'em, hence the prize."""
+    if len(hole) != 2:
+        return False
+    return {c[0] for c in hole} == {"7", "2"} and hole[0][1] != hole[1][1]
+
+
+def _cards_are_public(room: dict[str, Any], seat: int) -> bool:
+    """Whether the whole table has seen this seat's hand."""
+    hand_ids = room.get("handPlayerIds") or []
+    folded = set(room.get("foldedSeats", []))
+    if (len(hand_ids) - len(folded)) >= 2 and seat not in folded:
+        return True  # shown down
+    return len(set(room.get("shownSeats", {}).get(str(seat), []))) >= 2
+
+
+def _pay_seven_deuce(room: dict[str, Any]) -> None:
+    """Collect the 7-2 bonus, if the pot was just won with the worst hand.
+
+    The rule is a side bet between players, not something the engine knows
+    about: the pot is already pushed by the time this runs, so it is a plain
+    transfer on top. Which is also why it needs care — it can take a player to
+    zero, and a bonus that busts somebody without the tournament noticing
+    leaves a ghost sitting at the table with no chips.
+
+    It pays on pots won by folding too, which is the whole point: the prize is
+    for the bluff, not the miracle. That is what makes showing your cards a
+    real decision, and why this is called again from ``/show`` — a winner who
+    keeps them face down simply does not collect.
+
+    Runs at most once per hand.
+    """
+    bonus = int(room["bigBlind"]) * int(room.get("sevenDeuce") or 0)
+    if not bonus or room.get("sevenDeucePaid"):
+        return
+    hand_ids = room.get("handPlayerIds") or []
+    holes = room.get("handHoleCards") or []
+    winners = {r["playerId"] for r in room.get("lastResults", []) if r["delta"] > 0}
+
+    for seat, pid in enumerate(hand_ids):
+        if pid not in winners or seat >= len(holes):
+            continue
+        if not _is_seven_deuce(holes[seat]) or not _cards_are_public(room, seat):
+            continue
+        collected = 0
+        for other in hand_ids:
+            if other == pid:
+                continue
+            # Nobody can be made to pay more than they have. Losing the last
+            # of your chips to the 7-2 is a fine way to go out; owing them is
+            # not a state this game has.
+            pay = min(bonus, room["players"][other]["chips"])
+            room["players"][other]["chips"] -= pay
+            collected += pay
+        room["players"][pid]["chips"] += collected
+        room["sevenDeucePaid"] = True
+        room["sevenDeuceWin"] = {
+            "playerId": pid,
+            "name": room["players"][pid]["name"],
+            "amount": collected,
+        }
+        return
+
+
+def _seven_deuce_pending(room: dict[str, Any]) -> bool:
+    """A 7-2 bonus is sitting there unclaimed, waiting on cards being shown."""
+    if not int(room.get("sevenDeuce") or 0) or room.get("sevenDeucePaid"):
+        return False
+    if room.get("phase") != "handover":
+        return False
+    hand_ids = room.get("handPlayerIds") or []
+    holes = room.get("handHoleCards") or []
+    winners = {r["playerId"] for r in room.get("lastResults", []) if r["delta"] > 0}
+    return any(
+        pid in winners and seat < len(holes) and _is_seven_deuce(holes[seat])
+        for seat, pid in enumerate(hand_ids)
+    )
 
 
 def _record_busts(room: dict[str, Any]) -> None:
@@ -832,7 +919,13 @@ def _build_view(room: dict[str, Any], viewer_id: str | None) -> dict[str, Any]:
                 # copy is only rewritten when the hand settles, so serving that
                 # one shows everybody their stack from before they bet — and an
                 # all-in player still reading full stack until showdown.
-                "chips": int(state.stacks[i]),
+                #
+                # Only while the hand is live, though. Once it settles the room
+                # becomes the authority, and anything that moves chips after the
+                # pot is pushed — the 7-2 bonus, and rebuys later — happens
+                # there and nowhere near the engine. Reading the engine past
+                # that point quietly hides those transfers.
+                **({"chips": int(state.stacks[i])} if not hand_over else {}),
                 "bet": int(state.bets[i]),
                 "isActor": actor_i == i,
                 "isButton": i == button_i,
@@ -909,6 +1002,7 @@ def _build_view(room: dict[str, Any], viewer_id: str | None) -> dict[str, Any]:
             "bombPotEvery": int(room.get("bombPotEvery") or 0),
             # Whether the hand on the table right now is a bomb pot.
             "bombPot": bool(room.get("bombPot")),
+            "sevenDeuce": int(room.get("sevenDeuce") or 0),
             "levelMinutes": int(room.get("levelMinutes") or 0),
             "autoDealSeconds": int(room.get("autoDealSeconds") or 0),
             "autoDealPaused": bool(room.get("autoDealPaused")),
@@ -926,6 +1020,10 @@ def _build_view(room: dict[str, Any], viewer_id: str | None) -> dict[str, Any]:
         # treating that as a showdown puts the winner's cards on screen for the
         # player next to them to read.
         "wentToShowdown": shown_down,
+        # Who collected the 7-2 bonus this hand, and what it came to.
+        "sevenDeuceWin": room.get("sevenDeuceWin"),
+        # The bonus is there for the taking but the cards are still down.
+        "sevenDeucePending": _seven_deuce_pending(room),
         "level": _level_view(room, now),
         # Every clock is an absolute server timestamp; the client subtracts
         # serverTime to stay correct even when a device's clock is off.
@@ -1011,6 +1109,7 @@ async def create_room(body: CreateRoomBody) -> dict[str, Any]:
         "anteMode": body.anteMode,
         "straddle": body.straddle,
         "bombPotEvery": body.bombPotEvery,
+        "sevenDeuce": body.sevenDeuce,
         "actionDeadline": None,
         "autoDealSeconds": AUTO_DEAL_SECONDS,
         "autoDealAt": None,
@@ -1117,6 +1216,12 @@ async def show_cards(room_id: str, body: ShowBody) -> dict[str, Any]:
         # Adding rather than replacing: showing one card and then the other is
         # a normal thing to do, and the first one is already public.
         shown[str(seat)] = sorted(set(shown.get(str(seat), [])) | set(body.indices))
+        # Turning over a 7-2 on a pot won by folding is how that bonus gets
+        # claimed, so the same settlement runs again — it is idempotent.
+        _pay_seven_deuce(room)
+        _record_busts(room)
+        if len(_eligible_player_ids(room)) < 2:
+            _finish_tournament(room)
         await save_room(room)
         return _build_view(room, body.playerId)
 

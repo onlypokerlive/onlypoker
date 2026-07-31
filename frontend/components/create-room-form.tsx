@@ -37,6 +37,7 @@ export function CreateRoomForm() {
   const [anteMode, setAnteMode] = useState<(typeof ANTE_MODES)[number]['id']>('off')
   const [straddle, setStraddle] = useState(false)
   const [bombPotEvery, setBombPotEvery] = useState(0)
+  const [sevenDeuce, setSevenDeuce] = useState(0)
   const [password, setPassword] = useState('')
   const [error, setError] = useState<string | null>(null)
   const [loading, setLoading] = useState(false)
@@ -73,6 +74,7 @@ export function CreateRoomForm() {
         anteMode,
         straddle,
         bombPotEvery,
+        sevenDeuce,
       })
       saveSession(session)
       router.push(`/room/${session.roomId}`)
@@ -238,6 +240,20 @@ export function CreateRoomForm() {
                 <span className="text-sm font-semibold">Straddle</span>
                 <span className="text-[11px] font-normal opacity-70">
                   Under the gun pays two big blinds and gets the last word before the flop.
+                </span>
+              </span>
+            </Button>
+            <Button
+              type="button"
+              variant={sevenDeuce ? 'secondary' : 'outline'}
+              onClick={() => setSevenDeuce(sevenDeuce ? 0 : 2)}
+              className="h-auto justify-start py-2 text-left"
+            >
+              <span className="flex flex-col">
+                <span className="text-sm font-semibold">The 7-2 game</span>
+                <span className="text-[11px] font-normal opacity-70">
+                  Win a pot with seven-deuce offsuit and everyone pays you two big blinds.
+                  Counts on pots won by folding too — but you have to show it.
                 </span>
               </span>
             </Button>

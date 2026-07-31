@@ -863,6 +863,184 @@ def test_showdown_flag_is_false_while_a_hand_is_running(client, clock):
 
 
 # --------------------------------------------------------------------------- #
+# House rules: the 7-2 game
+# --------------------------------------------------------------------------- #
+def fold_everyone_but(client, room_id, winner):
+    """Hand the pot to ``winner`` by folding the rest out.
+
+    Two things make this fiddlier than it sounds. Preflop the button acts
+    *first*, so "fold whoever is to act" would fold the very player meant to
+    win. And nobody can fold when checking is free — so the winner has to put
+    in a raise, or the big blind simply checks and the hand carries on to a
+    showdown instead of being won on a fold.
+    """
+    raised = False
+    for _ in range(20):
+        view = state(client, room_id, winner)
+        if view["room"]["phase"] != "hand" or not view["actorId"]:
+            return view
+        actor = view["actorId"]
+        if actor == winner:
+            legal = view["legal"]
+            if not raised and legal and legal["canRaise"]:
+                act(client, room_id, actor, "raise", legal["minRaise"])
+                raised = True
+            else:
+                act(client, room_id, actor, "call")
+            continue
+        if act(client, room_id, actor, "fold").status_code != 200:
+            act(client, room_id, actor, "call")
+    raise AssertionError("hand did not finish")
+
+
+def rig_hand(client, room_id, seat, hole):
+    """Deal a known hand into a seat. The engine has already dealt; we only
+    change the snapshot the settlement reads, which is what the rule uses."""
+    room = client.portal.call(main.load_room, room_id)
+    room["handHoleCards"][seat] = hole
+    client.portal.call(main.save_room, room)
+    return room
+
+
+def test_seven_deuce_pays_out_at_showdown(client, clock):
+    room_id, ids = table(client, 3, sevenDeuce=2, actionSeconds=0, levelMinutes=0)
+    start(client, room_id, ids[0])
+    room = client.portal.call(main.load_room, room_id)
+    # Everyone checks it down, so the hand reaches a showdown.
+    for _ in range(30):
+        view = state(client, room_id, ids[0])
+        if view["room"]["phase"] != "hand" or not view["actorId"]:
+            break
+        act(client, room_id, view["actorId"], "call")
+
+    view = state(client, room_id, ids[0])
+    if not view["wentToShowdown"]:
+        pytest.skip("hand did not reach a showdown")
+    winner = next(r for r in view["lastResults"] if r["delta"] > 0)
+    seat = room["handPlayerIds"].index(winner["playerId"])
+    # Nothing was rigged, so the bonus only pays if the cards happened to fit.
+    holes = client.portal.call(main.load_room, room_id)["handHoleCards"][seat]
+    assert bool(view["sevenDeuceWin"]) == main._is_seven_deuce(holes)
+
+
+def test_seven_deuce_is_claimed_by_showing_a_pot_won_by_folding(client, clock):
+    """The whole point of the rule: the prize is for the bluff.
+
+    A pot won by everyone folding is a pot nobody saw, so collecting means
+    turning the 7-2 over. Keeping it face down means keeping the secret and
+    passing on the money.
+    """
+    room_id, ids = table(client, 3, sevenDeuce=2, actionSeconds=0, levelMinutes=0)
+    start(client, room_id, ids[0])
+    room = client.portal.call(main.load_room, room_id)
+    # Whoever will win by folds gets the worst hand in poker.
+    winner_seat = room["handPlayerIds"].index(room["handPlayerIds"][-1])
+    rig_hand(client, room_id, winner_seat, ["7h", "2c"])
+    winner = room["handPlayerIds"][winner_seat]
+
+    fold_everyone_but(client, room_id, winner)
+
+    view = state(client, room_id, winner)
+    assert view["room"]["phase"] == "handover"
+    assert view["sevenDeuceWin"] is None      # nothing yet: cards still down
+    assert view["sevenDeucePending"] is True  # but it is there for the taking
+
+    before = {p["id"]: p["chips"] for p in view["players"]}
+    res = show(client, room_id, winner, [0, 1])
+    assert res.status_code == 200
+    after = state(client, room_id, winner)
+    assert after["sevenDeuceWin"]["playerId"] == winner
+    assert after["sevenDeuceWin"]["amount"] == 2 * 10 * 2  # two payers, 2 BB each
+    seats = {p["id"]: p["chips"] for p in after["players"]}
+    for pid in before:
+        if pid == winner:
+            assert seats[pid] == before[pid] + 40
+        elif pid in room["handPlayerIds"]:
+            assert seats[pid] == before[pid] - 20
+
+
+def test_keeping_the_seven_deuce_face_down_collects_nothing(client, clock):
+    room_id, ids = table(client, 3, sevenDeuce=2, actionSeconds=0, levelMinutes=0)
+    start(client, room_id, ids[0])
+    room = client.portal.call(main.load_room, room_id)
+    winner = room["handPlayerIds"][-1]
+    rig_hand(client, room_id, len(room["handPlayerIds"]) - 1, ["7h", "2c"])
+    fold_everyone_but(client, room_id, winner)
+    # Showing only one card is not proof of anything.
+    show(client, room_id, winner, [0])
+    assert state(client, room_id, winner)["sevenDeuceWin"] is None
+
+
+def test_the_seven_deuce_bonus_is_only_paid_once(client, clock):
+    room_id, ids = table(client, 3, sevenDeuce=2, actionSeconds=0, levelMinutes=0)
+    start(client, room_id, ids[0])
+    room = client.portal.call(main.load_room, room_id)
+    winner = room["handPlayerIds"][-1]
+    rig_hand(client, room_id, len(room["handPlayerIds"]) - 1, ["7h", "2c"])
+    fold_everyone_but(client, room_id, winner)
+
+    show(client, room_id, winner, [0, 1])
+    once = {p["id"]: p["chips"] for p in state(client, room_id, winner)["players"]}
+    show(client, room_id, winner, [0, 1])  # tapping it again must change nothing
+    twice = {p["id"]: p["chips"] for p in state(client, room_id, winner)["players"]}
+    assert once == twice
+    assert sum(once.values()) == 3000
+
+
+def test_a_seven_deuce_bonus_that_busts_someone_takes_them_out(client, clock):
+    """The trap: a transfer on top of the pot can empty a stack.
+
+    A player taken to zero by the bonus has to leave like anyone else, or the
+    tournament carries a ghost with no chips and never ends.
+    """
+    room_id, ids = table(client, 3, sevenDeuce=5, actionSeconds=0, levelMinutes=0)
+    room = client.portal.call(main.load_room, room_id)
+    room["players"][ids[1]]["chips"] = 30  # less than the 50-chip bonus
+    client.portal.call(main.save_room, room)
+    start(client, room_id, ids[0])
+
+    room = client.portal.call(main.load_room, room_id)
+    winner = room["handPlayerIds"][-1]
+    rig_hand(client, room_id, len(room["handPlayerIds"]) - 1, ["7d", "2s"])
+    fold_everyone_but(client, room_id, winner)
+    show(client, room_id, winner, [0, 1])
+
+    view = state(client, room_id, ids[0])
+    short = next(p for p in view["players"] if p["id"] == ids[1])
+    assert short["chips"] == 0
+    assert short["out"] is True
+    # Nobody ever owes chips they do not have, so the table still balances.
+    assert sum(p["chips"] for p in view["players"]) == 2030
+
+
+def test_the_rule_is_off_unless_the_host_turns_it_on(client, clock):
+    room_id, ids = table(client, 3, actionSeconds=0, levelMinutes=0)
+    start(client, room_id, ids[0])
+    room = client.portal.call(main.load_room, room_id)
+    rig_hand(client, room_id, len(room["handPlayerIds"]) - 1, ["7h", "2c"])
+    winner = room["handPlayerIds"][-1]
+    fold_everyone_but(client, room_id, winner)
+    show(client, room_id, winner, [0, 1])
+    view = state(client, room_id, ids[0])
+    assert view["sevenDeuceWin"] is None
+    assert view["sevenDeucePending"] is False
+
+
+@pytest.mark.parametrize(
+    "hole, expected",
+    [
+        (["7h", "2c"], True),
+        (["2c", "7h"], True),
+        (["7h", "2h"], False),   # suited is not the 7-2 game
+        (["7h", "3c"], False),
+        (["Ah", "Kc"], False),
+    ],
+)
+def test_what_counts_as_seven_deuce(hole, expected):
+    assert main._is_seven_deuce(hole) is expected
+
+
+# --------------------------------------------------------------------------- #
 # House rules: straddle and bomb pots
 # --------------------------------------------------------------------------- #
 def test_the_straddle_posts_blind_and_acts_last(client, clock):

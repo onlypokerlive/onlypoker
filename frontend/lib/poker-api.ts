@@ -118,6 +118,8 @@ export interface RoomView {
     bombPotEvery: number
     /** The hand on the table right now is a bomb pot. */
     bombPot: boolean
+    /** Big blinds each player owes a 7-2 winner. 0 is off. */
+    sevenDeuce: number
   }
   players: PlayerView[]
   board: string[]
@@ -129,6 +131,10 @@ export interface RoomView {
   standings: Standing[]
   /** The finished hand was actually shown down (not won by everyone folding). */
   wentToShowdown: boolean
+  /** Who collected the 7-2 bonus this hand, and what it came to. */
+  sevenDeuceWin: { playerId: string; name: string; amount: number } | null
+  /** The bonus is there for the taking, but the cards are still face down. */
+  sevenDeucePending: boolean
   level: LevelView | null
   /** Absolute server time (seconds) when the current decision expires. */
   actionDeadline: number | null
@@ -175,6 +181,8 @@ export interface GameView {
   lastResults: HandResult[]
   standings: Standing[]
   wentToShowdown: boolean
+  sevenDeuceWin: { playerId: string; name: string; amount: number } | null
+  sevenDeucePending: boolean
   level: LevelView | null
   /** Both deadlines are rebased onto the browser's clock at fetch time, so a
    *  phone with the wrong time still counts down correctly. */
@@ -258,6 +266,8 @@ export function toGameView(v: RoomView, playerId: string | null): GameView {
     lastResults: v.lastResults,
     standings: v.standings ?? [],
     wentToShowdown: !!v.wentToShowdown,
+    sevenDeuceWin: v.sevenDeuceWin ?? null,
+    sevenDeucePending: !!v.sevenDeucePending,
     level: v.level,
     actionDeadlineMs,
     levelEndsAtMs,
@@ -302,6 +312,8 @@ export interface CreateRoomInput {
   straddle: boolean
   /** Blow the hand up every N deals. 0 turns it off. */
   bombPotEvery: number
+  /** Big blinds each player owes whoever wins with 7-2 offsuit. 0 is off. */
+  sevenDeuce: number
 }
 
 /** Blind structures, as a choice of how fast the night should go. */

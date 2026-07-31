@@ -31,6 +31,12 @@ export function HandResults({
       </h2>
       {/* Nine players' showdowns would run under the action bar, so the list
           scrolls inside the panel and the winner stays pinned at the top. */}
+      {view.sevenDeuceWin && (
+        <p className="mb-2 shrink-0 rounded-lg bg-accent/15 px-2 py-1 text-center text-xs font-semibold text-accent">
+          {view.sevenDeuceWin.name} took {view.sevenDeuceWin.amount.toLocaleString()} off the
+          table with seven-deuce
+        </p>
+      )}
       <ul className="flex flex-col gap-1 overflow-y-auto">
         {sorted.map((r) => {
           const won = r.delta > 0
