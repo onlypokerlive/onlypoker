@@ -863,6 +863,80 @@ def test_showdown_flag_is_false_while_a_hand_is_running(client, clock):
 
 
 # --------------------------------------------------------------------------- #
+# Antes
+# --------------------------------------------------------------------------- #
+def chips_in_play(client, room_id):
+    """Every chip on the table: stacks, the pot, and what is out on the felt."""
+    view = state(client, room_id, client.portal.call(main.load_room, room_id)["hostId"])
+    return sum(p["chips"] for p in view["players"]) + view["pot"] + sum(
+        p["bet"] for p in view["players"]
+    )
+
+
+def test_no_ante_by_default(client, clock):
+    room_id, ids = table(client, 3)
+    start(client, room_id, ids[0])
+    assert state(client, room_id, ids[0])["room"]["ante"] == 0
+    assert chips_in_play(client, room_id) == 3000
+
+
+def test_the_big_blind_ante_is_posted_by_one_player_for_the_table(client, clock):
+    """One seat posts for everyone — the modern structure.
+
+    It also needs ``ante_trimming_status`` off: trimming exists to equalise
+    antes between players, so with it on a one-player ante is quietly trimmed
+    to nothing and never posted at all.
+    """
+    room_id, ids = table(client, 3, anteMode="bb")
+    start(client, room_id, ids[0])
+    view = state(client, room_id, ids[0])
+    assert view["room"]["ante"] == 10
+
+    room = client.portal.call(main.load_room, room_id)
+    seats = {p["id"]: p for p in view["players"]}
+    bb = seats[room["handPlayerIds"][1]]
+    others = [seats[pid] for pid in room["handPlayerIds"][2:]]
+    # Blind plus ante out of the big blind's stack, and nothing from the rest.
+    assert bb["chips"] == 1000 - 10 - 10
+    assert all(p["chips"] == 1000 for p in others)
+    assert view["pot"] == 10  # the ante is collected; the blinds are still out
+    assert chips_in_play(client, room_id) == 3000
+
+
+def test_a_table_wide_ante_is_taken_from_everyone(client, clock):
+    room_id, ids = table(client, 3, anteMode="all", smallBlind=40, bigBlind=80)
+    start(client, room_id, ids[0])
+    view = state(client, room_id, ids[0])
+    assert view["room"]["ante"] == 10  # an eighth of the big blind
+    assert view["pot"] == 30
+    assert chips_in_play(client, room_id) == 3000
+
+
+def test_the_ante_climbs_with_the_blinds(client, clock):
+    """Tied to the big blind, so it follows the ladder without its own setting."""
+    room_id, ids = table(client, 3, anteMode="bb", levelMinutes=1, actionSeconds=0)
+    start(client, room_id, ids[0])
+    assert state(client, room_id, ids[0])["room"]["ante"] == 10
+    fold_until_hand_over(client, room_id, ids)
+    clock.advance(61)
+    start(client, room_id, ids[0])
+    view = state(client, room_id, ids[0])
+    assert view["room"]["bigBlind"] == 20
+    assert view["room"]["ante"] == 20
+
+
+def test_a_stack_too_short_for_the_ante_posts_what_it_has(client, clock):
+    """The end of a tournament is exactly when antes start to bite."""
+    room_id, ids = table(client, 3, anteMode="bb", actionSeconds=0, levelMinutes=0)
+    room = client.portal.call(main.load_room, room_id)
+    # Leave the seat that will post the ante with less than it owes.
+    room["players"][ids[1]]["chips"] = 6
+    client.portal.call(main.save_room, room)
+    start(client, room_id, ids[0])
+    assert chips_in_play(client, room_id) == 2006
+
+
+# --------------------------------------------------------------------------- #
 # Spectators
 # --------------------------------------------------------------------------- #
 def watch(client, room_id, password="secret"):

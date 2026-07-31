@@ -277,6 +277,9 @@ class CreateRoomBody(BaseModel):
     levelMinutes: int = Field(default=10, ge=0, le=120)
     # 0 disables the shot clock.
     actionSeconds: int = Field(default=20, ge=0, le=120)
+    # Dead money on every hand. "bb" is the modern big-blind ante (one player
+    # posts for the table), "all" is the classic one where everybody does.
+    anteMode: str = Field(default="off", pattern="^(off|all|bb)$")
 
 
 class JoinBody(BaseModel):
@@ -307,6 +310,23 @@ def build_blind_schedule(small_blind: int, big_blind: int) -> list[dict[str, int
         {"smallBlind": small_blind * m, "bigBlind": big_blind * m}
         for m in BLIND_MULTIPLIERS
     ]
+
+
+def _ante_for(room: dict[str, Any]) -> int:
+    """What each posting seat owes this level.
+
+    Tied to the big blind rather than stored as its own number, so it climbs
+    with the ladder on its own and the host has one fewer thing to set. A big
+    blind ante is a whole big blind, which is the modern standard; a table-wide
+    ante is the old proportion of it, because everybody paying a full blind
+    would be six blinds of dead money before a card is dealt.
+    """
+    mode = room.get("anteMode", "off")
+    if mode == "bb":
+        return int(room["bigBlind"])
+    if mode == "all":
+        return max(1, int(room["bigBlind"]) // 8)
+    return 0
 
 
 def _level_duration(room: dict[str, Any]) -> int:
@@ -457,7 +477,13 @@ def _start_hand(room: dict[str, Any]) -> None:
     room["buttonId"] = button_id
     hand_ids = _seat_order(button_id, eligible)  # index 0 == small blind
     start_stacks = [room["players"][pid]["chips"] for pid in hand_ids]
-    state = poker.create_hand(start_stacks, room["smallBlind"], room["bigBlind"])
+    state = poker.create_hand(
+        start_stacks,
+        room["smallBlind"],
+        room["bigBlind"],
+        ante=_ante_for(room),
+        ante_from_big_blind=room.get("anteMode") == "bb",
+    )
 
     room["handPlayerIds"] = hand_ids
     room["handStartStacks"] = start_stacks
@@ -814,6 +840,8 @@ def _build_view(room: dict[str, Any], viewer_id: str | None) -> dict[str, Any]:
             "handNumber": room["handNumber"],
             "maxSeats": MAX_SEATS,
             "actionSeconds": int(room.get("actionSeconds") or 0),
+            "anteMode": room.get("anteMode", "off"),
+            "ante": _ante_for(room),
             "levelMinutes": int(room.get("levelMinutes") or 0),
             "autoDealSeconds": int(room.get("autoDealSeconds") or 0),
             "autoDealPaused": bool(room.get("autoDealPaused")),
@@ -913,6 +941,7 @@ async def create_room(body: CreateRoomBody) -> dict[str, Any]:
         # never burns a blind level.
         "levelStartedAt": None,
         "actionSeconds": body.actionSeconds,
+        "anteMode": body.anteMode,
         "actionDeadline": None,
         "autoDealSeconds": AUTO_DEAL_SECONDS,
         "autoDealAt": None,

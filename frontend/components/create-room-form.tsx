@@ -12,7 +12,15 @@ import {
   FieldGroup,
   FieldLabel,
 } from '@/components/ui/field'
-import { pokerApi, saveSession } from '@/lib/poker-api'
+import { BLIND_STRUCTURES, pokerApi, saveSession } from '@/lib/poker-api'
+
+/** Dead money each hand. The amount follows the big blind, so it climbs on
+ *  its own and the host has one fewer number to pick. */
+const ANTE_MODES = [
+  { id: 'off', label: 'None', blurb: 'No ante. Blinds only.' },
+  { id: 'bb', label: 'Big blind', blurb: 'The big blind posts one extra blind for the whole table — the modern structure, and the quickest.' },
+  { id: 'all', label: 'Everyone', blurb: 'Every player chips in a small ante each hand. The classic version.' },
+] as const
 
 export function CreateRoomForm() {
   const router = useRouter()
@@ -23,6 +31,7 @@ export function CreateRoomForm() {
   const [bigBlind, setBigBlind] = useState('10')
   const [levelMinutes, setLevelMinutes] = useState('10')
   const [actionSeconds, setActionSeconds] = useState('20')
+  const [anteMode, setAnteMode] = useState<(typeof ANTE_MODES)[number]['id']>('off')
   const [password, setPassword] = useState('')
   const [error, setError] = useState<string | null>(null)
   const [loading, setLoading] = useState(false)
@@ -56,6 +65,7 @@ export function CreateRoomForm() {
         password: password.trim(),
         levelMinutes: minutes,
         actionSeconds: seconds,
+        anteMode,
       })
       saveSession(session)
       router.push(`/room/${session.roomId}`)
@@ -126,6 +136,50 @@ export function CreateRoomForm() {
           />
           <FieldDescription>
             Everyone starts each session with this stack.
+          </FieldDescription>
+        </Field>
+
+        <Field>
+          <FieldLabel>Structure</FieldLabel>
+          {/* The host is choosing how long the night is, not a number of
+              minutes. The number stays underneath for anyone who wants it. */}
+          <div className="grid grid-cols-3 gap-2">
+            {BLIND_STRUCTURES.map((s) => (
+              <Button
+                key={s.id}
+                type="button"
+                variant={levelMinutes === String(s.minutes) ? 'secondary' : 'outline'}
+                onClick={() => setLevelMinutes(String(s.minutes))}
+                className="flex h-auto flex-col gap-0 py-2"
+              >
+                <span className="text-sm font-semibold">{s.label}</span>
+                <span className="text-[10px] font-normal opacity-70">{s.minutes} min</span>
+              </Button>
+            ))}
+          </div>
+          <FieldDescription>
+            {BLIND_STRUCTURES.find((s) => String(s.minutes) === levelMinutes)?.blurb ??
+              'Custom level length.'}
+          </FieldDescription>
+        </Field>
+
+        <Field>
+          <FieldLabel>Ante</FieldLabel>
+          <div className="grid grid-cols-3 gap-2">
+            {ANTE_MODES.map((a) => (
+              <Button
+                key={a.id}
+                type="button"
+                variant={anteMode === a.id ? 'secondary' : 'outline'}
+                onClick={() => setAnteMode(a.id)}
+                className="flex h-auto flex-col gap-0 py-2"
+              >
+                <span className="text-sm font-semibold">{a.label}</span>
+              </Button>
+            ))}
+          </div>
+          <FieldDescription>
+            {ANTE_MODES.find((a) => a.id === anteMode)?.blurb}
           </FieldDescription>
         </Field>
 

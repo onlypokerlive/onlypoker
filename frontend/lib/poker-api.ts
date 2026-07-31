@@ -283,7 +283,16 @@ export interface CreateRoomInput {
   levelMinutes: number
   /** Seconds per decision; 0 removes the shot clock. */
   actionSeconds: number
+  /** Dead money each hand: none, the big blind posts for everyone, or all do. */
+  anteMode: 'off' | 'bb' | 'all'
 }
+
+/** Blind structures, as a choice of how fast the night should go. */
+export const BLIND_STRUCTURES = [
+  { id: 'turbo', label: 'Turbo', minutes: 5, blurb: 'A short, sharp night' },
+  { id: 'normal', label: 'Normal', minutes: 15, blurb: 'The usual' },
+  { id: 'slow', label: 'Slow', minutes: 25, blurb: 'Room to actually play' },
+] as const
 
 export const pokerApi = {
   createRoom: (input: CreateRoomInput) =>

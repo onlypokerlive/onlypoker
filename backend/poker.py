@@ -32,14 +32,31 @@ _AUTOMATIONS = (
 )
 
 
-def create_hand(starting_stacks: list[int], small_blind: int, big_blind: int):
+def create_hand(
+    starting_stacks: list[int],
+    small_blind: int,
+    big_blind: int,
+    ante: int = 0,
+    ante_from_big_blind: bool = False,
+):
     """Create a fresh hand. ``starting_stacks`` is in seat order where index 0
     is the small blind, index 1 the big blind, and the final index the button
-    (pokerkit posts blinds positionally from index 0)."""
+    (pokerkit posts blinds positionally from index 0).
+
+    ``ante_from_big_blind`` is the modern big-blind ante: one player posts for
+    the whole table, which is the same dead money with a fraction of the
+    fiddling. It needs ``ante_trimming_status=False`` — trimming exists to
+    equalise antes across players, so with it on a one-player ante is trimmed
+    to nothing and silently never posted at all.
+    """
+    if ante and ante_from_big_blind:
+        raw_antes: Any = {1: ante}  # index 1 is the big blind, by construction
+    else:
+        raw_antes = ante
     return NoLimitTexasHoldem.create_state(
         automations=_AUTOMATIONS,
-        ante_trimming_status=True,
-        raw_antes=0,
+        ante_trimming_status=not (ante and ante_from_big_blind),
+        raw_antes=raw_antes,
         raw_blinds_or_straddles=(small_blind, big_blind),
         min_bet=big_blind,
         raw_starting_stacks=tuple(starting_stacks),
