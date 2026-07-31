@@ -1153,6 +1153,58 @@ async def join_room(room_id: str, body: JoinBody) -> dict[str, Any]:
     return {"roomId": room_id, "playerId": player_id, "isHost": False}
 
 
+class KickBody(BaseModel):
+    playerId: str        # the host asking
+    targetId: str        # the player being shown the door
+
+
+@app.post("/rooms/{room_id}/kick")
+async def kick_player(room_id: str, body: KickBody) -> dict[str, Any]:
+    """Remove somebody from the table, at the host's word.
+
+    Only between hands. Pulling a seat out from under a live hand means
+    rewriting a pot that is already half-played, and there is no version of
+    that which is not worse than waiting twenty seconds.
+
+    Their chips leave with them, and they are recorded where they stood, so the
+    final standings still have them in the place they reached rather than
+    quietly forgetting they were ever here.
+    """
+    async with _RoomLock(room_id):
+        room = await load_room(room_id)
+        if not room:
+            raise fastapi.HTTPException(404, "Room not found.")
+        if body.playerId != room["hostId"]:
+            raise fastapi.HTTPException(403, "Only the host can remove a player.")
+        if body.targetId == room["hostId"]:
+            raise fastapi.HTTPException(400, "The host cannot remove themselves.")
+        if body.targetId not in room["players"]:
+            raise fastapi.HTTPException(404, "That player is not at this table.")
+        if room["phase"] == "hand":
+            raise fastapi.HTTPException(
+                400, "Wait for the hand to finish before removing anyone."
+            )
+
+        # Recorded before they are gone: bust order is what produces the final
+        # placings, and somebody removed at the end still finished where they
+        # finished.
+        busted = room.setdefault("bustOrder", [])
+        if body.targetId not in busted:
+            busted.append(body.targetId)
+        # Out of the seating, but the record stays: the final standings are
+        # built by looking players up by id, and deleting them outright turns
+        # the podium into a KeyError. Their chips leave the table with them.
+        room["order"] = [pid for pid in room["order"] if pid != body.targetId]
+        room["players"][body.targetId]["chips"] = 0
+        room["players"][body.targetId]["removed"] = True
+        if room.get("buttonId") == body.targetId:
+            room["buttonId"] = None  # the next deal picks a fresh seat
+        if room["phase"] != "lobby" and len(_eligible_player_ids(room)) < 2:
+            _finish_tournament(room)
+        await save_room(room)
+        return _build_view(room, body.playerId)
+
+
 class WatchBody(BaseModel):
     password: str = Field(min_length=1, max_length=64)
 

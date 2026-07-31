@@ -365,6 +365,13 @@ export const pokerApi = {
       body: JSON.stringify({ playerId, action, amount, handNumber }),
     }),
 
+  /** Host only: show a player the door. Between hands. */
+  kickPlayer: (roomId: string, playerId: string, targetId: string) =>
+    req<RoomView>(`/api/rooms/${roomId}/kick`, {
+      method: 'POST',
+      body: JSON.stringify({ playerId, targetId }),
+    }),
+
   /** Turn your own cards face up after the hand. There is no way back. */
   showCards: (roomId: string, playerId: string, indices: number[]) =>
     req<RoomView>(`/api/rooms/${roomId}/show`, {

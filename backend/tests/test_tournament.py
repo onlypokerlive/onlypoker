@@ -1204,6 +1204,75 @@ def test_a_stack_too_short_for_the_ante_posts_what_it_has(client, clock):
 
 
 # --------------------------------------------------------------------------- #
+# Removing a player
+# --------------------------------------------------------------------------- #
+def kick(client, room_id, host, target):
+    return client.post(
+        f"/api/rooms/{room_id}/kick", json={"playerId": host, "targetId": target}
+    )
+
+
+def test_the_host_can_remove_a_player_between_hands(client, clock):
+    room_id, ids = table(client, 3, actionSeconds=0, levelMinutes=0)
+    start(client, room_id, ids[0])
+    fold_until_hand_over(client, room_id, ids)
+
+    assert kick(client, room_id, ids[0], ids[2]).status_code == 200
+    view = state(client, room_id, ids[0])
+    assert [p["id"] for p in view["players"]] == ids[:2]
+
+
+def test_nobody_is_removed_from_a_live_hand(client, clock):
+    """Pulling a seat out from under a half-played pot is worse than waiting."""
+    room_id, ids = table(client, 3, actionSeconds=0, levelMinutes=0)
+    start(client, room_id, ids[0])
+    res = kick(client, room_id, ids[0], ids[2])
+    assert res.status_code == 400
+    assert "finish" in res.json()["detail"]
+
+
+def test_only_the_host_shows_anyone_the_door(client, clock):
+    room_id, ids = table(client, 3)
+    assert kick(client, room_id, ids[1], ids[2]).status_code == 403
+
+
+def test_the_host_cannot_remove_themselves(client, clock):
+    room_id, ids = table(client, 3)
+    assert kick(client, room_id, ids[0], ids[0]).status_code == 400
+
+
+def test_a_removed_player_still_has_a_finishing_place(client, clock):
+    """Leaving early is still a finish. Forgetting them rewrites the night."""
+    room_id, ids = table(client, 3, actionSeconds=0, levelMinutes=0)
+    start(client, room_id, ids[0])
+    fold_until_hand_over(client, room_id, ids)
+    kick(client, room_id, ids[0], ids[2])
+    room = client.portal.call(main.load_room, room_id)
+    assert ids[2] in room["bustOrder"]
+
+
+def test_removing_the_button_does_not_strand_the_next_deal(client, clock):
+    room_id, ids = table(client, 3, actionSeconds=0, levelMinutes=0)
+    start(client, room_id, ids[0])
+    fold_until_hand_over(client, room_id, ids)
+    button = client.portal.call(main.load_room, room_id)["buttonId"]
+    target = button if button != ids[0] else ids[1]
+    assert kick(client, room_id, ids[0], target).status_code == 200
+    assert start(client, room_id, ids[0]).status_code == 200
+
+
+def test_removing_the_second_to_last_player_ends_the_tournament(client, clock):
+    room_id, ids = table(client, 3, actionSeconds=0, levelMinutes=0)
+    start(client, room_id, ids[0])
+    fold_until_hand_over(client, room_id, ids)
+    kick(client, room_id, ids[0], ids[1])
+    kick(client, room_id, ids[0], ids[2])
+    view = state(client, room_id, ids[0])
+    assert view["room"]["phase"] == "finished"
+    assert view["standings"][0]["playerId"] == ids[0]
+
+
+# --------------------------------------------------------------------------- #
 # Spectators
 # --------------------------------------------------------------------------- #
 def watch(client, room_id, password="secret"):

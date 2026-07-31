@@ -15,6 +15,7 @@ import { HandResults } from "@/components/hand-results"
 import { RabbitHunt } from "@/components/rabbit-hunt"
 import { ShowCards } from "@/components/show-cards"
 import { HelpSheet } from "@/components/help-sheet"
+import { HostPanel } from "@/components/host-panel"
 import { TournamentResults } from "@/components/tournament-results"
 import { useSecondsLeft } from "@/lib/use-countdown"
 import { useTableEvents } from "@/lib/use-table-events"
@@ -231,6 +232,7 @@ export function RoomClient({ roomId }: { roomId: string }) {
             <div className="flex flex-col gap-2">
               <HandResults view={view} />
               <ShowCards view={view} roomId={roomId} onShown={refresh} />
+              <HostPanel view={view} roomId={roomId} onDone={refresh} />
               <RabbitHunt
                 roomId={roomId}
                 handNumber={view.handNumber}
