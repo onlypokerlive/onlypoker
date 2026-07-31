@@ -3,16 +3,20 @@
 import { useEffect, useState } from "react"
 import { Button } from "@/components/ui/button"
 import { Slider } from "@/components/ui/slider"
+import { cn } from "@/lib/utils"
 import type { GameView } from "@/lib/poker-api"
 
 export function ActionBar({
   view,
   onAction,
   busy,
+  secondsLeft = null,
 }: {
   view: GameView
   onAction: (action: "fold" | "check" | "call" | "raise", amount?: number) => void
   busy: boolean
+  /** Seconds left on your shot clock, or null when there is no limit. */
+  secondsLeft?: number | null
 }) {
   const legal = view.legal
   const min = legal?.minRaise ?? 0
@@ -52,8 +56,45 @@ export function ActionBar({
   const readSliderValue = (v: number | readonly number[]) => (Array.isArray(v) ? v[0] : (v as number))
   const sendRaise = (n: number) => onAction("raise", clamp(n))
 
+  // Shot clock. Running out is not a penalty when checking is free, so say
+  // exactly which action the clock is about to take.
+  const timed = view.actionSeconds > 0 && secondsLeft != null
+  const timePct = timed ? Math.min(100, Math.max(0, (secondsLeft! / view.actionSeconds) * 100)) : 0
+  const urgent = timed && secondsLeft! <= 5
+  const autoAction = legal.canCheck ? "Checking" : "Folding"
+
   return (
-    <div className="flex flex-col gap-3 rounded-xl border border-accent/40 bg-card/90 p-3 shadow-lg">
+    <div
+      className={cn(
+        "flex flex-col gap-3 rounded-xl border bg-card/90 p-3 shadow-lg transition-colors",
+        urgent ? "border-destructive/70" : "border-accent/40",
+      )}
+    >
+      {timed && (
+        <div className="flex items-center gap-3">
+          <div className="h-1.5 flex-1 overflow-hidden rounded-full bg-border">
+            <div
+              className={cn(
+                "h-full rounded-full transition-[width] duration-200 ease-linear",
+                urgent ? "bg-destructive" : "bg-primary",
+              )}
+              style={{ width: `${timePct}%` }}
+            />
+          </div>
+          <span
+            className={cn(
+              "w-24 shrink-0 text-right font-mono text-xs tabular-nums",
+              urgent ? "font-bold text-destructive" : "text-muted-foreground",
+            )}
+            role="timer"
+          >
+            {urgent
+              ? `${autoAction} in ${Math.ceil(secondsLeft!)}s`
+              : `${Math.ceil(secondsLeft!)}s to act`}
+          </span>
+        </div>
+      )}
+
       {canRaise && (
         <div className="flex items-center gap-3">
           <span className="w-14 shrink-0 text-xs text-muted-foreground">Raise to</span>

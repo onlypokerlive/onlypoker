@@ -21,6 +21,8 @@ export function CreateRoomForm() {
   const [startingChips, setStartingChips] = useState('1000')
   const [smallBlind, setSmallBlind] = useState('5')
   const [bigBlind, setBigBlind] = useState('10')
+  const [levelMinutes, setLevelMinutes] = useState('10')
+  const [actionSeconds, setActionSeconds] = useState('20')
   const [password, setPassword] = useState('')
   const [error, setError] = useState<string | null>(null)
   const [loading, setLoading] = useState(false)
@@ -32,12 +34,16 @@ export function CreateRoomForm() {
     const sb = Number(smallBlind)
     const bb = Number(bigBlind)
     const chips = Number(startingChips)
+    const minutes = Number(levelMinutes)
+    const seconds = Number(actionSeconds)
 
     if (!hostName.trim()) return setError('Enter your display name.')
     if (!password.trim()) return setError('Set a room password to share.')
     if (bb <= sb) return setError('Big blind must be larger than the small blind.')
     if (chips < bb * 2)
       return setError('Starting chips should be at least twice the big blind.')
+    if (minutes > 120) return setError('Blind levels can last at most 120 minutes.')
+    if (seconds > 120) return setError('A decision can take at most 120 seconds.')
 
     setLoading(true)
     try {
@@ -48,6 +54,8 @@ export function CreateRoomForm() {
         smallBlind: sb,
         bigBlind: bb,
         password: password.trim(),
+        levelMinutes: minutes,
+        actionSeconds: seconds,
       })
       saveSession(session)
       router.push(`/room/${session.roomId}`)
@@ -120,6 +128,38 @@ export function CreateRoomForm() {
             Everyone starts each session with this stack.
           </FieldDescription>
         </Field>
+
+        <div className="grid grid-cols-2 gap-4">
+          <Field>
+            <FieldLabel htmlFor="levelMinutes">Blinds up every</FieldLabel>
+            <Input
+              id="levelMinutes"
+              inputMode="numeric"
+              value={levelMinutes}
+              onChange={(e) =>
+                setLevelMinutes(e.target.value.replace(/[^0-9]/g, ''))
+              }
+            />
+            <FieldDescription>
+              Minutes per level. 0 keeps the blinds where they start.
+            </FieldDescription>
+          </Field>
+          <Field>
+            <FieldLabel htmlFor="actionSeconds">Time to act</FieldLabel>
+            <Input
+              id="actionSeconds"
+              inputMode="numeric"
+              value={actionSeconds}
+              onChange={(e) =>
+                setActionSeconds(e.target.value.replace(/[^0-9]/g, ''))
+              }
+            />
+            <FieldDescription>
+              Seconds per decision. Running out checks, or folds. 0 removes the
+              clock.
+            </FieldDescription>
+          </Field>
+        </div>
 
         <Field>
           <FieldLabel htmlFor="password">Room password</FieldLabel>

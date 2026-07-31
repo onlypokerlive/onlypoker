@@ -3,8 +3,27 @@
 import { useState } from "react"
 import { Button } from "@/components/ui/button"
 import { toast } from "sonner"
-import { Copy, Check, Users, Coins } from "lucide-react"
+import { Copy, Check, Users, Coins, TrendingUp, Timer } from "lucide-react"
+import { cn } from "@/lib/utils"
 import type { GameView } from "@/lib/poker-api"
+
+function Stat({
+  icon: Icon,
+  value,
+  label,
+}: {
+  icon: typeof Coins
+  value: string
+  label: string
+}) {
+  return (
+    <div className="flex flex-col items-center gap-1 rounded-xl bg-muted/50 p-3">
+      <Icon className="size-5 text-accent" aria-hidden />
+      <span className="font-mono text-sm font-semibold text-card-foreground">{value}</span>
+      <span className="text-[10px] uppercase tracking-wide text-muted-foreground">{label}</span>
+    </div>
+  )
+}
 
 export function RoomLobby({
   view,
@@ -38,19 +57,23 @@ export function RoomLobby({
         <p className="text-sm text-muted-foreground">Waiting for players to join</p>
       </div>
 
-      <div className="grid grid-cols-2 gap-3">
-        <div className="flex flex-col items-center gap-1 rounded-xl bg-muted/50 p-3">
-          <Coins className="size-5 text-accent" aria-hidden />
-          <span className="font-mono text-sm font-semibold text-card-foreground">
-            {view.smallBlind}/{view.bigBlind}
-          </span>
-          <span className="text-[10px] uppercase tracking-wide text-muted-foreground">Blinds</span>
-        </div>
-        <div className="flex flex-col items-center gap-1 rounded-xl bg-muted/50 p-3">
-          <Users className="size-5 text-accent" aria-hidden />
-          <span className="font-mono text-sm font-semibold text-card-foreground">{seated}/9</span>
-          <span className="text-[10px] uppercase tracking-wide text-muted-foreground">Players</span>
-        </div>
+      <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
+        <Stat
+          icon={Coins}
+          value={`${view.smallBlind}/${view.bigBlind}`}
+          label="Blinds"
+        />
+        <Stat icon={Users} value={`${seated}/${view.maxSeats}`} label="Players" />
+        <Stat
+          icon={TrendingUp}
+          value={view.levelMinutes > 0 ? `${view.levelMinutes} min` : "Fixed"}
+          label="Blinds up"
+        />
+        <Stat
+          icon={Timer}
+          value={view.actionSeconds > 0 ? `${view.actionSeconds}s` : "None"}
+          label="To act"
+        />
       </div>
 
       <ul className="flex flex-col gap-2">
@@ -60,6 +83,14 @@ export function RoomLobby({
             className="flex items-center justify-between rounded-lg border border-border/50 bg-background/40 px-3 py-2"
           >
             <span className="flex items-center gap-2 text-sm font-medium text-card-foreground">
+              {/* Who is actually here, rather than who once opened the link. */}
+              <span
+                className={cn(
+                  "size-2 shrink-0 rounded-full",
+                  p.connected ? "bg-emerald-500" : "bg-muted-foreground/40",
+                )}
+                aria-label={p.connected ? "Connected" : "Disconnected"}
+              />
               {p.name}
               {p.isHost && (
                 <span className="rounded bg-accent/20 px-1.5 py-0.5 text-[10px] font-bold uppercase text-accent">
