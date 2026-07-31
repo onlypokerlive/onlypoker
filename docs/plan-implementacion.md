@@ -17,6 +17,25 @@ configuración de mesa y entrada/salida de jugadores. **Fuera por decisión expl
 
 ---
 
+## Estado
+
+| Tanda | Hecho | Pendiente |
+|---|---|---|
+| **0** defectos | 0.1 ✅ · 0.2 ✅ · 0.3 ✅ | — |
+| **0.5** concurrencia | — | 0.5.a · 0.5.b · 0.5.c · 0.5.d |
+| **A** frontend | A0-A7 ✅ (todo) | — |
+| **B** mesa y jugadores | B1 ✅ · B2 ✅ · B6 ✅ | B3 · B4 · B5 · B7 |
+| **C** reglas de la casa | C0 ✅ · C1 ✅ · C2 ✅ · C3 ✅ · C4 ✅ | C5 · C6 |
+| **D** plataforma | — | todo (fuera del alcance acordado) |
+
+**19 de 29 items hasta el final de C.** Lo que queda son casi todos **L**: la tanda 0.5 entera, las cuatro
+features de mesa que cambian el torneo en marcha (B3, B4, B5, B7) y las dos caras de C (C5 pre-acciones,
+C6 run it twice). Cinco de esas seis dependen de 0.5.c.
+
+Cada item está en su propio commit, con sus tests, en `feat/plan-tandas-a-b-c`.
+
+---
+
 ## Tanda 0 — defectos, antes que features
 
 Tres cosas que ya están mal. Van primero porque dos de ellas son **prerrequisito** de features que quieres.
