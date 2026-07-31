@@ -14,6 +14,7 @@ import { RoomLobby } from "@/components/room-lobby"
 import { HandResults } from "@/components/hand-results"
 import { RabbitHunt } from "@/components/rabbit-hunt"
 import { ShowCards } from "@/components/show-cards"
+import { HelpSheet } from "@/components/help-sheet"
 import { TournamentResults } from "@/components/tournament-results"
 import { useSecondsLeft } from "@/lib/use-countdown"
 import { useTableEvents } from "@/lib/use-table-events"
@@ -175,6 +176,7 @@ export function RoomClient({ roomId }: { roomId: string }) {
           </span>
         </div>
         <div className="flex shrink-0 items-center gap-1.5">
+          <HelpSheet />
           {/* On the table, not buried in settings: this gets used with other
               people in the room, and the person who needs it needs it now. */}
           <Button
