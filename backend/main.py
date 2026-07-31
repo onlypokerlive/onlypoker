@@ -99,6 +99,10 @@ AUTO_DEAL_SECONDS = 8
 AUTO_SIT_OUT_TIMEOUTS = 3
 # Heartbeats are written at most this often per player, to keep polling cheap.
 HEARTBEAT_MIN_INTERVAL = 5.0
+# What everybody puts in for a bomb pot, in big blinds. Big enough that the
+# hand is worth the interruption, small enough that a run of them cannot
+# quietly decide the tournament.
+BOMB_POT_BLINDS = 2
 
 
 # --------------------------------------------------------------------------- #
@@ -280,6 +284,11 @@ class CreateRoomBody(BaseModel):
     # Dead money on every hand. "bb" is the modern big-blind ante (one player
     # posts for the table), "all" is the classic one where everybody does.
     anteMode: str = Field(default="off", pattern="^(off|all|bb)$")
+    # Under the gun posts two big blinds and acts last preflop.
+    straddle: bool = False
+    # Blow the hand up every N deals: everybody antes and it starts on the
+    # flop. 0 turns it off.
+    bombPotEvery: int = Field(default=0, ge=0, le=50)
 
 
 class JoinBody(BaseModel):
@@ -327,6 +336,31 @@ def _ante_for(room: dict[str, Any]) -> int:
     if mode == "all":
         return max(1, int(room["bigBlind"]) // 8)
     return 0
+
+
+def _straddle_for(room: dict[str, Any], players: int) -> int:
+    """What under the gun posts blind, or 0 for no straddle.
+
+    Heads-up there is no under the gun — the two seats are already the blinds —
+    so the rule simply does not apply however the host set it.
+    """
+    if not room.get("straddle") or players < 3:
+        return 0
+    return int(room["bigBlind"]) * 2
+
+
+def _bomb_pot_due(room: dict[str, Any], players: int) -> int:
+    """The ante for this hand if it is a bomb pot, else 0.
+
+    Counted on the hand about to be dealt, not the one just finished — the
+    host asked for "every N hands", and the Nth hand is the one that blows up.
+    """
+    every = int(room.get("bombPotEvery") or 0)
+    if not every or players < 2:
+        return 0
+    if (room["handNumber"] + 1) % every:
+        return 0
+    return int(room["bigBlind"]) * BOMB_POT_BLINDS
 
 
 def _level_duration(room: dict[str, Any]) -> int:
@@ -477,26 +511,51 @@ def _start_hand(room: dict[str, Any]) -> None:
     room["buttonId"] = button_id
     hand_ids = _seat_order(button_id, eligible)  # index 0 == small blind
     start_stacks = [room["players"][pid]["chips"] for pid in hand_ids]
-    state = poker.create_hand(
-        start_stacks,
-        room["smallBlind"],
-        room["bigBlind"],
-        ante=_ante_for(room),
-        ante_from_big_blind=room.get("anteMode") == "bb",
-    )
+    bomb = _bomb_pot_due(room, len(hand_ids))
+    straddle = _straddle_for(room, len(hand_ids))
+
+    if bomb:
+        # No preflop to play: everybody is in for the same amount, so nobody
+        # is facing anything. Nothing here is a position.
+        state = poker.create_hand(
+            start_stacks,
+            room["smallBlind"],
+            room["bigBlind"],
+            forced=poker.bomb_pot_forced(len(hand_ids), bomb),
+        )
+        poker.check_around(state)
+        positions = {"sb": -1, "bb": -1, "button": hand_ids.index(button_id)}
+    else:
+        forced = [room["smallBlind"], room["bigBlind"]]
+        if straddle:
+            forced.append(straddle)
+        state = poker.create_hand(
+            start_stacks,
+            room["smallBlind"],
+            room["bigBlind"],
+            ante=_ante_for(room),
+            ante_from_big_blind=room.get("anteMode") == "bb",
+            forced=forced,
+        )
+        positions = {
+            "sb": 0,
+            "bb": 1,
+            "button": hand_ids.index(button_id),
+            # Under the gun posts blind and acts last preflop. Only meaningful
+            # when a straddle is in play, hence -1 the rest of the time.
+            "straddle": 2 if straddle else -1,
+        }
 
     room["handPlayerIds"] = hand_ids
     room["handStartStacks"] = start_stacks
+    room["bombPot"] = bool(bomb)
     # Positions are known from the order we just built — the small blind is
     # whoever we put first — so they are recorded, not deduced. Reading them
-    # back off the posted bets only works while the blinds are the only forced
-    # bets on the table, which stops being true the moment a straddle or a bomb
-    # pot ante shows up.
-    room["positions"] = {
-        "sb": 0,
-        "bb": 1,
-        "button": hand_ids.index(button_id),
-    }
+    # back off the posted bets only worked while the blinds were the only
+    # forced bets on the table, which a straddle and a bomb pot both break:
+    # deduction calls the straddler the big blind, and a bomb pot has no
+    # blinds at all to deduce from.
+    room["positions"] = positions
     # Seat indices (within handPlayerIds) of players who folded this hand.
     # Tracked explicitly because pokerkit clears every player's status once the
     # hand ends, so the final state can't distinguish a fold from a showdown
@@ -733,6 +792,8 @@ def _build_view(room: dict[str, Any], viewer_id: str | None) -> dict[str, Any]:
         street = poker.street_name(state)
         pos = room.get("positions") or poker.initial_positions(state)
         sb_i, bb_i, button_i = pos["sb"], pos["bb"], pos["button"]
+        # -1 when the rule is not in play, which no seat index can ever be.
+        straddle_i = pos.get("straddle", -1)
         actor_i = state.actor_index
         if actor_i is not None:
             actor_id = hand_ids[actor_i]
@@ -777,6 +838,7 @@ def _build_view(room: dict[str, Any], viewer_id: str | None) -> dict[str, Any]:
                 "isButton": i == button_i,
                 "isSmallBlind": i == sb_i,
                 "isBigBlind": i == bb_i,
+                "isStraddle": i == straddle_i,
                 # A folded hand still has cards to turn over if its owner wants
                 # the credit, so the count follows what is on the table rather
                 # than whether they are still in it.
@@ -812,6 +874,7 @@ def _build_view(room: dict[str, Any], viewer_id: str | None) -> dict[str, Any]:
             "isButton": False,
             "isSmallBlind": False,
             "isBigBlind": False,
+            "isStraddle": False,
             "cardsCount": 0,
             "cards": None,
             "timedOut": False,
@@ -842,6 +905,10 @@ def _build_view(room: dict[str, Any], viewer_id: str | None) -> dict[str, Any]:
             "actionSeconds": int(room.get("actionSeconds") or 0),
             "anteMode": room.get("anteMode", "off"),
             "ante": _ante_for(room),
+            "straddle": bool(room.get("straddle")),
+            "bombPotEvery": int(room.get("bombPotEvery") or 0),
+            # Whether the hand on the table right now is a bomb pot.
+            "bombPot": bool(room.get("bombPot")),
             "levelMinutes": int(room.get("levelMinutes") or 0),
             "autoDealSeconds": int(room.get("autoDealSeconds") or 0),
             "autoDealPaused": bool(room.get("autoDealPaused")),
@@ -942,6 +1009,8 @@ async def create_room(body: CreateRoomBody) -> dict[str, Any]:
         "levelStartedAt": None,
         "actionSeconds": body.actionSeconds,
         "anteMode": body.anteMode,
+        "straddle": body.straddle,
+        "bombPotEvery": body.bombPotEvery,
         "actionDeadline": None,
         "autoDealSeconds": AUTO_DEAL_SECONDS,
         "autoDealAt": None,

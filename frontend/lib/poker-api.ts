@@ -20,6 +20,8 @@ export interface PlayerView {
   isButton: boolean
   isSmallBlind: boolean
   isBigBlind: boolean
+  /** Posted two big blinds under the gun and acts last preflop. */
+  isStraddle: boolean
   cardsCount: number
   /**
    * The hand as this viewer is allowed to see it, or null for nothing at all.
@@ -109,6 +111,13 @@ export interface RoomView {
     autoDealSeconds: number
     /** The host stopped automatic dealing. */
     autoDealPaused: boolean
+    /** Dead money each hand, already scaled to this level. */
+    ante: number
+    anteMode: 'off' | 'bb' | 'all'
+    straddle: boolean
+    bombPotEvery: number
+    /** The hand on the table right now is a bomb pot. */
+    bombPot: boolean
   }
   players: PlayerView[]
   board: string[]
@@ -153,6 +162,8 @@ export interface GameView {
   levelMinutes: number
   autoDealSeconds: number
   autoDealPaused: boolean
+  ante: number
+  bombPot: boolean
   players: PlayerView[]
   board: string[]
   pot: number
@@ -234,6 +245,8 @@ export function toGameView(v: RoomView, playerId: string | null): GameView {
     levelMinutes: v.room.levelMinutes,
     autoDealSeconds: v.room.autoDealSeconds,
     autoDealPaused: v.room.autoDealPaused,
+    ante: v.room.ante,
+    bombPot: v.room.bombPot,
     players,
     board: v.board,
     pot: v.pot,
@@ -285,6 +298,10 @@ export interface CreateRoomInput {
   actionSeconds: number
   /** Dead money each hand: none, the big blind posts for everyone, or all do. */
   anteMode: 'off' | 'bb' | 'all'
+  /** Under the gun posts two big blinds and acts last preflop. */
+  straddle: boolean
+  /** Blow the hand up every N deals. 0 turns it off. */
+  bombPotEvery: number
 }
 
 /** Blind structures, as a choice of how fast the night should go. */

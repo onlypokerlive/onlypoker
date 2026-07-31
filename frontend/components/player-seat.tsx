@@ -112,6 +112,9 @@ export function PlayerSeat({
         {player.isBigBlind && (
           <span className={cn(STATUS_CHIP, "bg-secondary text-secondary-foreground")}>BB</span>
         )}
+        {player.isStraddle && (
+          <span className={cn(STATUS_CHIP, "bg-accent text-accent-foreground")}>STR</span>
+        )}
         {player.allIn && (
           <span className={cn(STATUS_CHIP, "bg-destructive text-destructive-foreground")}>
             All-in

@@ -38,6 +38,7 @@ def create_hand(
     big_blind: int,
     ante: int = 0,
     ante_from_big_blind: bool = False,
+    forced: list[int] | None = None,
 ):
     """Create a fresh hand. ``starting_stacks`` is in seat order where index 0
     is the small blind, index 1 the big blind, and the final index the button
@@ -48,6 +49,10 @@ def create_hand(
     fiddling. It needs ``ante_trimming_status=False`` — trimming exists to
     equalise antes across players, so with it on a one-player ante is trimmed
     to nothing and silently never posted at all.
+
+    ``forced`` replaces the blinds outright, in seat order. That is how a
+    straddle is expressed (``sb, bb, straddle``) and how a bomb pot is
+    (the same amount for everybody).
     """
     if ante and ante_from_big_blind:
         raw_antes: Any = {1: ante}  # index 1 is the big blind, by construction
@@ -57,11 +62,41 @@ def create_hand(
         automations=_AUTOMATIONS,
         ante_trimming_status=not (ante and ante_from_big_blind),
         raw_antes=raw_antes,
-        raw_blinds_or_straddles=(small_blind, big_blind),
+        raw_blinds_or_straddles=tuple(forced) if forced else (small_blind, big_blind),
+        # What a bet has to be worth from the flop on. It stays the big blind
+        # even when the forced bets are larger, so a bomb pot does not also
+        # raise the price of every bet after it.
         min_bet=big_blind,
         raw_starting_stacks=tuple(starting_stacks),
         player_count=len(starting_stacks),
     )
+
+
+def bomb_pot_forced(players: int, ante: int) -> list[int]:
+    """Everyone in for the same amount, which is what a bomb pot is.
+
+    pokerkit has no "start on the flop", but it does not need one: posting an
+    equal forced bet for every seat leaves nobody facing anything preflop, so
+    checking that round around costs no chips and lands straight on the flop.
+    """
+    return [ante] * players
+
+
+def check_around(state) -> None:
+    """Close a betting round where nobody owes anything.
+
+    Only safe when every player is already in for the same amount — the bomb
+    pot. Called before the hand is ever saved, so no client sees the phantom
+    preflop round it passes through.
+    """
+    guard = 0
+    while state.status and state.street_index == 0 and state.actor_index is not None:
+        if state.checking_or_calling_amount:
+            raise ActionError("check_around called on a round with money owed")
+        state.check_or_call()
+        guard += 1
+        if guard > 64:  # a table cannot be this big; refuse to spin
+            raise ActionError("check_around did not converge")
 
 
 def initial_positions(state) -> dict[str, int]:

@@ -863,6 +863,95 @@ def test_showdown_flag_is_false_while_a_hand_is_running(client, clock):
 
 
 # --------------------------------------------------------------------------- #
+# House rules: straddle and bomb pots
+# --------------------------------------------------------------------------- #
+def test_the_straddle_posts_blind_and_acts_last(client, clock):
+    """Two big blinds from under the gun, and the action starts past them."""
+    room_id, ids = table(client, 4, straddle=True)
+    start(client, room_id, ids[0])
+    room = client.portal.call(main.load_room, room_id)
+    view = state(client, room_id, ids[0])
+    seats = {p["id"]: p for p in view["players"]}
+
+    sb, bb, utg, button = [seats[pid] for pid in room["handPlayerIds"]]
+    assert (sb["bet"], bb["bet"], utg["bet"]) == (5, 10, 20)
+    assert utg["isStraddle"] is True
+    # The straddler bought the last word preflop, so the button opens.
+    assert view["actorId"] == button["id"]
+
+
+def test_the_straddler_is_not_mistaken_for_the_big_blind(client, clock):
+    """The reason positions stopped being deduced from the posted bets.
+
+    Reading them back off the table takes the largest forced bet for the big
+    blind, which with a straddle is simply wrong — and it is wrong on screen,
+    on every seat badge at the table.
+    """
+    room_id, ids = table(client, 4, straddle=True)
+    start(client, room_id, ids[0])
+    room = client.portal.call(main.load_room, room_id)
+    seats = {p["id"]: p for p in state(client, room_id, ids[0])["players"]}
+    straddler = seats[room["handPlayerIds"][2]]
+    assert straddler["isBigBlind"] is False
+    assert seats[room["handPlayerIds"][1]]["isBigBlind"] is True
+    # And the old deduction really would have got it wrong.
+    engine_guess = main.poker.initial_positions(main.poker.loads(room["stateB64"]))
+    assert engine_guess["bb"] != room["positions"]["bb"]
+
+
+def test_heads_up_has_no_straddle_to_post(client, clock):
+    """Both seats are already blinds; there is no under the gun to be."""
+    room_id, ids = table(client, 2, straddle=True)
+    start(client, room_id, ids[0])
+    bets = sorted(p["bet"] for p in state(client, room_id, ids[0])["players"])
+    assert bets == [5, 10]
+
+
+def test_a_bomb_pot_skips_preflop_and_starts_on_the_flop(client, clock):
+    room_id, ids = table(client, 3, bombPotEvery=1, actionSeconds=0, levelMinutes=0)
+    start(client, room_id, ids[0])
+    view = state(client, room_id, ids[0])
+
+    assert view["room"]["bombPot"] is True
+    assert len(view["board"]) == 3          # straight to the flop
+    assert view["street"] == "flop"
+    assert view["pot"] == 3 * 10 * main.BOMB_POT_BLINDS
+    assert all(p["chips"] == 1000 - 10 * main.BOMB_POT_BLINDS for p in view["players"])
+    # Everyone paid the same, so nobody is a blind.
+    assert not any(p["isSmallBlind"] or p["isBigBlind"] for p in view["players"])
+    assert chips_in_play(client, room_id) == 3000
+
+
+def test_nobody_ever_sees_the_phantom_preflop_of_a_bomb_pot(client, clock):
+    """It is checked around inside _start_hand, before the room is ever saved."""
+    room_id, ids = table(client, 3, bombPotEvery=1, actionSeconds=0, levelMinutes=0)
+    start(client, room_id, ids[0])
+    room = client.portal.call(main.load_room, room_id)
+    # The very first stored state of the hand is already on the flop.
+    assert len(main.poker.board_cards(main.poker.loads(room["stateB64"]))) == 3
+
+
+def test_bomb_pots_land_on_the_hands_the_host_asked_for(client, clock):
+    room_id, ids = table(client, 3, bombPotEvery=3, actionSeconds=0, levelMinutes=0)
+    seen = []
+    for _ in range(6):
+        start(client, room_id, ids[0])
+        room = client.portal.call(main.load_room, room_id)
+        seen.append((room["handNumber"], room["bombPot"]))
+        fold_until_hand_over(client, room_id, ids)
+    assert [hand for hand, bomb in seen if bomb] == [3, 6]
+
+
+def test_a_bomb_pot_still_plays_out_normally_after_the_flop(client, clock):
+    room_id, ids = table(client, 3, bombPotEvery=1, actionSeconds=0, levelMinutes=0)
+    start(client, room_id, ids[0])
+    fold_until_hand_over(client, room_id, ids)
+    view = state(client, room_id, ids[0])
+    assert view["room"]["phase"] in ("handover", "finished")
+    assert chips_in_play(client, room_id) == 3000
+
+
+# --------------------------------------------------------------------------- #
 # Antes
 # --------------------------------------------------------------------------- #
 def chips_in_play(client, room_id):
@@ -1188,7 +1277,7 @@ def test_positions_are_recorded_not_deduced(client, clock):
     room_id, ids = table(client, 4)
     start(client, room_id, ids[0])
     room = client.portal.call(main.load_room, room_id)
-    assert room["positions"] == {"sb": 0, "bb": 1, "button": 3}
+    assert room["positions"] == {"sb": 0, "bb": 1, "button": 3, "straddle": -1}
     assert room["handPlayerIds"][3] == room["buttonId"]
 
     view = state(client, room_id, ids[0])

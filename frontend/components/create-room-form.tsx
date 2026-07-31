@@ -22,6 +22,9 @@ const ANTE_MODES = [
   { id: 'all', label: 'Everyone', blurb: 'Every player chips in a small ante each hand. The classic version.' },
 ] as const
 
+/** How often to blow a hand up. Kept to a few sane choices. */
+const BOMB_POT_CHOICES = [0, 10, 20] as const
+
 export function CreateRoomForm() {
   const router = useRouter()
   const [roomName, setRoomName] = useState('Friday Night Poker')
@@ -32,6 +35,8 @@ export function CreateRoomForm() {
   const [levelMinutes, setLevelMinutes] = useState('10')
   const [actionSeconds, setActionSeconds] = useState('20')
   const [anteMode, setAnteMode] = useState<(typeof ANTE_MODES)[number]['id']>('off')
+  const [straddle, setStraddle] = useState(false)
+  const [bombPotEvery, setBombPotEvery] = useState(0)
   const [password, setPassword] = useState('')
   const [error, setError] = useState<string | null>(null)
   const [loading, setLoading] = useState(false)
@@ -66,6 +71,8 @@ export function CreateRoomForm() {
         levelMinutes: minutes,
         actionSeconds: seconds,
         anteMode,
+        straddle,
+        bombPotEvery,
       })
       saveSession(session)
       router.push(`/room/${session.roomId}`)
@@ -214,6 +221,46 @@ export function CreateRoomForm() {
             </FieldDescription>
           </Field>
         </div>
+
+        <Field>
+          <FieldLabel>House rules</FieldLabel>
+          {/* Decided up front, by the host, and never mid-game — these change
+              how a hand is dealt, so they cannot be argued about at the table
+              once the cards are out. */}
+          <div className="flex flex-col gap-2">
+            <Button
+              type="button"
+              variant={straddle ? 'secondary' : 'outline'}
+              onClick={() => setStraddle(!straddle)}
+              className="h-auto justify-start py-2 text-left"
+            >
+              <span className="flex flex-col">
+                <span className="text-sm font-semibold">Straddle</span>
+                <span className="text-[11px] font-normal opacity-70">
+                  Under the gun pays two big blinds and gets the last word before the flop.
+                </span>
+              </span>
+            </Button>
+            <div className="flex items-center gap-2">
+              {BOMB_POT_CHOICES.map((n) => (
+                <Button
+                  key={n}
+                  type="button"
+                  variant={bombPotEvery === n ? 'secondary' : 'outline'}
+                  onClick={() => setBombPotEvery(n)}
+                  className="flex-1"
+                >
+                  {n === 0 ? 'No bomb pots' : `Every ${n}`}
+                </Button>
+              ))}
+            </div>
+          </div>
+          <FieldDescription>
+            {bombPotEvery
+              ? `Every ${bombPotEvery} hands nobody gets a preflop: everyone antes and the flop comes straight out.`
+              : 'Bomb pots are off.'}
+          </FieldDescription>
+        </Field>
 
         <Field>
           <FieldLabel htmlFor="password">Room password</FieldLabel>

@@ -177,6 +177,12 @@ export function RoomClient({ roomId }: { roomId: string }) {
           <h1 className="font-serif text-lg font-bold leading-tight text-foreground">{view.roomName}</h1>
           <span className="text-xs text-muted-foreground">
             {view.handNumber > 0 ? `Hand #${view.handNumber}` : "Not started"}
+            {/* A hand nobody chose to play needs saying, or the missing
+                preflop reads as the app having skipped a turn. */}
+            {view.bombPot && <span className="ml-2 font-bold text-accent">BOMB POT</span>}
+            {view.ante > 0 && !view.bombPot && (
+              <span className="ml-2">ante {view.ante.toLocaleString()}</span>
+            )}
             {error && <span className="ml-2 text-destructive">{error}</span>}
           </span>
         </div>
