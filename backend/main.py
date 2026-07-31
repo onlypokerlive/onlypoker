@@ -686,19 +686,29 @@ def _pay_seven_deuce(room: dict[str, Any]) -> None:
         return
 
 
-def _seven_deuce_pending(room: dict[str, Any]) -> bool:
-    """A 7-2 bonus is sitting there unclaimed, waiting on cards being shown."""
+def _seven_deuce_pending(room: dict[str, Any], viewer_id: str | None) -> bool:
+    """Whether *this viewer* has an unclaimed 7-2 bonus waiting on their cards.
+
+    Deliberately per-viewer, and that is the whole point rather than a detail.
+    Telling the table a bonus is pending tells the table the winner is holding
+    seven-deuce — before they have decided whether to show it. The rule only
+    means anything because that decision is theirs: prove the bluff and take
+    the money, or keep the secret and let it go. Broadcasting it makes the
+    choice for them.
+    """
     if not int(room.get("sevenDeuce") or 0) or room.get("sevenDeucePaid"):
         return False
-    if room.get("phase") != "handover":
+    if room.get("phase") != "handover" or viewer_id is None:
         return False
     hand_ids = room.get("handPlayerIds") or []
     holes = room.get("handHoleCards") or []
+    if viewer_id not in hand_ids:
+        return False
+    seat = hand_ids.index(viewer_id)
+    if seat >= len(holes) or not _is_seven_deuce(holes[seat]):
+        return False
     winners = {r["playerId"] for r in room.get("lastResults", []) if r["delta"] > 0}
-    return any(
-        pid in winners and seat < len(holes) and _is_seven_deuce(holes[seat])
-        for seat, pid in enumerate(hand_ids)
-    )
+    return viewer_id in winners
 
 
 def _record_busts(room: dict[str, Any]) -> None:
@@ -1023,7 +1033,7 @@ def _build_view(room: dict[str, Any], viewer_id: str | None) -> dict[str, Any]:
         # Who collected the 7-2 bonus this hand, and what it came to.
         "sevenDeuceWin": room.get("sevenDeuceWin"),
         # The bonus is there for the taking but the cards are still down.
-        "sevenDeucePending": _seven_deuce_pending(room),
+        "sevenDeucePending": _seven_deuce_pending(room, viewer_id),
         "level": _level_view(room, now),
         # Every clock is an absolute server timestamp; the client subtracts
         # serverTime to stay correct even when a device's clock is off.

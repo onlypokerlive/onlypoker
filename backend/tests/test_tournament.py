@@ -1026,6 +1026,76 @@ def test_the_rule_is_off_unless_the_host_turns_it_on(client, clock):
     assert view["sevenDeucePending"] is False
 
 
+def test_an_unclaimed_seven_deuce_is_never_broadcast(client, clock):
+    """Telling the table a bonus is pending tells them what the winner holds.
+
+    The rule only means anything because showing is a decision: prove the
+    bluff and take the money, or keep the secret and let it go. A flag every
+    seat can see makes that choice for them before they make it.
+    """
+    room_id, ids = table(client, 3, sevenDeuce=2, actionSeconds=0, levelMinutes=0)
+    start(client, room_id, ids[0])
+    room = client.portal.call(main.load_room, room_id)
+    seat = len(room["handPlayerIds"]) - 1
+    rig_hand(client, room_id, seat, ["7h", "2c"])
+    winner = room["handPlayerIds"][seat]
+    fold_everyone_but(client, room_id, winner)
+
+    assert state(client, room_id, winner)["sevenDeucePending"] is True
+    for pid in room["handPlayerIds"]:
+        if pid != winner:
+            assert state(client, room_id, pid)["sevenDeucePending"] is False
+    # And not to somebody watching from behind the table either.
+    viewer = watch(client, room_id).json()["playerId"]
+    assert state(client, room_id, viewer)["sevenDeucePending"] is False
+
+
+def test_a_bomb_pot_replaces_the_ante_rather_than_stacking_on_it(client, clock):
+    """Both configured is a real combination, and it needs one answer.
+
+    A bomb pot already puts everybody in for the same amount, so charging an
+    ante on top would be two forced bets for one hand. The bomb wins.
+    """
+    room_id, ids = table(
+        client, 3, bombPotEvery=1, anteMode="bb", actionSeconds=0, levelMinutes=0
+    )
+    start(client, room_id, ids[0])
+    view = state(client, room_id, ids[0])
+    assert view["pot"] == 3 * 10 * main.BOMB_POT_BLINDS
+    assert all(p["chips"] == 1000 - 10 * main.BOMB_POT_BLINDS for p in view["players"])
+
+
+def test_a_stack_too_short_for_the_bomb_ante_goes_all_in_for_it(client, clock):
+    room_id, ids = table(client, 3, bombPotEvery=1, actionSeconds=0, levelMinutes=0)
+    room = client.portal.call(main.load_room, room_id)
+    room["players"][ids[1]]["chips"] = 7  # the bomb ante is 20
+    client.portal.call(main.save_room, room)
+    start(client, room_id, ids[0])
+
+    view = state(client, room_id, ids[0])
+    assert view["street"] == "flop"
+    assert len(view["board"]) == 3
+    assert chips_in_play(client, room_id) == 2007
+
+
+def test_a_stack_too_short_for_the_straddle_goes_all_in_for_it(client, clock):
+    room_id, ids = table(client, 3, straddle=True, actionSeconds=0, levelMinutes=0)
+    room = client.portal.call(main.load_room, room_id)
+    for pid in room["order"]:
+        room["players"][pid]["chips"] = 12  # the straddle is 20
+    client.portal.call(main.save_room, room)
+    start(client, room_id, ids[0])
+    assert chips_in_play(client, room_id) == 36
+
+
+def test_a_heads_up_bomb_pot_still_reaches_the_flop(client, clock):
+    room_id, ids = table(client, 2, bombPotEvery=1, actionSeconds=0, levelMinutes=0)
+    start(client, room_id, ids[0])
+    view = state(client, room_id, ids[0])
+    assert view["street"] == "flop"
+    assert chips_in_play(client, room_id) == 2000
+
+
 @pytest.mark.parametrize(
     "hole, expected",
     [

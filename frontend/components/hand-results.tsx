@@ -40,6 +40,10 @@ export function HandResults({
       <ul className="flex flex-col gap-1 overflow-y-auto">
         {sorted.map((r) => {
           const won = r.delta > 0
+          // They chose to turn cards over after the fact, so "won without
+          // showing" stops being true the moment they do.
+          const turnedOver = !!view.players.find((p) => p.id === r.playerId)?.shownIndices
+            ?.length
           return (
             <li
               key={r.playerId}
@@ -70,7 +74,7 @@ export function HandResults({
               {/* Everyone folded, so the winner never had to show. Say that
                   out loud: an empty space reads like something failed to load,
                   and this is the one line people ask about afterwards. */}
-              {!shown && won && (
+              {!shown && won && !turnedOver && (
                 <span className="text-xs italic text-muted-foreground">
                   Won without showing
                 </span>
