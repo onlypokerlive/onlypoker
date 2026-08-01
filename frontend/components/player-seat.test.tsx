@@ -55,4 +55,25 @@ describe('the position tag', () => {
     seat({ isBigBlind: true, out: true })
     expect(screen.getByText('Out')).toBeInTheDocument()
   })
+
+  it('says somebody is away, even though they are in the hand', () => {
+    // Sitting out no longer takes a player out of the deal — they are dealt
+    // in and blinded like everybody else — so `inHand` is true for them and
+    // the badge used to require it to be false. It never showed.
+    seat({ sittingOut: true, inHand: true })
+    expect(screen.getByText('Sat out')).toBeInTheDocument()
+  })
+
+  it('keeps saying it once the table has folded their hand for them', () => {
+    // Which happens within a second of every deal. Folding is already drawn by
+    // the seat fading; being away had nothing else to say it.
+    seat({ sittingOut: true, inHand: true, folded: true })
+    expect(screen.getByText('Sat out')).toBeInTheDocument()
+    expect(screen.queryByText('Fold')).not.toBeInTheDocument()
+  })
+
+  it('still lets the blinds through, because nothing else reports them', () => {
+    seat({ sittingOut: true, inHand: true, isBigBlind: true })
+    expect(screen.getByText('BB')).toBeInTheDocument()
+  })
 })

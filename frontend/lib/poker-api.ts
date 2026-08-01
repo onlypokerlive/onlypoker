@@ -69,8 +69,14 @@ export interface PlayerView {
   /** Sat out by the shot clock rather than by choice. */
   autoSatOut: boolean
   /**
-   * Whether benching them would still leave a table that can deal. False
-   * heads-up, where sitting out would strand the tournament.
+   * Whether benching them would still leave a table that can deal.
+   *
+   * Always true today, and worth keeping as a field rather than dropping. It
+   * used to be false heads-up, because sitting somebody out took them out of
+   * the deal and left one player with nothing to play against. An absent
+   * player is now dealt in and blinded like everybody else, so the table can
+   * always keep going — but "can this player step away" is a question the
+   * server answers, and the button asks it rather than assuming.
    */
   canSitOut: boolean
   /** Said goodbye, and goes as soon as this hand is settled. */

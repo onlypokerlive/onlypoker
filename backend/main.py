@@ -984,12 +984,40 @@ def _start_break(room: dict[str, Any], now: float) -> None:
 # Engine / hand orchestration
 # --------------------------------------------------------------------------- #
 def _eligible_player_ids(room: dict[str, Any]) -> list[str]:
-    return [
-        pid
-        for pid in room["order"]
-        if room["players"][pid]["chips"] > 0
-        and not room["players"][pid].get("sittingOut")
-    ]
+    """Everybody still in the tournament: chips in front of them, dealt in.
+
+    Sitting out is **not** on this list, and that is the rule rather than an
+    oversight. It used to be: somebody who sat out was skipped by the deal
+    entirely, so they paid no blinds and no antes while everybody else did —
+    which makes stepping away the cheapest move at the table. Wait out a level
+    from the sofa and come back with the same stack everybody else has been
+    paying for. The bigger the blinds, the better it gets.
+
+    So sitting out means being *away from the table*, not out of the hand. You
+    are dealt in, you post, and your hand is played out the way an absent
+    player's is: checked when it is free and folded when it costs — see
+    `_run_away`. Which is what happens in a real tournament, and it is why
+    people come back from dinner.
+    """
+    return [pid for pid in room["order"] if room["players"][pid]["chips"] > 0]
+
+
+def _anyone_at_the_table(room: dict[str, Any]) -> bool:
+    """Whether a single player with chips is actually here.
+
+    The one thing the rule above needs a brake for. Blinding an absent player
+    down is right while there is a table to be absent *from*; dealing hand
+    after hand to a room where everybody has stepped away is the app playing a
+    tournament by itself and handing the result to whoever comes back first.
+    Nobody gains — they are all being blinded equally — so nothing is lost by
+    waiting, and an evening is not.
+
+    The appointment stays set rather than being cancelled, so the first person
+    back finds a hand already due.
+    """
+    return any(
+        not room["players"][pid].get("sittingOut") for pid in _eligible_player_ids(room)
+    )
 
 
 def _save_state(room: dict[str, Any], state) -> None:
@@ -1114,18 +1142,25 @@ def _set_action_deadline(room: dict[str, Any], state, now: float) -> None:
 
 
 def _can_sit_out(room: dict[str, Any], player: dict[str, Any]) -> bool:
-    """Whether benching this player still leaves a playable table.
+    """Whether benching this player still leaves a playable table. Always.
 
-    Heads-up, sitting the absent player out would leave one eligible player and
-    two positive stacks: the tournament can neither deal nor declare a winner,
-    and it hangs forever. Leaving them in is also the truer outcome — the blinds
-    eat their stack and they bust out, exactly as they would in a real
-    tournament for walking away from the table.
+    It did not use to. Sitting out removed a player from the deal, so doing it
+    heads-up left one eligible player and two live stacks: the tournament could
+    neither deal nor declare a winner, and it hung there. This function existed
+    to refuse that, and the refusal was awkward to explain to somebody who
+    simply wanted to step away.
+
+    Now that an absent player is dealt in and blinded like everybody else, the
+    case cannot arise — the table always has the same number of hands in it —
+    and the outcome the old docstring called the truer one is what happens at
+    every seat rather than only heads-up: the blinds eat their stack and they
+    bust out, exactly as they would for walking away from a real table.
+
+    Kept as a function, and called where it was called, because "can this
+    player sit out" is a question the client asks and the answer wants one
+    place to live if it ever stops being yes.
     """
-    remaining = [
-        pid for pid in _eligible_player_ids(room) if pid != player.get("id")
-    ]
-    return len(remaining) >= 2
+    return True
 
 
 def _hand_was_shown_down(room: dict[str, Any]) -> bool:
@@ -2054,8 +2089,15 @@ def _scheduled_clock(room: dict[str, Any]) -> float | None:
 
 
 def _scheduled_deal(room: dict[str, Any]) -> float | None:
-    """When the next hand deals itself."""
+    """When the next hand deals itself.
+
+    Not while the room is empty of anybody actually present — see
+    `_anyone_at_the_table`. The appointment is left standing rather than
+    cancelled, so the first person back finds a hand already due.
+    """
     if room.get("phase") != "handover" or _is_paused(room):
+        return None
+    if not _anyone_at_the_table(room):
         return None
     return room.get("autoDealAt") or None
 
@@ -2077,19 +2119,25 @@ def _scheduled_break_end(room: dict[str, Any]) -> float | None:
     return room.get("breakUntil") or None
 
 
-def _scheduled_leaver(room: dict[str, Any]) -> float | None:
-    """Whether somebody who has already left is holding up the hand.
+def _scheduled_away(room: dict[str, Any]) -> float | None:
+    """Whether somebody who is not at the table is holding up the hand.
 
-    Due immediately, not on the shot clock: they said goodbye, so making the
-    table wait twenty seconds for a decision nobody is going to make is the
-    thing this exists to avoid.
+    Two ways to not be there and one answer to both: they said goodbye
+    (``leaving``), or they stepped away (``sittingOut``). Their chips are still
+    in the hand either way — that is the whole point of dealing an absent
+    player in — but nobody is going to make the decision, so the hand should
+    not stop and ask.
+
+    Due immediately, not on the shot clock: making the table wait twenty
+    seconds for an answer that is not coming is the thing this exists to avoid.
     """
     if room.get("phase") != "hand" or not room.get("stateB64"):
         return None
     actor = room.get("actorId")
     if actor is None:
         return None
-    return 0.0 if room["players"].get(actor, {}).get("leaving") else None
+    player = room["players"].get(actor, {})
+    return 0.0 if player.get("leaving") or player.get("sittingOut") else None
 
 
 def _scheduled_preaction(room: dict[str, Any]) -> float | None:
@@ -2120,8 +2168,8 @@ def _run_clock(room: dict[str, Any]) -> bool:
     return _apply_timeouts(room) is not None
 
 
-def _run_leaver(room: dict[str, Any]) -> bool:
-    """Play out the hand for somebody who has gone.
+def _run_away(room: dict[str, Any]) -> bool:
+    """Play out the hand for somebody who is not there.
 
     Checking when it is free and folding when it is not — the same rule the
     shot clock uses, because it is the same situation and any other rule would
@@ -2129,24 +2177,44 @@ def _run_leaver(room: dict[str, Any]) -> bool:
     not let a player fold a hand they can see the next card of for nothing,
     which is why this cannot simply fold every time. It runs at once rather
     than on the clock, so the rest of the table is not kept waiting.
+
+    The blinds are already posted by the time this runs, and they stay posted.
+    That is the point of it: an absent player pays for their seat.
+
+    Keeps going while the seat to act is still an empty one, which is not the
+    one-per-request rule the rest of this schedule follows — and it has to be.
+    An absent player can be asked twice in a row: heads-up the big blind takes
+    their option, the street turns, and out of position they are first to speak
+    again. Answering one of those per poll left the whole table waiting a second
+    and a bit for a seat nobody was sitting in, and a table with several people
+    away spent a poll on each of them. Bounded at one time round, so a request
+    carries a street and never a whole hand.
     """
     state = poker.loads(room["stateB64"])
-    if poker.is_hand_over(state) or state.actor_index is None:
+    acted = False
+    for _ in range(len(room.get("handPlayerIds") or [])):
+        if poker.is_hand_over(state) or state.actor_index is None:
+            break
+        seat = state.actor_index
+        who = room["players"].get((room.get("handPlayerIds") or [None] * 9)[seat])
+        if not who or not (who.get("leaving") or who.get("sittingOut")):
+            break
+        legal = poker.legal_actions(state)
+        action = "call" if legal["canCheckOrCall"] and not legal["callAmount"] else "fold"
+        if action == "fold" and not legal["canFold"]:
+            action = "call"
+        before = _action_mark(state)
+        poker.apply_action(state, action)
+        # Nobody is sitting there: this is the table playing out a hand for
+        # somebody who is not at it, which is not the same moment as a decision.
+        _record_action(room, before, state, auto=True)
+        if action == "fold":
+            folded = room.setdefault("foldedSeats", [])
+            if seat not in folded:
+                folded.append(seat)
+        acted = True
+    if not acted:
         return False
-    seat = state.actor_index
-    legal = poker.legal_actions(state)
-    action = "call" if legal["canCheckOrCall"] and not legal["callAmount"] else "fold"
-    if action == "fold" and not legal["canFold"]:
-        action = "call"
-    before = _action_mark(state)
-    poker.apply_action(state, action)
-    # Nobody is sitting there: this is the table playing out a hand for
-    # somebody who said goodbye, which is not the same moment as a decision.
-    _record_action(room, before, state, auto=True)
-    if action == "fold":
-        folded = room.setdefault("foldedSeats", [])
-        if seat not in folded:
-            folded.append(seat)
     _save_state(room, state)
     if poker.is_hand_over(state):
         _settle_hand(room, state)
@@ -2302,7 +2370,8 @@ def _run_deal(room: dict[str, Any]) -> bool:
 # for it.
 _SCHEDULE = (
     ("break", _scheduled_break_end, _run_break_end),
-    ("leaver", _scheduled_leaver, _run_leaver),
+    # Two ways to not be at the table, one answer. See `_scheduled_away`.
+    ("away", _scheduled_away, _run_away),
     # Before the clock, deliberately: a player who has already decided is not
     # out of time, and running the clock first would fold a hand they told us
     # they wanted to play.

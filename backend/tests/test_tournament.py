@@ -873,62 +873,233 @@ def test_the_last_strike_is_what_sits_them_out(client, clock):
     assert benched["autoSatOut"] is True
 
 
-def test_heads_up_is_never_benched_into_a_dead_table(client, clock):
-    """Benching one of two players leaves a table that can't deal or finish.
+def test_walking_away_heads_up_costs_the_blinds_and_not_the_table(client, clock):
+    """Benching used to deadlock a heads-up table. Now it just costs money.
 
-    They keep their seat instead and the blinds take the stack, which is what
-    walking away from a real tournament costs you.
+    Sitting somebody out removed them from the deal, so heads-up it left one
+    eligible player and two live stacks: nothing to deal, nobody to crown. The
+    old answer was to refuse to bench them at all. The real answer is that
+    being away from the table does not take you out of the hand — you are dealt
+    in and the blinds take the stack, which is what walking away from a real
+    tournament costs you.
     """
-    room_id, ids = table(client, 2, levelMinutes=0)
+    # Four big blinds each, so the blinds get where they are going in a few
+    # hands rather than fifty. Nothing else about this depends on the size.
+    room_id, ids = table(
+        client, 2, smallBlind=50, bigBlind=100, startingChips=400, levelMinutes=0
+    )
     start(client, room_id, ids[0])
 
-    for _ in range(30):
-        clock.advance(25)
+    # One of them is here and playing; the other never answers. Both walking
+    # away is a different case — see the test below — and would stop the deal.
+    benched = False
+    for _ in range(200):
         view = state(client, room_id, ids[0])
-        if view["room"]["phase"] == "handover":
-            clock.advance(main.AUTO_DEAL_SECONDS + 1)
-            view = state(client, room_id, ids[0])
-        if view["room"]["phase"] == "finished":
+        benched = benched or any(p["autoSatOut"] for p in view["players"])
+        phase = view["room"]["phase"]
+        if phase == "finished":
             break
-        assert not any(p["autoSatOut"] for p in view["players"]), (
-            "a heads-up player was benched, which deadlocks the tournament"
-        )
+        if phase == "handover" or not view["actorId"]:
+            clock.advance(main.HANDOVER_MAX_SECONDS + 1)
+        elif view["actorId"] == ids[0]:
+            act(client, room_id, ids[0], "call")
+        else:
+            clock.advance(30)  # nobody there to answer
 
-    # Either still playing or someone got blinded out — never stuck.
     view = state(client, room_id, ids[0])
-    assert view["room"]["phase"] in ("hand", "handover", "finished")
-    if view["room"]["phase"] == "handover":
-        assert view["autoDealAt"] is not None
+    # The clock benched them, which it used to refuse to do heads-up...
+    assert benched, "the absent player was protected from being benched"
+    # ...and being benched did not save them: they were blinded out, and the
+    # table reached an end rather than hanging with two live stacks.
+    assert view["room"]["phase"] == "finished", "the table hung instead of ending"
+    assert [s["place"] for s in view["standings"]] == [1, 2]
+    assert books_balance(client, room_id)
 
 
-def test_choosing_to_sit_out_cannot_strand_a_heads_up_table(client, clock):
-    """The clock's rule has to bind the button too.
+def test_sitting_out_heads_up_is_allowed_and_still_ends(client, clock):
+    """It used to be refused, because it stranded the table. It no longer does.
 
-    Being benched by the shot clock and choosing to sit out leave exactly the
-    same table behind: one eligible player, two live stacks, nothing that can
-    deal or declare a winner. Only the route was guarded, so the button walked
-    straight past it.
+    Refusing was the right answer to the wrong rule: an absent player was
+    skipped by the deal, so heads-up there was nothing left to deal. Now they
+    are dealt in and blinded, so stepping away is always allowed — and it costs
+    the same thing it costs anywhere else.
     """
-    room_id, ids = table(client, 2, levelMinutes=0)
+    room_id, ids = table(
+        client, 2, smallBlind=50, bigBlind=100, startingChips=400,
+        actionSeconds=0, levelMinutes=0,
+    )
     start(client, room_id, ids[0])
 
+    view = state(client, room_id, ids[1])
+    assert view["you"]["canSitOut"] is True
     res = client.post(
         f"/api/rooms/{room_id}/sit",
         headers=auth(ids[1]),
-        json={"playerId": ids[1], "action": "sit"}
+        json={"playerId": ids[1], "action": "sit"},
     )
-    assert res.status_code == 400
-    assert "without enough" in res.json()["detail"]
+    assert res.status_code == 200
+    assert any(p["sittingOut"] for p in state(client, room_id, ids[0])["players"])
 
-    view = state(client, room_id, ids[0])
-    assert not any(p["sittingOut"] for p in view["players"])
-    # And the UI is told in advance, so the button is disabled rather than
-    # offered and then refused.
-    assert view["you"]["canSitOut"] is False
+    # And the table keeps going without them until it has a winner. The absent
+    # seat is never *waited on*: the schedule answers for it, so it can show as
+    # the actor on the poll that dealt the hand and never on the one after —
+    # which is what `_run_away` is for, and what a shot clock ticking down on an
+    # empty chair would not be.
+    waited = 0
+    worst_wait = 0
+    for _ in range(200):
+        view = state(client, room_id, ids[0])
+        if view["room"]["phase"] == "finished":
+            break
+        if view["room"]["phase"] == "handover" or not view["actorId"]:
+            clock.advance(main.HANDOVER_MAX_SECONDS + 1)
+            continue
+        if view["actorId"] != ids[0]:
+            waited += 1
+            worst_wait = max(worst_wait, waited)
+            continue
+        waited = 0
+        act(client, room_id, ids[0], "call")
+    assert state(client, room_id, ids[0])["room"]["phase"] == "finished"
+    assert worst_wait <= 1, f"the table waited {worst_wait} polls on an empty seat"
+    assert books_balance(client, room_id)
 
-    # The hand still plays out and the table still reaches an end.
+
+def play_hands(client, clock, room_id, ids, hands):
+    """Play `hands` hands out, with whoever is present calling everything.
+
+    Not `fold_until_hand_over`: folding everybody hands the pot to the one
+    player who is not folding, and when that player is the one sitting out the
+    blinds they paid come straight back. A test of what being away costs has to
+    let the people who are there contest the pot.
+
+    Returns how many hands actually finished.
+    """
+    done = 0
+    for _ in range(hands * 30):
+        if done >= hands:
+            break
+        view = state(client, room_id, ids[0])
+        phase = view["room"]["phase"]
+        if phase == "finished":
+            break
+        if phase == "handover":
+            done += 1
+            clock.advance(main.HANDOVER_MAX_SECONDS + 1)
+            continue
+        actor = view["actorId"]
+        if not actor:
+            clock.advance(main.HANDOVER_MAX_SECONDS + 1)
+            continue
+        # Never acted for: the schedule answers for anybody who is not here.
+        if room_players(client, room_id)[actor].get("sittingOut"):
+            continue
+        act(client, room_id, actor, "call")
+    return done
+
+
+def room_players(client, room_id):
+    return client.portal.call(main.load_room, room_id)["players"]
+
+
+def test_sitting_out_does_not_dodge_the_blinds(client, clock):
+    """The whole of it, in one arithmetic.
+
+    Sitting out used to take a player out of the deal, so they posted nothing
+    while everybody else posted — which makes stepping away the cheapest move
+    at the table. Wait out a level from the sofa and come back with the same
+    stack the people who kept playing have been paying for. The bigger the
+    blinds, the better it gets.
+    """
+    room_id, ids = table(
+        client, 3, smallBlind=50, bigBlind=100, startingChips=3000,
+        actionSeconds=0, levelMinutes=0,
+    )
+    away = ids[2]
+    client.post(
+        f"/api/rooms/{room_id}/sit",
+        headers=auth(away),
+        json={"playerId": away, "action": "sit"},
+    )
+    start(client, room_id, ids[0])
+    room = client.portal.call(main.load_room, room_id)
+    # Dealt in, which is the whole of it. Skipped by the deal they pay nothing.
+    assert away in room["handPlayerIds"]
+    before = room["players"][away]["chips"]
+
+    # Six hands the two present players actually contest, so the absent one
+    # folds rather than winning by default. Three-handed, the blinds reach
+    # every seat twice over six hands.
+    played = play_hands(client, clock, room_id, ids, 6)
+    assert played >= 6, f"only got through {played} hands"
+
+    room = client.portal.call(main.load_room, room_id)
+    after = room["players"][away]["chips"]
+    assert after < before, "the absent player paid nothing while everybody else did"
+    # They folded every hand, so what they are down is the blinds that reached
+    # them and never more than that.
+    assert before - after <= 6 * (room["smallBlind"] + room["bigBlind"])
+    assert books_balance(client, room_id)
+
+
+def test_an_absent_player_is_blinded_all_the_way_out(client, clock):
+    """Far enough that it ends: they bust, and the tournament records it.
+
+    Paying the blinds is only the honest rule if it eventually costs the seat.
+    A player who bleeds to zero and then sits there for ever is a table that
+    cannot finish.
+    """
+    room_id, ids = table(
+        client, 3, smallBlind=50, bigBlind=100, startingChips=400,
+        actionSeconds=0, levelMinutes=0,
+    )
+    away = ids[2]
+    client.post(
+        f"/api/rooms/{room_id}/sit",
+        headers=auth(away),
+        json={"playerId": away, "action": "sit"},
+    )
+    start(client, room_id, ids[0])
+    play_hands(client, clock, room_id, ids, 20)
+
+    room = client.portal.call(main.load_room, room_id)
+    assert room["players"][away]["chips"] == 0, "the blinds never finished the job"
+    assert away in room["bustOrder"] or room["phase"] == "finished"
+    assert books_balance(client, room_id)
+
+
+def test_a_table_where_everybody_stepped_away_stops_dealing(client, clock):
+    """The brake on the rule above.
+
+    Blinding an absent player down is right while there is a table to be absent
+    from. Dealing hand after hand into an empty room is the app playing the
+    tournament by itself and handing the result to whoever comes back first.
+    The appointment stays set, so the first person back finds a hand due.
+    """
+    room_id, ids = table(client, 3, actionSeconds=0, levelMinutes=0)
+    start(client, room_id, ids[0])
     fold_until_hand_over(client, room_id, ids)
-    assert state(client, room_id, ids[0])["room"]["phase"] in ("handover", "finished")
+    for pid in ids:
+        client.post(
+            f"/api/rooms/{room_id}/sit",
+            headers=auth(pid),
+            json={"playerId": pid, "action": "sit"},
+        )
+
+    room = client.portal.call(main.load_room, room_id)
+    assert room["autoDealAt"] is not None, "the appointment was cancelled, not held"
+    assert main._scheduled_deal(room) is None, "it dealt into an empty room"
+
+    clock.advance(main.HANDOVER_MAX_SECONDS + 10)
+    assert state(client, room_id, ids[0])["room"]["phase"] == "handover"
+
+    # One of them comes back, and the hand that was due is dealt at once.
+    client.post(
+        f"/api/rooms/{room_id}/sit",
+        headers=auth(ids[0]),
+        json={"playerId": ids[0], "action": "in"},
+    )
+    assert state(client, room_id, ids[0])["room"]["phase"] == "hand"
 
 
 def test_sitting_out_stays_available_once_a_third_player_is_seated(client, clock):
@@ -2302,12 +2473,10 @@ def test_after_the_hand_there_is_nothing_to_take_back(client, clock):
 
 def test_somebody_who_was_not_in_the_hand_cannot_show(client, clock):
     room_id, ids = table(client, 3, actionSeconds=0, levelMinutes=0)
-    # Sit one player out so the hand is dealt without them.
-    client.post(
-        f"/api/rooms/{room_id}/sit",
-        headers=auth(ids[2]),
-        json={"playerId": ids[2], "action": "sit"},
-    )
+    # With no chips in front of them they are not dealt in — which is now the
+    # only way to be at the table and out of the hand. Sitting out is not: an
+    # absent player is dealt in and blinded like everybody else.
+    bust(client, room_id, ids[2])
     start(client, room_id, ids[0])
     fold_until_hand_over(client, room_id, ids)
     assert show(client, room_id, ids[2], [0]).status_code == 403

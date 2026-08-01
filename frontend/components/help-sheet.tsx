@@ -31,8 +31,8 @@ const ENTRIES: { title: string; body: string }[] = [
     body: "When it runs out it checks for you if checking is free, and folds you if it is not. Miss three in a row and you are sat out until you come back.",
   },
   {
-    title: "Sitting out",
-    body: "You keep your seat and your chips, and the blinds stop reaching you. Not available heads-up — there would be nobody left to play.",
+    title: "Stepping away",
+    body: "You keep your seat and nobody waits for you — your hand is checked or folded the moment it comes round. The blinds still reach you, the same as at a real table, so a long break costs chips.",
   },
   {
     title: "After the hand",
