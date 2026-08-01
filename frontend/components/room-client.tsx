@@ -66,11 +66,17 @@ export function RoomClient({ roomId }: { roomId: string }) {
       const msg = e instanceof Error ? e.message : "Connection lost"
       setError(msg)
       // A refusal is not a hiccup. The room is gone, or this device is holding
-      // a credential the table no longer accepts — removed by the host, or
-      // saved before the server started asking for one. Retrying that every
-      // 1.2 seconds shows a spinner forever; the way out is the front door.
-      if (e instanceof ApiError && e.isAuthFailure) {
-        clearSession(roomId)
+      // a credential the table no longer accepts — saved before the server
+      // started asking for one, or belonging to a seat that has closed.
+      // Retrying that every 1.2 seconds shows a spinner forever; the way out is
+      // the front door.
+      //
+      // Being removed by the host is the one case where the credential stays.
+      // It is the only thing that tells this device from a stranger's at that
+      // door, and throwing it away is what would turn "you were removed" into
+      // "welcome back" one tap later.
+      if (e instanceof ApiError && (e.isAuthFailure || e.isRemoved)) {
+        if (!e.isRemoved) clearSession(roomId)
         router.replace(e.status === 404 ? "/" : `/join/${roomId}`)
       }
     }
@@ -154,7 +160,6 @@ export function RoomClient({ roomId }: { roomId: string }) {
         roomId,
         session.playerId,
         !view.you?.sittingOut,
-        view.handNumber,
         session.token,
       )
       setView(toGameView(raw, session.playerId))
@@ -167,7 +172,6 @@ export function RoomClient({ roomId }: { roomId: string }) {
         roomId,
         session.playerId,
         action,
-        view.handNumber,
         session.token,
       )
       setView(toGameView(raw, session.playerId))

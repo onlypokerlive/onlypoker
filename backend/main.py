@@ -306,6 +306,24 @@ def _reject_legacy(room: dict[str, Any]) -> None:
         raise fastapi.HTTPException(401, _LEGACY_ROOM)
 
 
+# Answered with 410 rather than 403, everywhere it comes up, and the status is
+# the point rather than tidiness. A device told "no" clears the credential it
+# was refused with and sends the player back to the door — which is right for a
+# key the table no longer knows, and exactly wrong here: the credential is the
+# only thing that tells this device from a stranger's, so throwing it away
+# turns the person who was just removed into a new arrival who knows the
+# password. Gone says the seat existed and is not coming back, which is a thing
+# the client can act on without forgetting who it is.
+_REMOVED = "The host removed you from this table."
+
+
+def _reject_the_removed(room: dict[str, Any], token: str | None) -> None:
+    """Turn away a credential the host has shown the door."""
+    pid = _player_by_token(room, token)
+    if pid and room["players"][pid].get("kicked"):
+        raise fastapi.HTTPException(410, _REMOVED)
+
+
 def _has_seat(player: dict[str, Any] | None) -> bool:
     """Whether this record is still somebody at the table.
 
@@ -324,7 +342,9 @@ def _authenticate(room: dict[str, Any], player_id: str, token: str | None) -> No
     if player is None:
         raise fastapi.HTTPException(404, "That player is not at this table.")
     if not _has_seat(player):
-        raise fastapi.HTTPException(403, "You were removed from this table.")
+        if player.get("kicked"):
+            raise fastapi.HTTPException(410, _REMOVED)
+        raise fastapi.HTTPException(403, "You have left this table.")
     stored = player.get("token")
     if not stored:
         raise fastapi.HTTPException(401, _LEGACY_ROOM)
@@ -362,6 +382,10 @@ def _may_watch(room: dict[str, Any], token: str | None) -> bool:
 
 def _require_access(room: dict[str, Any], token: str | None) -> None:
     _reject_legacy(room)
+    # Before the generic refusal, so the poll that finds out gets an answer it
+    # can act on rather than "this table is private", which is both untrue and
+    # indistinguishable from a key that never worked.
+    _reject_the_removed(room, token)
     if not _may_watch(room, token):
         raise fastapi.HTTPException(403, "This table is private.")
 
@@ -392,8 +416,13 @@ def _free_seat(room: dict[str, Any]) -> int:
     removed) and not one past the highest (seats then climb past the nine this
     table has, and keep climbing with every arrival and departure). The seat
     numbers are a fixed set of chairs; this finds an empty one.
+
+    Records that are only a memory do not hold a chair. Their seat number is
+    still in the record — the standings are read off it — but a table where
+    every player who ever left keeps their seat runs out of them: nine
+    departures and the room is full with two people sitting at it.
     """
-    taken = {p["seat"] for p in room["players"].values()}
+    taken = {p["seat"] for p in room["players"].values() if _has_seat(p)}
     for seat in range(MAX_SEATS):
         if seat not in taken:
             return seat
@@ -416,17 +445,45 @@ def _free_seat(room: dict[str, Any]) -> int:
 # seen is answered rather than replayed. Kept on the room because that is what
 # the lock protects: a receipt in some other store is a receipt that can
 # disagree with the thing it is vouching for.
+#
+# Two things this is deliberately *not* for.
+#
+# It is not for operations that say where the player wants to end up. "Pause",
+# "plan to check", "sit out" are settings, not events: asking twice asks for
+# the same thing, so they need no help being safe to repeat — and a receipt on
+# one of them is worse than useless, because the second time the player
+# genuinely means it (pause, resume, pause again during the same hand) it is
+# the name that has already been seen, and the answer is a cheerful 200 that
+# does nothing. A receipt belongs on the things that *create* or *charge*.
 MAX_RECEIPTS = 32
 
+# Joins keep their own book. Everything else with a receipt is a decision made
+# during a hand, and a nine-handed hand is easily thirty of them — enough to
+# push the one receipt whose loss cannot be put right off the end of a shared
+# list. Every other replay is caught by the state of the room a second time
+# (you cannot rebuy with chips in front of you, or take the add-on twice); a
+# replayed join is a second seat and a second stack for one person, and the
+# first seat is unrecoverable. So it does not queue behind ordinary play.
+MAX_JOIN_RECEIPTS = 32
+_JOINS = "joinReceipts"
 
-def _receipt(room: dict[str, Any], key: str | None) -> dict[str, Any] | None:
+
+def _receipt(
+    room: dict[str, Any], key: str | None, book: str = "receipts"
+) -> dict[str, Any] | None:
     """What this exact request was answered with last time, if it has been."""
     if not key:
         return None
-    return (room.get("receipts") or {}).get(key)
+    return (room.get(book) or {}).get(key)
 
 
-def _keep_receipt(room: dict[str, Any], key: str | None, payload: dict[str, Any]) -> None:
+def _keep_receipt(
+    room: dict[str, Any],
+    key: str | None,
+    payload: dict[str, Any],
+    book: str = "receipts",
+    cap: int = MAX_RECEIPTS,
+) -> None:
     """Record that this request has been carried out.
 
     Bounded on purpose: the room is one document that every poll reads whole,
@@ -436,9 +493,9 @@ def _keep_receipt(room: dict[str, Any], key: str | None, payload: dict[str, Any]
     """
     if not key:
         return
-    receipts = room.setdefault("receipts", {})
+    receipts = room.setdefault(book, {})
     receipts[key] = {"at": time.time(), **payload}
-    while len(receipts) > MAX_RECEIPTS:
+    while len(receipts) > cap:
         oldest = min(receipts, key=lambda k: receipts[k].get("at", 0))
         receipts.pop(oldest, None)
 
@@ -799,16 +856,42 @@ def _anyone_can_still_rebuy(room: dict[str, Any]) -> bool:
     )
 
 
-def _remove_from_table(room: dict[str, Any], player_id: str, withdraw: bool) -> None:
+def _pass_the_host_role(room: dict[str, Any]) -> None:
+    """Give the table's controls to somebody who is still at it.
+
+    Being host is not a label on the room, it is the only credential that can
+    start a hand, stop the table, call the last one and show somebody the door.
+    Walking off with it in your pocket leaves a table that can do none of those
+    — which, once the auto-deal has nothing left to deal, is a room that is
+    over whether or not anybody meant it to be.
+
+    Busting out does not trigger this: they are still at the table, watching,
+    and it is still their room. Only leaving it does.
+    """
+    if _has_seat(room["players"].get(room.get("hostId") or "")):
+        return
+    successor = next(
+        (pid for pid in room["order"] if _has_seat(room["players"].get(pid))), None
+    )
+    if successor:
+        room["hostId"] = successor
+
+
+def _remove_from_table(
+    room: dict[str, Any], player_id: str, withdraw: bool, kicked: bool = False
+) -> None:
     """Take somebody out of the game, keeping the books straight.
 
     Their record stays — the final standings look players up by id, and
     deleting them outright turns the podium into a KeyError — but the seat, the
     chips and the credential all go. ``withdraw`` says whether the stack leaves
     the table with them, which is the difference between going home and being
-    knocked out.
+    knocked out; ``kicked`` whether it was their decision, which is the
+    difference between being able to come back and not.
     """
     player = room["players"][player_id]
+    if kicked:
+        player["kicked"] = True
     if withdraw:
         room["chipsWithdrawn"] = int(room.get("chipsWithdrawn", 0)) + int(
             player["chips"]
@@ -825,6 +908,7 @@ def _remove_from_table(room: dict[str, Any], player_id: str, withdraw: bool) -> 
         # the next deal advances onto the right one.
         room["buttonId"] = _previous_seat(room, player_id)
     room["order"] = [pid for pid in room["order"] if pid != player_id]
+    _pass_the_host_role(room)
 
 
 def _seat_in_order(room: dict[str, Any], player_id: str) -> None:
@@ -1716,14 +1800,19 @@ def _run_break_end(room: dict[str, Any]) -> bool:
 
 def _run_deal(room: dict[str, Any]) -> bool:
     now = time.time()
+    # The end of the night comes before the break, because a table with no hand
+    # left to play has nothing to come back from a break for. The other way
+    # round, the host calls the last hand, it is played, the level ticks over,
+    # and everybody sits looking at a five-minute countdown before being told
+    # who won.
+    if _no_more_hands(room):
+        _finish_tournament(room, by_chips=True)
+        return True
     # A break interrupts the deal rather than the hand: stopping the table
     # between hands is the only version of "back in ten minutes" that does not
     # abandon a half-played pot.
     if _break_due(room, now):
         _start_break(room, now)
-        return True
-    if _no_more_hands(room):
-        _finish_tournament(room, by_chips=True)
         return True
     try:
         _start_hand(room)
@@ -2202,17 +2291,19 @@ async def join_room(
 ) -> dict[str, Any]:
     """Take a seat.
 
-    Three ways this can be called and only one of them creates anything:
+    Four ways this can be called and only one of them creates anything:
 
       * a device that already holds a credential for this table is somebody
         coming back, and gets the seat it already has;
+      * a device holding a credential the host has shown the door is turned
+        away, because otherwise being removed lasts until you press join;
       * a request whose name the room has already answered is a retry after a
         lost response, and gets the same answer again;
       * anything else is a new player, and gets a chair.
 
-    Without the first two, a response lost on the way home costs the retry a
-    second seat — and the first seat is unrecoverable, because the only proof
-    it belonged to anybody went missing with the response.
+    Without the first and third, a response lost on the way home costs the
+    retry a second seat — and the first seat is unrecoverable, because the only
+    proof it belonged to anybody went missing with the response.
     """
     async with _RoomLock(room_id):
         room = await load_room(room_id)
@@ -2232,11 +2323,24 @@ async def join_room(
                 "token": room["players"][returning]["token"],
                 "isHost": returning == room["hostId"],
             }
+        # Removed by the host, and the credential is what says so. The password
+        # is not a second opinion: everyone at the table has it, including the
+        # person who was just asked to leave, so letting a known device back in
+        # on it makes removing anybody a formality that lasts until they press
+        # join again.
+        #
+        # This is as far as it goes, and that is worth being clear about. The
+        # same person on a device the room has never seen is a new player who
+        # knows the password, and nothing here can tell them from a friend who
+        # has just been sent the link; the same is true of watching, which asks
+        # for the password and nothing else. Shutting those doors takes a new
+        # password, which is what a table of friends would reach for anyway.
+        _reject_the_removed(room, x_player_token)
 
         if not _verify_password(body.password, room["passwordHash"]):
             raise fastapi.HTTPException(403, "Incorrect room password.")
 
-        seen = _receipt(room, body.requestId)
+        seen = _receipt(room, body.requestId, _JOINS)
         if seen:
             return {
                 "roomId": room_id,
@@ -2279,7 +2383,13 @@ async def join_room(
         if room["phase"] == "handover" and not room.get("autoDealAt"):
             if len(_eligible_player_ids(room)) >= 2:
                 _arm_auto_deal(room)
-        _keep_receipt(room, body.requestId, {"playerId": player_id, "token": token})
+        _keep_receipt(
+            room,
+            body.requestId,
+            {"playerId": player_id, "token": token},
+            _JOINS,
+            MAX_JOIN_RECEIPTS,
+        )
         await save_room(room)
     return {
         "roomId": room_id,
@@ -2332,18 +2442,23 @@ async def kick_player(
             raise fastapi.HTTPException(400, "This tournament is already over.")
 
         if room["phase"] == "lobby":
-            # Nobody has played a hand, so there is nothing to place them in.
-            # They simply were not here.
+            # Nobody has played a hand, so there is nothing to place them in:
+            # they are kept out of ``order`` and out of the bust list, and the
+            # standings never hear of them. The record itself stays, marked, so
+            # that the door they were shown stays shut behind them.
+            target = room["players"][body.targetId]
             room["chipsWithdrawn"] = int(room.get("chipsWithdrawn", 0)) + int(
-                room["players"][body.targetId]["chips"]
+                target["chips"]
             )
+            target["chips"] = 0
+            target["removed"] = True
+            target["kicked"] = True
             room["order"] = [pid for pid in room["order"] if pid != body.targetId]
-            room["players"].pop(body.targetId, None)
         else:
             # The same door somebody uses to leave of their own accord: the
             # record stays for the podium, the seat and the chips go, and the
             # button steps back rather than being cleared.
-            _remove_from_table(room, body.targetId, withdraw=True)
+            _remove_from_table(room, body.targetId, withdraw=True, kicked=True)
 
         if room["phase"] != "lobby" and len(_eligible_player_ids(room)) < 2:
             _finish_tournament(room)
@@ -2394,6 +2509,7 @@ async def leave_table(
             )
             room["order"] = [pid for pid in room["order"] if pid != body.playerId]
             room["players"].pop(body.playerId, None)
+            _pass_the_host_role(room)
         elif in_the_hand:
             player["leaving"] = True
         else:
@@ -2402,9 +2518,11 @@ async def leave_table(
                 _finish_tournament(room)
         _keep_receipt(room, body.requestId, {})
         await save_room(room)
-        # Built for the host rather than the leaver: the caller may no longer
-        # be anybody this table can show a view to.
-        return _build_view(room, room["hostId"])
+        # Built for the leaver, however little is left of their seat. A view is
+        # somebody's view of the table — it carries whoever it is built for
+        # their own hole cards — so handing this one to the host would deal the
+        # person walking out of the door the host's hand on the way past.
+        return _build_view(room, body.playerId)
 
 
 @app.post("/rooms/{room_id}/rebuy")
@@ -2851,19 +2969,22 @@ async def set_pre_action(
     turn, and only ever until it fires once.
 
     Read the note above ``PRE_ACTIONS`` for why no option here names an amount.
+
+    No receipt: this writes down where the player wants to end up, so sending
+    it twice asks for the same thing and the second one is harmless. A receipt
+    would make it *worse* — a plan that has already fired, or been taken back,
+    and is then set again on a later street of the same hand is the same
+    request by name, and would be answered with a 200 that plans nothing.
     """
     async with _RoomLock(room_id):
         room = await load_room(room_id)
         if not room:
             raise fastapi.HTTPException(404, "Room not found.")
         _authenticate(room, body.playerId, x_player_token)
-        if _receipt(room, body.requestId):
-            return _build_view(room, body.playerId)
         player = room["players"][body.playerId]
 
         if body.action == "clear":
             player.pop("preAction", None)
-            _keep_receipt(room, body.requestId, {})
             await save_room(room)
             return _build_view(room, body.playerId)
 
@@ -2891,7 +3012,6 @@ async def set_pre_action(
             # is what a client sends back to take back the right one.
             "turnId": int(room.get("turnId", 0)),
         }
-        _keep_receipt(room, body.requestId, {})
         await save_room(room)
         return _build_view(room, body.playerId)
 
@@ -2902,7 +3022,18 @@ async def toggle_sit_out(
     body: ActionBody,
     x_player_token: str | None = fastapi.Header(default=None),
 ) -> dict[str, Any]:
-    """Toggle a player's sitting-out status (applies from the next hand)."""
+    """Sit a player out, or bring them back (applies from the next hand).
+
+    ``action`` is ``out`` or ``in`` — where the player wants to end up, not a
+    flip of where they are. A flip is the one shape where a retry is worse than
+    useless: it undoes itself, and the player ends up sitting in when they
+    asked to sit out with nothing on screen explaining why. Saying which side
+    of the table they want to be on makes the request safe to repeat by
+    construction, and safe to *mean* twice, which a receipt cannot manage.
+
+    Anything else is read as the old flip, for a phone that still has the
+    previous version of the page open, and that one keeps its receipt.
+    """
     async with _RoomLock(room_id):
         room = await load_room(room_id)
         if not room:
@@ -2911,12 +3042,10 @@ async def toggle_sit_out(
         p = room["players"].get(body.playerId)
         if not p:
             raise fastapi.HTTPException(404, "Player not found.")
-        # A toggle is the one shape where a retry is worse than useless: it
-        # undoes itself, so the player ends up sitting in when they asked to sit
-        # out and nothing on screen explains why.
-        if _receipt(room, body.requestId):
+        flipping = body.action not in ("out", "in")
+        if flipping and _receipt(room, body.requestId):
             return _build_view(room, body.playerId)
-        going_out = not p.get("sittingOut")
+        going_out = not p.get("sittingOut") if flipping else body.action == "out"
         # The same rule the shot clock obeys when it benches somebody: a table
         # left with one eligible player and two live stacks can neither deal nor
         # crown a winner, and nothing the remaining player does gets it moving
@@ -2942,7 +3071,8 @@ async def toggle_sit_out(
                 and len(_eligible_player_ids(room)) >= 2
             ):
                 _arm_auto_deal(room)
-        _keep_receipt(room, body.requestId, {})
+        if flipping:
+            _keep_receipt(room, body.requestId, {})
         await save_room(room)
         return _build_view(room, body.playerId)
 
@@ -2968,6 +3098,12 @@ async def control_table(
     between hands starts the countdown again from now, rather than from
     whatever was left when it stopped — nobody wants the next hand dealt half a
     second after they sit back down.
+
+    No receipt: all four are settings rather than events, so each one is
+    written to be safe against arriving twice on its own terms. That is the
+    only version that lets a host pause, resume and pause again during the same
+    hand — which a name the room had already seen would answer with a 200 and a
+    table that never stopped.
     """
     async with _RoomLock(room_id):
         room = await load_room(room_id)
@@ -2976,16 +3112,21 @@ async def control_table(
         _authenticate(room, body.playerId, x_player_token)
         if body.playerId != room["hostId"]:
             raise fastapi.HTTPException(403, "Only the host can change this.")
-        if _receipt(room, body.requestId):
-            return _build_view(room, body.playerId)
         now = time.time()
 
         if body.action == "pause":
+            # ``_pause_table`` keeps the moment it stopped at, so a second one
+            # cannot quietly hand the table back the time it has been stopped.
             _pause_table(room, now)
         elif body.action == "resume":
-            _resume_table(room, now)
-            if room["phase"] == "handover":
-                _arm_auto_deal(room)
+            # Only from a stop. Resuming a table that is already going gives
+            # whoever is on the spot a second full shot clock, which is a way
+            # to stall a hand by tapping a button that looks like it does
+            # nothing.
+            if _is_paused(room):
+                _resume_table(room, now)
+                if room["phase"] == "handover":
+                    _arm_auto_deal(room)
         elif body.action == "last-hand":
             if room["phase"] == "finished":
                 raise fastapi.HTTPException(400, "This tournament is already over.")
@@ -2994,9 +3135,15 @@ async def control_table(
             # between hands, there is one more to play — which is what a host
             # saying "last hand" at the table means, and the only reading that
             # does not end the night on a pot nobody knew was the final one.
-            room["lastHandNumber"] = room["handNumber"] + (
-                0 if room["phase"] == "hand" else 1
-            )
+            #
+            # Decided once, too: asked again it is the same answer, rather than
+            # the hand after the one already promised. Otherwise a repeated tap
+            # — or the same tap landing after the hand it was made during has
+            # ended — buys the table an extra hand nobody called for.
+            if room.get("lastHandNumber") is None:
+                room["lastHandNumber"] = room["handNumber"] + (
+                    0 if room["phase"] == "hand" else 1
+                )
             room["lastHand"] = True
         elif body.action == "keep-playing":
             if room["phase"] == "finished":
@@ -3010,7 +3157,6 @@ async def control_table(
 
         if room["phase"] != "handover":
             room["autoDealAt"] = None
-        _keep_receipt(room, body.requestId, {})
         await save_room(room)
         return _build_view(room, body.playerId)
 

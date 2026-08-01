@@ -1608,6 +1608,86 @@ def test_a_seat_freed_in_the_lobby_is_handed_to_the_next_arrival(client, clock):
     )
 
 
+def test_being_shown_the_door_is_not_undone_by_pressing_join(client, clock):
+    """Otherwise removing somebody lasts until they tap the button again.
+
+    The password is no help here: everybody at the table has it, including the
+    person who was just asked to leave. The credential is the only thing that
+    tells that device from a stranger's, so it is the thing that has to be
+    turned away.
+    """
+    room_id, ids = table(client, 3, actionSeconds=0, levelMinutes=0, lateEntryLevels=9)
+    start(client, room_id, ids[0])
+    fold_until_hand_over(client, room_id, ids)
+    assert kick(client, room_id, ids[0], ids[2]).status_code == 200
+
+    res = client.post(
+        f"/api/rooms/{room_id}/join",
+        headers=auth(ids[2]),
+        json={"name": "Back Again", "password": "secret"},
+    )
+    assert res.status_code == 410
+    assert "removed you" in res.json()["detail"]
+    assert len(client.portal.call(main.load_room, room_id)["order"]) == 2
+
+
+def test_being_shown_the_door_in_the_lobby_shuts_it_too(client, clock):
+    """Kicked before a card is dealt is still kicked."""
+    room_id, ids = table(client, 3)
+    assert kick(client, room_id, ids[0], ids[2]).status_code == 200
+    res = client.post(
+        f"/api/rooms/{room_id}/join",
+        headers=auth(ids[2]),
+        json={"name": "Back Again", "password": "secret"},
+    )
+    assert res.status_code == 410
+
+
+def test_leaving_of_your_own_accord_leaves_the_door_open(client, clock):
+    """Going home early is not a ban.
+
+    Both doors mark the record the same way — the seat and the chips go — so
+    the one thing that separates them has to be written down, or changing your
+    mind about an early night is refused as if the host had thrown you out.
+    """
+    room_id, ids = table(client, 3, actionSeconds=0, levelMinutes=0, lateEntryLevels=9)
+    start(client, room_id, ids[0])
+    fold_until_hand_over(client, room_id, ids)
+    assert leave(client, room_id, ids[2]).status_code == 200
+
+    res = client.post(
+        f"/api/rooms/{room_id}/join",
+        headers=auth(ids[2]),
+        json={"name": "Changed My Mind", "password": "secret"},
+    )
+    assert res.status_code == 200
+    assert res.json()["playerId"] != ids[2], "a closed seat, so a new one"
+    assert len(client.portal.call(main.load_room, room_id)["order"]) == 3
+
+
+def test_a_chair_empties_when_its_player_goes(client, clock):
+    """A record is a memory; it does not keep sitting in the chair.
+
+    Counting every record ever created runs a nine-seat table out of seats
+    after nine departures — and it is the *replacements* who are turned away,
+    at a table with two people at it.
+    """
+    room_id, ids = table(client, 3, actionSeconds=0, levelMinutes=0, lateEntryLevels=9)
+    start(client, room_id, ids[0])
+    fold_until_hand_over(client, room_id, ids)
+
+    going = ids[2]
+    for _ in range(main.MAX_SEATS + 2):
+        assert leave(client, room_id, going).status_code == 200
+        going = join(client, room_id, "Next")["playerId"]
+
+    room = client.portal.call(main.load_room, room_id)
+    seats = [room["players"][pid]["seat"] for pid in room["order"]]
+    assert len(room["order"]) == 3
+    assert len(set(seats)) == len(seats), "two players cannot share a chair"
+    assert all(0 <= s < main.MAX_SEATS for s in seats)
+
+
 def test_nobody_is_removed_once_the_podium_is_written(client, clock):
     """The placings are already decided. Removing somebody now rewrites them.
 
@@ -1811,7 +1891,7 @@ def test_somebody_removed_from_the_table_cannot_still_collect(client, clock):
         p["chips"] for p in state(client, room_id, ids[0])["players"]
     )
     assert kick(client, room_id, ids[0], winner).status_code == 200
-    assert show(client, room_id, winner, [0, 1]).status_code == 403
+    assert show(client, room_id, winner, [0, 1]).status_code == 410
 
     view = state(client, room_id, ids[0])
     assert view["sevenDeuceWin"] is None
@@ -2172,6 +2252,13 @@ def test_being_shown_the_door_takes_the_key_with_it(client, clock):
     memory of somebody who was here, and treating it as a live credential means
     the host removes a player who then carries on reading the table, sitting
     back in, and polling as if nothing had happened.
+
+    Refused as Gone rather than Forbidden, every way in, and the difference is
+    not tidiness. A device told "no" throws away the credential it was refused
+    with — right for a key the table has never known, and exactly wrong here,
+    because that credential is the only thing that tells this device from a
+    stranger's at the front door. Forget it and the person who was just removed
+    is a new arrival who knows the password.
     """
     room_id, ids = table(client, 3, actionSeconds=0, levelMinutes=0)
     start(client, room_id, ids[0])
@@ -2182,17 +2269,37 @@ def test_being_shown_the_door_takes_the_key_with_it(client, clock):
     reading = client.get(
         f"/api/rooms/{room_id}/state", params={"playerId": gone}, headers=auth(gone)
     )
-    assert reading.status_code == 403
+    assert reading.status_code == 410
     sitting = client.post(
         f"/api/rooms/{room_id}/sit",
         headers=auth(gone),
         json={"playerId": gone, "action": "sit"},
     )
-    assert sitting.status_code == 403
+    assert sitting.status_code == 410
     assert "removed" in sitting.json()["detail"].lower()
     # And the table itself is unchanged by the attempt.
     room = client.portal.call(main.load_room, room_id)
     assert gone not in room["order"]
+
+
+def test_going_home_is_not_being_shown_the_door(client, clock):
+    """Both close the seat. Only one of them is meant to be permanent.
+
+    A device that left of its own accord should forget its credential and be
+    able to walk back in; a device that was removed should keep it and be told
+    why. Same record shape, opposite answers, so the difference has to be
+    written down rather than inferred.
+    """
+    room_id, ids = table(client, 3, actionSeconds=0, levelMinutes=0)
+    start(client, room_id, ids[0])
+    fold_until_hand_over(client, room_id, ids)
+    assert leave(client, room_id, ids[2]).status_code == 200
+
+    reading = client.get(
+        f"/api/rooms/{room_id}/state", params={"playerId": ids[2]}, headers=auth(ids[2])
+    )
+    assert reading.status_code == 403
+    assert "removed" not in reading.json()["detail"].lower()
 
 
 def test_a_table_from_before_the_credential_split_closes_every_door(client, clock):
@@ -2487,6 +2594,60 @@ def test_a_plan_is_for_one_decision_not_for_the_rest_of_the_hand(client, clock):
     assert state(client, room_id, planner)["preAction"] is None
     room = client.portal.call(main.load_room, room_id)
     assert "preAction" not in room["players"][planner]
+
+
+def test_the_same_plan_can_be_made_again_later_in_the_hand(client, clock):
+    """A plan is for one decision, so making it again is a new decision.
+
+    Which is exactly where naming the request after the intent — "check, this
+    hand" — goes wrong: it is the same name on the turn as it was on the flop,
+    and answering a name already seen plans nothing while telling the player it
+    worked. They then sit there waiting for a decision they think they made.
+
+    Sent here with the name a client that still writes one would use, because
+    that is what the room has to survive.
+    """
+    room_id, ids = table(client, 3, actionSeconds=0, levelMinutes=0, bombPotEvery=1)
+    start(client, room_id, ids[0])
+    actor = waiting_on(client, room_id)
+    planner = next_to_act(client, room_id, actor)
+    hand = hand_number(client, room_id)
+
+    def plan_named(action):
+        return client.post(
+            f"/api/rooms/{room_id}/preaction",
+            headers=auth(planner),
+            json={
+                "playerId": planner,
+                "action": action,
+                "handNumber": hand,
+                "requestId": f"p:{planner}:{hand}:{action}",
+            },
+        )
+
+    assert plan_named("check").status_code == 200
+    act(client, room_id, actor, "call")
+    state(client, room_id, ids[0])  # the flop check fires and is used up
+    assert state(client, room_id, planner)["preAction"] is None
+
+    # Same hand, next street, same intention — and it has to take.
+    while waiting_on(client, room_id) == planner:
+        act(client, room_id, planner, "call")
+    assert plan_named("check").status_code == 200
+    assert state(client, room_id, planner)["preAction"] == "check"
+
+
+def test_taking_a_plan_back_and_making_it_again_works(client, clock):
+    room_id, ids = table(client, 3, actionSeconds=0, levelMinutes=0)
+    start(client, room_id, ids[0])
+    actor = waiting_on(client, room_id)
+    planner = next_to_act(client, room_id, actor)
+
+    assert plan(client, room_id, planner, "call-any").status_code == 200
+    assert plan(client, room_id, planner, "clear").status_code == 200
+    assert state(client, room_id, planner)["preAction"] is None
+    assert plan(client, room_id, planner, "call-any").status_code == 200
+    assert state(client, room_id, planner)["preAction"] == "call-any"
 
 
 def test_three_plans_resolve_in_one_go(client, clock):
@@ -2857,6 +3018,78 @@ def test_leaving_mid_hand_waits_for_the_pot_to_be_settled(client, clock):
     assert books_balance(client, room_id)
 
 
+def test_leaving_does_not_deal_you_the_hosts_hand(client, clock):
+    """A view is somebody's view: it carries their own cards.
+
+    So the answer to "I am going home" has to be built for the person going
+    home, however little is left of their seat. Built for anybody else, it
+    hands them that person's hole cards on the way out of the door — and
+    walking out mid-hand is exactly when those cards are worth something.
+    """
+    room_id, ids = table(client, 3, actionSeconds=0, levelMinutes=0)
+    start(client, room_id, ids[0])
+    going = next(pid for pid in ids if pid != ids[0])
+
+    res = leave(client, room_id, going)
+    assert res.status_code == 200
+    view = res.json()
+    host = next(p for p in view["players"] if p["id"] == ids[0])
+    assert host["cards"] is None, "the host's hand is the host's business"
+    assert view["you"] is None or view["you"]["id"] == going
+
+
+def test_the_table_keeps_a_host_when_the_host_goes_home(client, clock):
+    """Being host is not a label, it is the only credential that can deal.
+
+    Walking off with it leaves a table nobody can start, stop, or end — which,
+    once the auto-deal has nothing left to deal, is a room that is over whether
+    or not anybody meant it to be.
+    """
+    room_id, ids = table(client, 3, actionSeconds=0, levelMinutes=0)
+    start(client, room_id, ids[0])
+    fold_until_hand_over(client, room_id, ids)
+    assert leave(client, room_id, ids[0]).status_code == 200
+
+    room = client.portal.call(main.load_room, room_id)
+    assert room["hostId"] in room["order"]
+    assert room["hostId"] != ids[0]
+    # And the credential goes with the job: whoever holds it can deal.
+    assert start(client, room_id, room["hostId"]).status_code == 200
+
+
+def test_the_host_leaving_mid_hand_hands_the_job_over_at_the_end(client, clock):
+    """The other door: the seat stays until the pot is settled, and so does
+    the job — right up to the moment the seat goes."""
+    room_id, ids = table(client, 3, actionSeconds=0, levelMinutes=0)
+    start(client, room_id, ids[0])
+    assert leave(client, room_id, ids[0]).status_code == 200
+    assert client.portal.call(main.load_room, room_id)["hostId"] == ids[0]
+
+    fold_until_hand_over(client, room_id, ids)
+    room = client.portal.call(main.load_room, room_id)
+    if room["phase"] == "finished":
+        pytest.skip("the hand knocked somebody out; there is no table left to host")
+    assert room["hostId"] in room["order"]
+    assert room["hostId"] != ids[0]
+
+
+def test_the_lobby_keeps_a_host_too(client, clock):
+    room_id, ids = table(client, 3)
+    assert leave(client, room_id, ids[0]).status_code == 200
+    room = client.portal.call(main.load_room, room_id)
+    assert room["hostId"] in ids[1:]
+    assert start(client, room_id, room["hostId"]).status_code == 200
+
+
+def test_a_host_who_busts_is_still_the_host(client, clock):
+    """They are at the table, watching. It is still their room."""
+    room_id, ids = table(client, 3, actionSeconds=0, levelMinutes=0)
+    start(client, room_id, ids[0])
+    fold_until_hand_over(client, room_id, ids)
+    bust(client, room_id, ids[0])
+    assert client.portal.call(main.load_room, room_id)["hostId"] == ids[0]
+
+
 def test_the_last_two_players_leaving_still_produces_a_podium(client, clock):
     room_id, ids = table(client, 3, actionSeconds=0, levelMinutes=0)
     start(client, room_id, ids[0])
@@ -3178,6 +3411,43 @@ def test_dealing_by_hand_cannot_unsay_the_last_hand(client, clock):
     assert state(client, room_id, ids[0])["room"]["phase"] == "finished"
 
 
+def test_calling_the_last_hand_twice_does_not_buy_another_one(client, clock):
+    """Which hand is the last one is decided once, and stands.
+
+    Otherwise the second tap — or the first one landing again after the hand it
+    was made during has ended — moves the finish line by one pot, and the table
+    plays a hand nobody called for.
+    """
+    room_id, ids = table(client, 3, actionSeconds=0, levelMinutes=0)
+    start(client, room_id, ids[0])
+    dealt = state(client, room_id, ids[0])["room"]["handNumber"]
+
+    assert control(client, room_id, ids[0], "last-hand").status_code == 200
+    fold_until_hand_over(client, room_id, ids)
+    assert control(client, room_id, ids[0], "last-hand").status_code == 200
+
+    clock.advance(main.AUTO_DEAL_SECONDS + 1)
+    view = state(client, room_id, ids[0])
+    assert view["room"]["phase"] == "finished"
+    assert view["room"]["handNumber"] == dealt
+
+
+def test_resuming_a_table_that_is_already_going_leaves_the_clock_alone(client, clock):
+    """A button that looks like it did nothing is a button that gets tapped.
+
+    Handing the player on the spot a second full shot clock every time is a way
+    to stall a hand from outside it.
+    """
+    room_id, ids = table(client, 3, actionSeconds=20, levelMinutes=0)
+    start(client, room_id, ids[0])
+    clock.advance(10)
+    before = client.portal.call(main.load_room, room_id)["actionDeadline"]
+
+    assert control(client, room_id, ids[0], "resume").status_code == 200
+    assert client.portal.call(main.load_room, room_id)["actionDeadline"] == before
+    assert not _is_paused_in_store(client, room_id)
+
+
 def test_only_the_host_stops_the_table(client, clock):
     room_id, ids = table(client, 3)
     assert control(client, room_id, ids[1], "pause").status_code == 403
@@ -3237,6 +3507,34 @@ def test_work_that_is_due_is_either_done_or_stops_being_due(client, clock):
             break
     # However far it got, the room is quiet again at that moment.
     assert not main._work_due(room, clock.now)
+
+
+def test_the_end_of_the_night_comes_before_the_break(client, clock):
+    """Convergence is not the same as the right answer.
+
+    Both are due at the same moment, both eventually happen, and the invariant
+    above is happy either way — so the order has to be tested for what it
+    produces, not for whether it settles. The wrong way round, the host calls
+    the last hand, everybody plays it, and the table answers with a five-minute
+    countdown before telling anyone who won.
+    """
+    room_id, ids = table(
+        client, 3, levelMinutes=1, actionSeconds=0, breakEveryLevels=1, breakMinutes=5
+    )
+    start(client, room_id, ids[0])
+    dealt = state(client, room_id, ids[0])["room"]["handNumber"]
+    assert control(client, room_id, ids[0], "last-hand").status_code == 200
+
+    fold_until_hand_over(client, room_id, ids)
+    clock.advance(60 + main.AUTO_DEAL_SECONDS + 1)  # the level turns over too
+    room = client.portal.call(main.load_room, room_id)
+    assert main._break_due(room, clock.now), "both are genuinely due at once"
+
+    view = state(client, room_id, ids[0])
+    assert view["room"]["phase"] == "finished"
+    assert view["room"]["handNumber"] == dealt
+    assert view["breakUntil"] is None
+    assert view["standings"]
 
 
 def test_a_stopped_table_does_not_fold_anybody(client, clock):
@@ -3387,10 +3685,15 @@ def test_a_returning_host_is_still_the_host(client, clock):
 
 
 def test_asking_twice_to_sit_out_does_not_sit_you_back_in(client, clock):
-    """A toggle is the one shape where a retry undoes itself.
+    """A flip is the one shape where a retry undoes itself.
 
     The player asks to sit out, nothing appears to happen, they tap again — and
     they are sitting in, with nothing on screen explaining why.
+
+    This is the old form of the request, still sent by a phone with the
+    previous version of the page open. Current clients say which side of the
+    table they want to be on instead, which is safe to repeat without a
+    receipt — and, unlike a receipt, safe to *mean* twice.
     """
     room_id, ids = table(client, 3)
     body = {"playerId": ids[1], "action": "sit", "requestId": "sit-me-out"}
@@ -3406,6 +3709,118 @@ def test_asking_twice_to_sit_out_does_not_sit_you_back_in(client, clock):
         json={"playerId": ids[1], "action": "sit", "requestId": "sit-me-back-in"},
     )
     assert not client.portal.call(main.load_room, room_id)["players"][ids[1]]["sittingOut"]
+
+
+def test_a_join_is_not_forgotten_because_the_table_kept_playing(client, clock):
+    """The one receipt whose loss cannot be put right.
+
+    Every other replay is caught a second time by the state of the room — you
+    cannot rebuy with chips in front of you, or take the add-on twice. A
+    replayed join is a second seat and a second stack for one person, and the
+    first seat is unrecoverable, because the only proof it belonged to anybody
+    went missing with the response.
+
+    So it must not queue behind ordinary play: a nine-handed hand is easily
+    thirty decisions, which is enough to push it off the end of a shared list
+    while the phone that lost the response is still on the same screen.
+    """
+    room_id, ids = table(client, 3)
+    body = {"name": "Marcos", "password": "secret", "requestId": "attempt-1"}
+    first = client.post(f"/api/rooms/{room_id}/join", json=body).json()
+
+    for i in range(main.MAX_RECEIPTS * 2):  # a long hand happens
+        client.post(
+            f"/api/rooms/{room_id}/sit",
+            headers=auth(ids[1]),
+            json={"playerId": ids[1], "action": "sit", "requestId": f"toggle-{i}"},
+        )
+        clock.advance(1)
+
+    again = client.post(f"/api/rooms/{room_id}/join", json=body).json()
+    assert again["playerId"] == first["playerId"]
+    room = client.portal.call(main.load_room, room_id)
+    assert sum(p["name"] == "Marcos" for p in room["players"].values()) == 1
+
+
+def test_the_join_book_is_bounded_as_well(client, clock):
+    """Its own shelf, not an unbounded one: the room is read whole every poll.
+
+    Only reachable by churn — the table has nine chairs, so nobody joins
+    thirty-three times without leaving — which is also the shape of a night
+    where people come and go all evening.
+    """
+    room_id, _ = table(client, 2)
+    for i in range(main.MAX_JOIN_RECEIPTS + 3):
+        who = client.post(
+            f"/api/rooms/{room_id}/join",
+            json={"name": f"P{i}", "password": "secret", "requestId": f"join-{i}"},
+        ).json()
+        TOKENS[who["playerId"]] = who["token"]
+        leave(client, room_id, who["playerId"])
+        clock.advance(1)
+    room = client.portal.call(main.load_room, room_id)
+    assert len(room[main._JOINS]) == main.MAX_JOIN_RECEIPTS
+    assert f"join-{main.MAX_JOIN_RECEIPTS + 2}" in room[main._JOINS]
+
+
+def test_a_name_does_not_block_a_second_real_decision(client, clock):
+    """A name is for a retry. Settings are not retried, they are changed back.
+
+    Naming one after where the player wants to end up — "pause, this hand" —
+    reads like the intent and works exactly once. The second time the host
+    genuinely means it, during the same hand, it is the same name, and the
+    answer is a cheerful 200 and a table that never stopped. So settings carry
+    no name, and repeating them is made safe on their own terms instead.
+
+    Sent here the way a client that still names them would, because that is
+    what the room has to survive.
+    """
+    room_id, ids = table(client, 3, actionSeconds=0, levelMinutes=10)
+    start(client, room_id, ids[0])
+    hand = hand_number(client, room_id)
+
+    def control_named(action):
+        return client.post(
+            f"/api/rooms/{room_id}/table",
+            headers=auth(ids[0]),
+            json={
+                "playerId": ids[0],
+                "action": action,
+                "requestId": f"t:{hand}:{action}",
+            },
+        )
+
+    for action in ("pause", "resume", "pause"):
+        assert control_named(action).status_code == 200
+    assert client.portal.call(main.load_room, room_id)["paused"] is True
+
+    def sit_named(where):
+        return client.post(
+            f"/api/rooms/{room_id}/sit",
+            headers=auth(ids[1]),
+            json={
+                "playerId": ids[1],
+                "action": where,
+                "requestId": f"s:{ids[1]}:{hand}:{where}",
+            },
+        )
+
+    for where in ("out", "in", "out"):
+        assert sit_named(where).status_code == 200
+    assert client.portal.call(main.load_room, room_id)["players"][ids[1]]["sittingOut"]
+
+
+def test_asking_for_the_same_side_of_the_table_twice_is_harmless(client, clock):
+    """Which is the whole reason the request says where, rather than flip."""
+    room_id, ids = table(client, 3)
+    for _ in range(2):
+        res = client.post(
+            f"/api/rooms/{room_id}/sit",
+            headers=auth(ids[1]),
+            json={"playerId": ids[1], "action": "out"},
+        )
+        assert res.status_code == 200
+    assert client.portal.call(main.load_room, room_id)["players"][ids[1]]["sittingOut"]
 
 
 def test_the_receipts_do_not_grow_without_end(client, clock):

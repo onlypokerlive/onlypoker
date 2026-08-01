@@ -42,6 +42,50 @@ viene después de la geometría de `poker-table.tsx`.
 
 Cada item está en su propio commit, con sus tests, en `feat/plan-tandas-a-b-c`.
 
+### Lo que encontró la tercera revisión
+
+Siete defectos, todos reproducidos, todos en la superficie que añadieron B3/B4/B5/C5, y ninguno visible
+desde los tests que ya había. Vale la pena anotar **por qué** no los veían, porque el patrón se repite:
+
+1. **`POST /leave` devolvía la vista del host.** Una vista lleva las cartas de aquel para quien se
+   construye, así que la respuesta a "me voy" repartía la mano del host al que salía por la puerta. El
+   comentario que lo justificaba ("el que se va puede que ya no sea nadie a quien enseñar una vista") era
+   cierto y la conclusión era falsa: una vista sin asiento es una vista de espectador, no la de otro.
+2. **Un expulsado volvía a entrar con su token viejo.** Y —esto es lo que hacía inútil el arreglo
+   evidente— el propio cliente borraba la credencial al recibir el 403, así que un segundo después era un
+   recién llegado que sabe la contraseña. Ahora la expulsión se responde con **410 Gone** en todas las
+   puertas, que es el único código que el cliente puede tratar distinto: no vuelvas a intentarlo, y **no
+   olvides quién eres**. La credencial es lo único que distingue ese teléfono del de un desconocido.
+3. **El recibo de un `join` podía caducar.** Los recibos se comparten entre todas las operaciones y una
+   mano a nueve son treinta decisiones: suficiente para tirar por el borde el único recibo cuya pérdida no
+   tiene arreglo (un asiento duplicado, y el primero irrecuperable). Los `join` tienen ahora su propio
+   estante. Los demás replays los frena el estado de la sala una segunda vez — no se recompra con fichas
+   delante.
+4. **El host podía irse y dejar la mesa sin autoridad.** Ser host no es una etiqueta, es la única
+   credencial que reparte, para, expulsa y cierra. El puesto pasa ahora al siguiente sentado. Reventarse
+   no lo traspasa: sigue siendo su sala.
+5. **Los recibos bloqueaban decisiones legítimas.** `pausa → reanudar → pausa` en la misma mano es el
+   mismo nombre dos veces, y la segunda se contestaba con un 200 que no paraba nada. El error de fondo era
+   poner recibos a *ajustes*: dicen dónde quieres acabar, así que repetirlos es inofensivo por
+   construcción. Los recibos se quedan donde crean o cobran algo. `/sit` pasó a decir de qué lado de la
+   mesa quiere estar el jugador en vez de invertir el estado, que es lo que lo hacía inseguro de repetir.
+6. **Los registros retirados seguían ocupando silla.** `_free_seat` contaba todos los registros, así que
+   nueve idas y venidas dejaban la mesa "llena" con dos personas sentadas.
+7. **El break se colaba delante del final del torneo.** El host canta la última mano, se juega, el nivel
+   cambia, y la mesa contestaba con cinco minutos de descanso antes de decir quién había ganado.
+
+**Lo que esto dice del test invariante del planificador.** No falló, y tenía razón en no fallar: comprueba
+que todo lo vencido se hace o deja de estar vencido, y el orden equivocado *también converge* — solo que
+cinco minutos después. Un test de convergencia no puede ver un problema de orden. Los dos que importan
+están ahora comprobados por su resultado, no por su terminación. El resto de pares del `_SCHEDULE` no
+necesitan uno: las condiciones son disjuntas por fase (`clock` pide `hand`, `deal` pide `handover`), y esas
+dos nunca están vencidas a la vez.
+
+**Lo que sigue sin cerrarse, y a propósito.** La contraseña es la única puerta de la sala. Quien fue
+expulsado y tenga un dispositivo que la sala no ha visto nunca es, para el servidor, un amigo al que le
+acaban de pasar el enlace — igual que para mirar, que solo pide la contraseña. Cerrar eso pide una
+contraseña nueva, que es a lo que echaría mano una mesa de amigos de todas formas.
+
 ### Lo que cambió respecto a lo que decía el plan
 
 Tres cosas se decidieron distinto al implementarlas, y conviene que estén escritas donde se leen:

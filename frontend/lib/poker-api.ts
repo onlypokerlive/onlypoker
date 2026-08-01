@@ -390,6 +390,20 @@ export class ApiError extends Error {
   get isAuthFailure() {
     return this.status === 401 || this.status === 403 || this.status === 404
   }
+
+  /**
+   * The seat was removed by the host, and is not coming back.
+   *
+   * Deliberately apart from `isAuthFailure`, because the credential must be
+   * *kept*. It is the only thing that tells this device from a stranger's at
+   * the front door, and the password is no help — everybody at the table has
+   * it, including the person who was just asked to leave. Forget the
+   * credential and being removed lasts exactly as long as it takes to tap
+   * join again.
+   */
+  get isRemoved() {
+    return this.status === 410
+  }
 }
 
 async function req<T>(url: string, options?: RequestInit): Promise<T> {
@@ -620,6 +634,12 @@ export const pokerApi = {
   /**
    * Say now what you want to do when your turn arrives, or `clear` to take it
    * back. Fires once and is then gone.
+   *
+   * Unnamed, unlike most of the list below: this writes down where the player
+   * wants to end up rather than recording that something happened, so sending
+   * it twice asks for the same thing. Naming it would be the bug — a plan set,
+   * fired on the flop, and set again on the turn is the same name twice, and
+   * the second one would be answered without being carried out.
    */
   setPreAction: (
     roomId: string,
@@ -631,12 +651,7 @@ export const pokerApi = {
     req<RoomView>(`/api/rooms/${roomId}/preaction`, {
       method: 'POST',
       headers: auth(token),
-      body: JSON.stringify({
-        playerId,
-        action,
-        handNumber,
-        requestId: `p:${playerId}:${handNumber}:${action}`,
-      }),
+      body: JSON.stringify({ playerId, action, handNumber }),
     }),
 
   /** Say whether you want the rest of the board dealt once or twice. */
@@ -688,50 +703,42 @@ export const pokerApi = {
     ),
 
   /**
-   * Sit out, or come back. `sittingOut` is the state being asked for, not the
-   * one in effect — a toggle is the one shape where a retry undoes itself, so
-   * the request is named after where the player wants to end up. Asking twice
-   * for the same thing is answered once; genuinely changing their mind later
-   * is a different name and goes through.
+   * Sit out, or come back. `sittingOut` is the state being asked for, not a
+   * flip of the one in effect — a flip is the one shape where a retry undoes
+   * itself, so the player ends up sitting in when they asked to sit out with
+   * nothing on screen explaining why. Asking for a side of the table is safe
+   * to repeat on its own, so this needs no name.
    */
   toggleSitOut: (
     roomId: string,
     playerId: string,
     sittingOut: boolean,
-    handNumber: number,
     token?: string,
   ) =>
     req<RoomView>(`/api/rooms/${roomId}/sit`, {
       method: 'POST',
       headers: auth(token),
-      body: JSON.stringify({
-        playerId,
-        action: 'sit',
-        requestId: `s:${playerId}:${handNumber}:${sittingOut ? 'out' : 'in'}`,
-      }),
+      body: JSON.stringify({ playerId, action: sittingOut ? 'out' : 'in' }),
     }),
 
   /**
    * Host only: stop the table, start it again, or call the last hand.
    *
-   * Named after the state being asked for and the hand it was asked during, so
-   * a tap repeated because nothing seemed to happen does not undo itself.
+   * All four are settings rather than events, and the server writes each one
+   * to be safe against arriving twice. Naming them would stop the host pausing
+   * a second time during the same hand — the name would already have been
+   * seen, and the answer would be a 200 and a table that never stopped.
    */
   controlTable: (
     roomId: string,
     playerId: string,
     action: TableControl,
-    handNumber: number,
     token?: string,
   ) =>
     req<RoomView>(`/api/rooms/${roomId}/table`, {
       method: 'POST',
       headers: auth(token),
-      body: JSON.stringify({
-        playerId,
-        action,
-        requestId: `t:${handNumber}:${action}`,
-      }),
+      body: JSON.stringify({ playerId, action }),
     }),
 }
 

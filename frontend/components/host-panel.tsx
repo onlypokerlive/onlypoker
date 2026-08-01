@@ -53,7 +53,6 @@ export function HostPanel({
         roomId,
         view.you!.id,
         action,
-        view.handNumber,
         session?.token,
       )
       onDone()

@@ -48,6 +48,19 @@ describe('a failed request', () => {
     expect(new ApiError('It is not your turn.', 409).isAuthFailure).toBe(false)
   })
 
+  it('tells being removed from a refusal, because the key must be kept', () => {
+    // Every other refusal means this device is holding something the table
+    // does not accept, so the answer is to throw it away and go back to the
+    // door. Being removed is the opposite: the credential is the only thing
+    // that tells this device from a stranger's when it gets there, and the
+    // password is no help — everybody at the table has it, including the
+    // person who was just asked to leave.
+    const removed = new ApiError('The host removed you from this table.', 410)
+    expect(removed.isRemoved).toBe(true)
+    expect(removed.isAuthFailure).toBe(false)
+    expect(new ApiError('This table is private.', 403).isRemoved).toBe(false)
+  })
+
   it('is still an Error, so existing handlers keep working', () => {
     const err = new ApiError('nope', 403)
     expect(err).toBeInstanceOf(Error)
