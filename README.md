@@ -51,8 +51,18 @@ disappear when the process restarts.
 cd backend && .venv/bin/python -m pytest tests/ -q
 ```
 
-Covers the blind ladder, both clocks, per-player card redaction, and the
-tournament endgame.
+Covers the blind ladder, every clock the table runs on, per-player card
+redaction, who is allowed to do what, the chip ledger, and the tournament
+endgame.
+
+```bash
+cd frontend && pnpm test && pnpm exec tsc --noEmit && pnpm lint
+```
+
+Bet sizing, the events derived from polling, the card-by-card runout, and the
+components where getting a condition wrong shows somebody something they should
+not see. `pnpm lint` is green; the React Compiler rules are left as warnings on
+purpose — see the note in `frontend/eslint.config.mjs`.
 
 ## Deploying
 

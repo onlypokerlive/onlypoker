@@ -16,6 +16,9 @@ next-env.d.ts
 *.tsbuildinfo
 .DS_Store
 
+# Console logs and page dumps left behind by browser automation
+.playwright-mcp/
+
 # Python backend
 .venv/
 __pycache__/

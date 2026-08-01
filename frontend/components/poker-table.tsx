@@ -63,10 +63,6 @@ interface SeatSize {
   halfH: number
 }
 
-function overlaps(a: Box, b: Box) {
-  return a.left < b.right && a.right > b.left && a.top < b.bottom && a.bottom > b.top
-}
-
 function expand(box: Box, px: number): Box {
   return {
     left: box.left - px,

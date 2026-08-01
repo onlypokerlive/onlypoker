@@ -272,7 +272,7 @@ export interface GameView {
   } | null
 }
 
-function resultsMessage(results: HandResult[], players: PlayerView[]): string | null {
+function resultsMessage(results: HandResult[]): string | null {
   if (!results.length) return null
   const winners = results.filter((r) => r.delta > 0)
   if (!winners.length) return null
@@ -360,7 +360,7 @@ export function toGameView(v: RoomView, playerId: string | null): GameView {
     autoDealAtMs,
     breakEndsAtMs,
     runoutEndsAtMs,
-    message: resultsMessage(v.lastResults, players),
+    message: resultsMessage(v.lastResults),
     legal,
   }
 }
