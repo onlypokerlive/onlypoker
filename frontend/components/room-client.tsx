@@ -19,6 +19,7 @@ import { HostPanel } from "@/components/host-panel"
 import { TableBreak } from "@/components/table-break"
 import { BuyChips } from "@/components/buy-chips"
 import { PreActions } from "@/components/pre-actions"
+import { RunoutOffer } from "@/components/runout-offer"
 import { TournamentResults } from "@/components/tournament-results"
 import { useSecondsLeft } from "@/lib/use-countdown"
 import { useTableEvents } from "@/lib/use-table-events"
@@ -250,6 +251,10 @@ export function RoomClient({ roomId }: { roomId: string }) {
           {/* Above the table, because a stopped table looks exactly like a
               broken one and the difference has to be the first thing read. */}
           <TableBreak view={view} onControl={handleTableControl} busy={busy} />
+          {/* Shown to the whole table, not only to the players being asked:
+              otherwise the pause before the cards come out looks like the app
+              having hung. */}
+          <RunoutOffer view={view} roomId={roomId} onDone={refresh} session={session} />
           <PokerTable
             view={{ ...view, board: shownBoard }}
             revealed={revealed}

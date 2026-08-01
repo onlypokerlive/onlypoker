@@ -13,7 +13,13 @@ import pickle
 from collections import Counter
 from typing import Any
 
-from pokerkit import Automation, ChipsPushing, NoLimitTexasHoldem, StandardHighHand
+from pokerkit import (
+    Automation,
+    ChipsPushing,
+    Mode,
+    NoLimitTexasHoldem,
+    StandardHighHand,
+)
 
 # Everything is automated except the actual player betting decisions
 # (fold / check-call / bet-raise). pokerkit will post blinds, deal hole and
@@ -39,6 +45,7 @@ def create_hand(
     ante: int = 0,
     ante_from_big_blind: bool = False,
     forced: list[int] | None = None,
+    run_it_twice: bool = False,
 ):
     """Create a fresh hand. ``starting_stacks`` is in seat order where index 0
     is the small blind, index 1 the big blind, and the final index the button
@@ -53,6 +60,14 @@ def create_hand(
     ``forced`` replaces the blinds outright, in seat order. That is how a
     straddle is expressed (``sb, bb, straddle``) and how a bomb pot is
     (the same amount for everybody).
+
+    ``run_it_twice`` puts the engine in cash-game mode, which is the only mode
+    that will deal a board more than once — pokerkit takes the view that a
+    tournament never runs it twice, and it is right about tournaments. This is
+    a tournament between friends, and §3.D says the host gets to decide. Cash
+    mode also lets a player fold a hand they could check for free, which is
+    legal everywhere and pointless everywhere; ``legal_actions`` and
+    ``apply_action`` keep refusing it, so the table plays the same either way.
     """
     if ante and ante_from_big_blind:
         raw_antes: Any = {1: ante}  # index 1 is the big blind, by construction
@@ -60,6 +75,7 @@ def create_hand(
         raw_antes = ante
     return NoLimitTexasHoldem.create_state(
         automations=_AUTOMATIONS,
+        mode=Mode.CASH_GAME if run_it_twice else Mode.TOURNAMENT,
         ante_trimming_status=not (ante and ante_from_big_blind),
         raw_antes=raw_antes,
         raw_blinds_or_straddles=tuple(forced) if forced else (small_blind, big_blind),
@@ -134,15 +150,57 @@ def card_str(card) -> str:
     return repr(card)
 
 
-def board_cards(state) -> list[str]:
-    cards: list[str] = []
+def boards(state) -> list[list[str]]:
+    """Every board dealt, as one list of cards each.
+
+    ``state.board_cards`` is laid out the other way round: one row per card
+    position, holding that position's card *on each board*. With one board
+    that is a list of one-element rows and the distinction never comes up;
+    with two it is the difference between two boards and one board of ten
+    cards, dealt interleaved.
+    """
+    count = max(1, int(getattr(state, "board_count", 1) or 1))
+    out: list[list[str]] = [[] for _ in range(count)]
     for row in state.board_cards:
-        # each dealt street entry is an iterable of Card
         try:
-            cards.extend(card_str(c) for c in row)
+            cards = [card_str(c) for c in row]
         except TypeError:
-            cards.append(card_str(row))
-    return cards
+            cards = [card_str(row)]
+        for i, card in enumerate(cards):
+            if i < count:
+                out[i].append(card)
+    return out
+
+
+def board_cards(state, index: int = 0) -> list[str]:
+    """One board's cards. The first one unless asked otherwise."""
+    dealt = boards(state)
+    return dealt[index] if index < len(dealt) else []
+
+
+def runout_choosers(state) -> list[int]:
+    """Seats still to say how many times they want the rest dealt.
+
+    Non-empty only after everybody is all-in with board to come, and only on a
+    table whose host turned the rule on. The hand does not move until they have
+    all answered, which is what makes it a decision rather than a setting.
+    """
+    if not state.status:
+        return []
+    try:
+        return list(state.runout_count_selector_indices)
+    except Exception:
+        return []
+
+
+def choose_runout(state, count: int | None) -> None:
+    """Record one player's answer. Everybody has to agree for the second board.
+
+    pokerkit settles a disagreement the way a card room does: one run. So a
+    player who wants it once only has to say so, and a player who says nothing
+    at all is not taken to have agreed.
+    """
+    state.select_runout_count(count)
 
 
 def hole_cards(state, index: int) -> list[str]:
@@ -165,8 +223,13 @@ def legal_actions(state) -> dict[str, Any]:
             "maxRaise": 0,
         }
     can_raise = state.can_complete_bet_or_raise_to()
+    owed = int(state.checking_or_calling_amount or 0)
     return {
-        "canFold": bool(state.can_fold()),
+        # Never for free. Cash-game mode — which running it twice needs —
+        # allows folding a hand you could check, which is legal everywhere and
+        # pointless everywhere; offering it would just be a button that throws
+        # away a free card.
+        "canFold": bool(state.can_fold()) and owed > 0,
         "canCheckOrCall": bool(state.can_check_or_call()),
         "callAmount": int(state.checking_or_calling_amount or 0),
         "canRaise": bool(can_raise),
@@ -189,7 +252,7 @@ def apply_action(state, action: str, amount: int | None = None):
         raise ActionError("The hand is not awaiting an action.")
 
     if action == "fold":
-        if not state.can_fold():
+        if not state.can_fold() or not state.checking_or_calling_amount:
             raise ActionError("You cannot fold right now.")
         state.fold()
     elif action == "check" or action == "call":
@@ -231,6 +294,33 @@ def pushed_amounts(state, seats: int) -> list[int]:
                 if i < seats:
                     totals[i] += int(amount)
     return totals
+
+
+def pushed_by_board(state, seats: int) -> list[list[int]]:
+    """Which seats were paid off each board, in board order.
+
+    The drama of running it twice is entirely in "she took the first one, he
+    took the second", and that is not something the final stacks can tell you —
+    a player who wins both and a player who chops both come out the same. The
+    engine records a push per board, so it is asked.
+    """
+    count = max(1, int(getattr(state, "board_count", 1) or 1))
+    out: list[list[int]] = [[] for _ in range(count)]
+    for op in state.operations:
+        if not isinstance(op, ChipsPushing):
+            continue
+        # No board named means the pot was not contested board by board —
+        # everybody else had folded or been killed, so the one player left took
+        # every board there was. Naming only the first would report a hand that
+        # was won outright as a hand that was split.
+        targets = range(count) if op.board_index is None else [op.board_index]
+        for board in targets:
+            if board >= count:
+                continue
+            for seat, amount in enumerate(op.amounts):
+                if seat < seats and amount > 0 and seat not in out[board]:
+                    out[board].append(seat)
+    return out
 
 
 def pot_total(state, hand_start_stacks: list[int]) -> int:

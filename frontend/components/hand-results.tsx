@@ -37,6 +37,25 @@ export function HandResults({
           table with seven-deuce
         </p>
       )}
+      {/* Two boards, half the pot each. Which one went to whom is the entire
+          point of dealing it twice, and it is the one thing the stacks cannot
+          tell you: winning both and chopping both come out the same. */}
+      {view.boardResults.length > 1 && (
+        <ul className="mb-2 flex shrink-0 flex-col gap-1">
+          {view.boardResults.map((b, i) => (
+            <li key={i} className="flex items-center justify-between gap-2">
+              <span className="flex gap-0.5">
+                {b.cards.map((c, j) => (
+                  <PlayingCard key={j} card={c} size="xs" />
+                ))}
+              </span>
+              <span className="truncate text-xs text-muted-foreground">
+                {b.winners.join(" & ")}
+              </span>
+            </li>
+          ))}
+        </ul>
+      )}
       <ul className="flex flex-col gap-1 overflow-y-auto">
         {sorted.map((r) => {
           const won = r.delta > 0

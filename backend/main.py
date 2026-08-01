@@ -91,6 +91,12 @@ BLIND_MULTIPLIERS = (1, 2, 3, 4, 6, 8, 12, 16, 24, 32, 48, 64, 96, 128)
 # Grace added to the shot clock before auto-acting, so a decision sent right on
 # the buzzer is not lost to network latency.
 TIMEOUT_GRACE = 1.5
+# How long the all-in players have to say whether they want a second board.
+# Short: nobody is deciding anything about the hand any more, the chips are
+# already in, and the whole table is sitting waiting for the cards. Somebody who
+# walks off to the kitchen must not hold it up — an unanswered offer runs once,
+# which is what happens if nobody agrees anyway.
+RUNOUT_SECONDS = 12
 # Pause between hands before the next one is dealt on its own. Long enough to
 # read the showdown, short enough that nobody has to chase the host.
 AUTO_DEAL_SECONDS = 8
@@ -503,6 +509,8 @@ class CreateRoomBody(BaseModel):
     # Extra seconds each player may spend across the whole tournament, on the
     # decisions that deserve them. 0 turns the time bank off.
     timeBankSeconds: int = Field(default=0, ge=0, le=600)
+    # Offer the all-in players a second board. Everybody left in has to agree.
+    runItTwice: bool = False
 
 
 class JoinBody(BaseModel):
@@ -875,6 +883,13 @@ def _set_action_deadline(room: dict[str, Any], state, now: float) -> None:
     # A new decision is on the shot clock, whatever the last one ended up
     # costing. The bank only ever opens once the clock has run out.
     room["bankRunning"] = False
+    # The other thing a hand can be waiting for. It is not a decision about the
+    # hand — the chips are already in — so it gets its own, shorter clock, and
+    # it lives here because this is the one place that asks what the hand needs
+    # next after every single advance of the engine.
+    waiting = poker.runout_choosers(state)
+    room["runoutSeats"] = waiting
+    room["runoutDeadline"] = now + RUNOUT_SECONDS if waiting else None
     hand_ids = room.get("handPlayerIds") or []
     room["actorId"] = (
         hand_ids[state.actor_index]
@@ -991,6 +1006,7 @@ def _start_hand(room: dict[str, Any]) -> None:
             room["smallBlind"],
             room["bigBlind"],
             forced=poker.bomb_pot_forced(len(hand_ids), bomb),
+            run_it_twice=bool(room.get("runItTwice")),
         )
         poker.check_around(state)
         positions = {"sb": -1, "bb": -1, "button": hand_ids.index(button_id)}
@@ -1005,6 +1021,7 @@ def _start_hand(room: dict[str, Any]) -> None:
             ante=_ante_for(room),
             ante_from_big_blind=room.get("anteMode") == "bb",
             forced=forced,
+            run_it_twice=bool(room.get("runItTwice")),
         )
         positions = {
             "sb": 0,
@@ -1063,8 +1080,20 @@ def _settle_hand(room: dict[str, Any], state) -> None:
     # Naming a hand only makes sense when it was actually shown down. If
     # everyone folded, the winner never had to reveal anything.
     went_to_showdown = (len(hand_ids) - len(folded_seats)) >= 2
-    board = poker.board_cards(state)
+    dealt = poker.boards(state)
+    board = dealt[0]
     stored_holes = room.get("handHoleCards") or []
+    # Run twice, and "who won" is two answers rather than one — a player who
+    # takes both and a player who chops both come out of the arithmetic
+    # identically, and the whole point of the second board is the difference.
+    per_board = poker.pushed_by_board(state, len(hand_ids)) if len(dealt) > 1 else []
+    room["boardResults"] = [
+        {
+            "cards": cards,
+            "winners": [room["players"][hand_ids[s]]["name"] for s in seats],
+        }
+        for cards, seats in zip(dealt, per_board)
+    ]
 
     # Read off the engine rather than netted out of the deltas: winning a pot
     # and finishing ahead are different questions once side pots exist. See
@@ -1082,7 +1111,15 @@ def _settle_hand(room: dict[str, Any], state) -> None:
             "delta": delta,
             "won": pushed[i],
         }
-        if went_to_showdown and i not in folded_seats and i < len(stored_holes):
+        # Naming the hand is only unambiguous on one board. With two, the same
+        # player usually has two different hands, and picking one to print is
+        # picking one to be wrong about — the boards are shown instead.
+        if (
+            went_to_showdown
+            and len(dealt) == 1
+            and i not in folded_seats
+            and i < len(stored_holes)
+        ):
             made = poker.evaluate_hand(stored_holes[i], board)
             if made:
                 entry["handName"] = made["name"]
@@ -1093,6 +1130,9 @@ def _settle_hand(room: dict[str, Any], state) -> None:
     room["phase"] = "handover"
     room["actionDeadline"] = None
     room["actorId"] = None
+    # Whatever the hand was waiting on, it is not waiting any more.
+    room["runoutSeats"] = []
+    room["runoutDeadline"] = None
     # Before the busts are recorded: the bonus is a transfer that can empty a
     # stack, and a player taken to zero by it is out like any other.
     _pay_seven_deuce(room)
@@ -1512,6 +1552,13 @@ def _scheduled_preaction(room: dict[str, Any]) -> float | None:
     return 0.0 if _pre_action_for(room, room.get("actorId")) else None
 
 
+def _scheduled_runout(room: dict[str, Any]) -> float | None:
+    """When an unanswered offer of a second board expires."""
+    if room.get("phase") != "hand" or not room.get("stateB64"):
+        return None
+    return room.get("runoutDeadline") or None
+
+
 def _scheduled_close(room: dict[str, Any]) -> float | None:
     """When a table that has run out of players finally gives up waiting."""
     return room.get("closeAt") or None
@@ -1616,6 +1663,33 @@ def _run_preaction(room: dict[str, Any]) -> bool:
     return changed or acted
 
 
+def _settle_runout(room: dict[str, Any], state) -> None:
+    """Write back a hand that was waiting on the number of boards."""
+    _save_state(room, state)
+    if poker.is_hand_over(state):
+        _settle_hand(room, state)
+    else:
+        _set_action_deadline(room, state, time.time())
+
+
+def _run_runout(room: dict[str, Any]) -> bool:
+    """Nobody answered in time, so the hand runs once.
+
+    Which is also what happens when anybody says no — running it twice needs
+    everyone, so silence and a refusal come to the same thing. That is what
+    makes it safe to let the clock answer for a player who has walked off.
+    """
+    state = poker.loads(room["stateB64"])
+    waiting = poker.runout_choosers(state)
+    if not waiting:
+        room["runoutDeadline"] = None
+        return True
+    for _ in waiting:
+        poker.choose_runout(state, 1)
+    _settle_runout(room, state)
+    return True
+
+
 def _run_close(room: dict[str, Any]) -> bool:
     room["closeAt"] = None
     _finish_tournament(room)
@@ -1662,6 +1736,7 @@ _SCHEDULE = (
     # out of time, and running the clock first would fold a hand they told us
     # they wanted to play.
     ("preaction", _scheduled_preaction, _run_preaction),
+    ("runout", _scheduled_runout, _run_runout),
     ("clock", _scheduled_clock, _run_clock),
     ("deal", _scheduled_deal, _run_deal),
     ("close", _scheduled_close, _run_close),
@@ -1754,10 +1829,14 @@ def _build_view(room: dict[str, Any], viewer_id: str | None) -> dict[str, Any]:
 
     state = None
     shown_down = False
+    dealt_boards: list[list[str]] = []
     hand_ids: list[str] = room.get("handPlayerIds", []) or []
     if room.get("stateB64"):
         state = poker.loads(room["stateB64"])
-        board = poker.board_cards(state)
+        dealt_boards = poker.boards(state)
+        # The first board stays where every existing caller looks for it, so a
+        # table that never runs it twice sees exactly what it always saw.
+        board = dealt_boards[0]
         pot = poker.pot_total(state, room["handStartStacks"])
         street = poker.street_name(state)
         pos = room.get("positions") or poker.initial_positions(state)
@@ -1913,6 +1992,11 @@ def _build_view(room: dict[str, Any], viewer_id: str | None) -> dict[str, Any]:
         "bankRunning": bool(room.get("bankRunning")),
         "players": players_out,
         "board": board,
+        # Every board dealt. One entry on all but the hands that ran twice, so
+        # a table can render this and forget the distinction exists.
+        "boards": dealt_boards or ([board] if board else []),
+        # What each board came to, once the hand is over.
+        "boardResults": room.get("boardResults") or [],
         "pot": pot,
         "street": street,
         "actorId": actor_id,
@@ -1933,6 +2017,15 @@ def _build_view(room: dict[str, Any], viewer_id: str | None) -> dict[str, Any]:
         # different game: half the information in poker is what somebody has
         # not decided yet.
         "preAction": _pre_action_for(room, viewer_id),
+        # The hand is all-in and waiting on whether to deal a second board.
+        # Everybody sees that it is being asked — the table is watching — but
+        # only the players still in it are being asked.
+        "runoutSeats": [
+            hand_ids[s]
+            for s in (room.get("runoutSeats") or [])
+            if s < len(hand_ids)
+        ],
+        "runoutDeadline": room.get("runoutDeadline"),
         "level": _level_view(room, now),
         # Every clock is an absolute server timestamp; the client subtracts
         # serverTime to stay correct even when a device's clock is off.
@@ -2048,6 +2141,9 @@ async def create_room(body: CreateRoomBody) -> dict[str, Any]:
         "rebuysPerPlayer": body.rebuysPerPlayer,
         "addOn": body.addOn,
         "timeBankSeconds": body.timeBankSeconds,
+        "runItTwice": body.runItTwice,
+        # When the offer of a second board expires and the hand runs once.
+        "runoutDeadline": None,
         # Whether the decision on the table is being paid for out of the
         # actor's bank rather than the shot clock. See ``_open_the_time_bank``.
         "bankRunning": False,
@@ -2672,6 +2768,49 @@ async def take_action(
             _settle_hand(room, state)  # state kept for the showdown reveal
         else:
             _set_action_deadline(room, state, time.time())
+        _keep_receipt(room, body.requestId, {})
+        await save_room(room)
+        return _build_view(room, body.playerId)
+
+
+@app.post("/rooms/{room_id}/runout")
+async def choose_runout(
+    room_id: str,
+    body: ActionBody,
+    x_player_token: str | None = fastapi.Header(default=None),
+) -> dict[str, Any]:
+    """Say whether you want the rest of the board dealt once or twice.
+
+    Offered only when the chips are already in and there is board to come, and
+    only to the players still in the hand. Everybody has to agree — one refusal
+    and it runs once, which is also what an unanswered offer comes to, which is
+    what lets the clock answer for somebody who has walked off.
+
+    ``action`` is ``once`` or ``twice``.
+    """
+    async with _RoomLock(room_id):
+        room = await load_room(room_id)
+        if not room:
+            raise fastapi.HTTPException(404, "Room not found.")
+        _authenticate(room, body.playerId, x_player_token)
+        if _receipt(room, body.requestId):
+            return _build_view(room, body.playerId)
+        if body.action not in ("once", "twice"):
+            raise fastapi.HTTPException(400, "Say once or twice.")
+        if room["phase"] != "hand" or not room.get("stateB64"):
+            raise fastapi.HTTPException(400, "There is no hand to deal.")
+        if body.handNumber != room["handNumber"]:
+            raise fastapi.HTTPException(409, "That hand is already over.")
+
+        state = poker.loads(room["stateB64"])
+        hand_ids = room.get("handPlayerIds") or []
+        waiting = poker.runout_choosers(state)
+        seat = hand_ids.index(body.playerId) if body.playerId in hand_ids else -1
+        if seat not in waiting:
+            raise fastapi.HTTPException(409, "Nobody is asking you that.")
+
+        poker.choose_runout(state, 2 if body.action == "twice" else 1)
+        _settle_runout(room, state)
         _keep_receipt(room, body.requestId, {})
         await save_room(room)
         return _build_view(room, body.playerId)

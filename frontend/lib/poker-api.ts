@@ -144,6 +144,10 @@ export interface RoomView {
   }
   players: PlayerView[]
   board: string[]
+  /** Every board dealt. One entry on every hand that ran once. */
+  boards: string[][]
+  /** What each board came to, once the hand is over. */
+  boardResults: { cards: string[]; winners: string[] }[]
   pot: number
   street: string
   actorId: string | null
@@ -164,6 +168,10 @@ export interface RoomView {
    * playing a different game.
    */
   preAction: PreAction | null
+  /** Players being asked whether to deal the rest of the board twice. */
+  runoutSeats: string[]
+  /** When the offer of a second board expires and the hand runs once. */
+  runoutDeadline: number | null
   level: LevelView | null
   /** Absolute server time (seconds) when the current decision expires. */
   actionDeadline: number | null
@@ -226,6 +234,12 @@ export interface GameView {
   bombPot: boolean
   players: PlayerView[]
   board: string[]
+  boards: string[][]
+  boardResults: { cards: string[]; winners: string[] }[]
+  /** Players being asked whether to deal the rest of the board twice. */
+  runoutSeats: string[]
+  /** You are one of them. */
+  askedAboutRunout: boolean
   pot: number
   street: string
   actorId: string | null
@@ -246,6 +260,7 @@ export interface GameView {
   levelEndsAtMs: number | null
   autoDealAtMs: number | null
   breakEndsAtMs: number | null
+  runoutEndsAtMs: number | null
   message: string | null
   legal: {
     canFold: boolean
@@ -295,6 +310,8 @@ export function toGameView(v: RoomView, playerId: string | null): GameView {
     v.actionDeadline != null ? v.actionDeadline * 1000 + skewMs : null
   const autoDealAtMs = v.autoDealAt != null ? v.autoDealAt * 1000 + skewMs : null
   const breakEndsAtMs = v.breakUntil != null ? v.breakUntil * 1000 + skewMs : null
+  const runoutEndsAtMs =
+    v.runoutDeadline != null ? v.runoutDeadline * 1000 + skewMs : null
   const levelEndsAtMs =
     v.level?.secondsLeft != null ? Date.now() + v.level.secondsLeft * 1000 : null
 
@@ -317,6 +334,10 @@ export function toGameView(v: RoomView, playerId: string | null): GameView {
     addOn: v.room.addOn,
     bankRunning: !!v.bankRunning,
     preAction: v.preAction ?? null,
+    boards: v.boards?.length ? v.boards : [v.board],
+    boardResults: v.boardResults ?? [],
+    runoutSeats: v.runoutSeats ?? [],
+    askedAboutRunout: !!playerId && (v.runoutSeats ?? []).includes(playerId),
     ante: v.room.ante,
     bombPot: v.room.bombPot,
     players,
@@ -338,6 +359,7 @@ export function toGameView(v: RoomView, playerId: string | null): GameView {
     levelEndsAtMs,
     autoDealAtMs,
     breakEndsAtMs,
+    runoutEndsAtMs,
     message: resultsMessage(v.lastResults, players),
     legal,
   }
@@ -423,6 +445,8 @@ export interface CreateRoomInput {
   addOn: boolean
   /** Extra seconds each player gets for the whole tournament. 0 is off. */
   timeBankSeconds: number
+  /** Offer the all-in players a second board. Everybody left in has to agree. */
+  runItTwice: boolean
 }
 
 /**
@@ -612,6 +636,25 @@ export const pokerApi = {
         action,
         handNumber,
         requestId: `p:${playerId}:${handNumber}:${action}`,
+      }),
+    }),
+
+  /** Say whether you want the rest of the board dealt once or twice. */
+  chooseRunout: (
+    roomId: string,
+    playerId: string,
+    answer: 'once' | 'twice',
+    handNumber: number,
+    token?: string,
+  ) =>
+    req<RoomView>(`/api/rooms/${roomId}/runout`, {
+      method: 'POST',
+      headers: auth(token),
+      body: JSON.stringify({
+        playerId,
+        action: answer,
+        handNumber,
+        requestId: `r:${playerId}:${handNumber}:${answer}`,
       }),
     }),
 

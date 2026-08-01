@@ -51,6 +51,7 @@ export function CreateRoomForm() {
   const [breakEveryLevels, setBreakEveryLevels] = useState(0)
   const [lateEntryLevels, setLateEntryLevels] = useState(4)
   const [rebuyLevels, setRebuyLevels] = useState(0)
+  const [runItTwice, setRunItTwice] = useState(false)
   const [password, setPassword] = useState('')
   const [error, setError] = useState<string | null>(null)
   const [loading, setLoading] = useState(false)
@@ -97,6 +98,7 @@ export function CreateRoomForm() {
         rebuysPerPlayer: 2,
         addOn: rebuyLevels > 0,
         timeBankSeconds: Number(actionSeconds) ? 60 : 0,
+        runItTwice,
       })
       saveSession(session)
       router.push(`/room/${session.roomId}`)
@@ -301,6 +303,20 @@ export function CreateRoomForm() {
                 <span className="text-[11px] font-normal opacity-70">
                   Win a pot with seven-deuce offsuit and everyone pays you two big blinds.
                   Counts on pots won by folding too — but you have to show it.
+                </span>
+              </span>
+            </Button>
+            <Button
+              type="button"
+              variant={runItTwice ? 'secondary' : 'outline'}
+              onClick={() => setRunItTwice(!runItTwice)}
+              className="h-auto justify-start py-2 text-left"
+            >
+              <span className="flex flex-col">
+                <span className="text-sm font-semibold">Run it twice</span>
+                <span className="text-[11px] font-normal opacity-70">
+                  All-in with cards to come? The rest of the board can be dealt twice,
+                  for half the pot each — if everybody still in agrees.
                 </span>
               </span>
             </Button>

@@ -2203,6 +2203,160 @@ def test_a_table_from_before_the_credential_split_closes_every_door(client, cloc
 
 
 # --------------------------------------------------------------------------- #
+# Running it twice
+# --------------------------------------------------------------------------- #
+def shove(client, room_id, ids):
+    """Fold one out and get the other two all-in preflop.
+
+    Three-handed rather than heads-up on purpose: an all-in between the last
+    two players ends the tournament as soon as one of them busts, and every
+    assertion below would then be about the podium rather than about the
+    boards.
+    """
+    first = state(client, room_id, ids[0])["actorId"]
+    act(client, room_id, first, "fold")
+    for _ in range(6):
+        view = state(client, room_id, ids[0])
+        if view["room"]["phase"] != "hand" or not view["actorId"]:
+            break
+        legal = state(client, room_id, view["actorId"])["legal"]
+        if legal and legal["canRaise"]:
+            act(client, room_id, view["actorId"], "raise", legal["maxRaise"])
+        elif legal and legal["canCheckOrCall"]:
+            act(client, room_id, view["actorId"], "call")
+        else:
+            break
+        if state(client, room_id, ids[0])["runoutSeats"]:
+            break
+    return state(client, room_id, ids[0])
+
+
+def say(client, room_id, player_id, answer):
+    return client.post(
+        f"/api/rooms/{room_id}/runout",
+        headers=auth(player_id),
+        json={
+            "playerId": player_id,
+            "action": answer,
+            "handNumber": hand_number(client, room_id),
+        },
+    )
+
+
+def test_the_offer_only_appears_when_the_chips_are_already_in(client, clock):
+    room_id, ids = table(client, 3, runItTwice=True, actionSeconds=0, levelMinutes=0)
+    start(client, room_id, ids[0])
+    assert state(client, room_id, ids[0])["runoutSeats"] == []
+
+    view = shove(client, room_id, ids)
+    assert len(view["runoutSeats"]) == 2, "only the players still in it"
+    assert view["runoutDeadline"] == pytest.approx(clock.now + main.RUNOUT_SECONDS)
+    assert view["room"]["phase"] == "hand", "waiting, not settled"
+
+
+def test_everybody_has_to_agree_for_a_second_board(client, clock):
+    room_id, ids = table(client, 3, runItTwice=True, actionSeconds=0, levelMinutes=0)
+    start(client, room_id, ids[0])
+    asked = shove(client, room_id, ids)["runoutSeats"]
+
+    for pid in asked:
+        assert say(client, room_id, pid, "twice").status_code == 200
+
+    view = state(client, room_id, ids[0])
+    assert view["room"]["phase"] == "handover"
+    assert len(view["boards"]) == 2
+    assert all(len(b) == 5 for b in view["boards"])
+    assert view["boards"][0] != view["boards"][1]
+    # And the pot went out in two halves, to whoever took each board. Which
+    # board went to whom is the whole point of the second one, and it is not
+    # something the final stacks can tell you: winning both and chopping both
+    # come out identically.
+    assert len(view["boardResults"]) == 2
+    assert all(r["winners"] for r in view["boardResults"])
+    paid = {r["name"] for r in view["lastResults"] if r["won"] > 0}
+    for board in view["boardResults"]:
+        assert set(board["winners"]) <= paid
+    assert sum(r["delta"] for r in view["lastResults"]) == 0, "chips conserved"
+
+    # What each seat put in is what it was pushed less what it ended up up or
+    # down by. Both all-in players put in everything they had, and the pot came
+    # back out across the two boards.
+    room = client.portal.call(main.load_room, room_id)
+    started = dict(zip(room["handPlayerIds"], room["handStartStacks"]))
+    staked = {r["playerId"]: r["won"] - r["delta"] for r in view["lastResults"]}
+    for pid in asked:
+        assert staked[pid] == started[pid], "all-in is the whole stack"
+    assert sum(staked.values()) == sum(r["won"] for r in view["lastResults"])
+    assert books_balance(client, room_id)
+
+
+def test_one_refusal_runs_it_once(client, clock):
+    room_id, ids = table(client, 3, runItTwice=True, actionSeconds=0, levelMinutes=0)
+    start(client, room_id, ids[0])
+    asked = shove(client, room_id, ids)["runoutSeats"]
+    say(client, room_id, asked[0], "twice")
+    say(client, room_id, asked[1], "once")
+
+    view = state(client, room_id, ids[0])
+    assert view["room"]["phase"] == "handover"
+    assert len(view["boards"]) == 1
+
+
+def test_nobody_answering_runs_it_once_rather_than_holding_the_table(client, clock):
+    """Somebody walks off to the kitchen with the chips already in. Silence and
+    a refusal come to the same thing, which is what makes this safe."""
+    room_id, ids = table(client, 3, runItTwice=True, actionSeconds=0, levelMinutes=0)
+    start(client, room_id, ids[0])
+    shove(client, room_id, ids)
+
+    clock.advance(main.RUNOUT_SECONDS + 1)
+    view = state(client, room_id, ids[0])
+    assert view["room"]["phase"] == "handover"
+    assert len(view["boards"]) == 1
+    assert view["runoutSeats"] == []
+
+
+def test_a_table_without_the_rule_is_never_asked(client, clock):
+    room_id, ids = table(client, 3, runItTwice=False, actionSeconds=0, levelMinutes=0)
+    start(client, room_id, ids[0])
+    view = shove(client, room_id, ids)
+    assert view["runoutSeats"] == []
+    assert view["room"]["phase"] == "handover"
+    assert len(view["boards"]) == 1
+
+
+def test_nobody_outside_the_hand_gets_a_say(client, clock):
+    room_id, ids = table(client, 3, runItTwice=True, actionSeconds=0, levelMinutes=0)
+    start(client, room_id, ids[0])
+    view = shove(client, room_id, ids)
+    assert view["runoutSeats"], "the offer has to be out for this to mean anything"
+    outsider = next(p for p in ids if p not in view["runoutSeats"])
+    res = say(client, room_id, outsider, "twice")
+    assert res.status_code == 409
+    assert "asking you" in res.json()["detail"]
+
+
+def test_folding_for_free_stays_impossible_in_cash_mode(client, clock):
+    """Running it twice needs cash-game mode, which lets a player fold a hand
+    they could check. Legal everywhere, pointless everywhere, and offering it
+    would just be a button that throws away a free card."""
+    room_id, ids = table(client, 3, runItTwice=True, actionSeconds=0, levelMinutes=0)
+    start(client, room_id, ids[0])
+    for _ in range(6):
+        view = state(client, room_id, ids[0])
+        actor = view["actorId"]
+        if not actor:
+            break
+        legal = state(client, room_id, actor)["legal"]
+        if legal and legal["canCheckOrCall"] and legal["callAmount"] == 0:
+            assert legal["canFold"] is False
+            assert act(client, room_id, actor, "fold").status_code == 400
+            return
+        act(client, room_id, actor, "call")
+    pytest.skip("no free check came up in this deal")
+
+
+# --------------------------------------------------------------------------- #
 # Deciding before your turn
 # --------------------------------------------------------------------------- #
 def plan(client, room_id, player_id, action, hand=None):
