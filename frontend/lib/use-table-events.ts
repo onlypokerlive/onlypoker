@@ -48,6 +48,11 @@ export function useTableEvents(view: GameView | null) {
   const [mode, setModeState] = useState<SoundMode>('all')
   const previous = useRef<GameView | null>(null)
   const ready = useRef(false)
+  // The highest decision this phone has ever announced. Monotonic and kept
+  // apart from the view, because the view can go backwards: a slow poll
+  // landing after a fast one puts an older table on screen, and measuring
+  // "already seen" against that replays everything in between.
+  const announced = useRef(0)
 
   // The preference lives in localStorage, which is not readable while the page
   // is being rendered on the server, so it is picked up on mount instead.
@@ -82,8 +87,11 @@ export function useTableEvents(view: GameView | null) {
 
   useEffect(() => {
     if (!view) return
-    const events = diffViews(previous.current, view)
+    const events = diffViews(previous.current, view, announced.current)
     previous.current = view
+    for (const action of view.actions) {
+      announced.current = Math.max(announced.current, action.seq)
+    }
     if (mode === 'off' || !events.length) return
 
     for (const event of events) {

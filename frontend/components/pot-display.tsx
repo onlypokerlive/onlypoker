@@ -40,7 +40,11 @@ export function PotDisplay({
   }
 
   return (
-    <div className="flex flex-col items-center gap-0.5 rounded-2xl bg-background/70 px-3 py-1 backdrop-blur">
+    // Tight leading, deliberately: three pots at comfortable spacing make the
+    // middle of the table tall enough to reach the seats on a small phone with
+    // eight players. The matrix in `table-layout.test.ts` is what says so, and
+    // `estimateCentreBox` carries the same numbers.
+    <div className="flex flex-col items-center gap-0.5 rounded-2xl bg-background/70 px-3 py-1 leading-none backdrop-blur">
       {pots.map((pot, i) => {
         // Nobody is served an empty eligibility list any more, but a spectator
         // has no seat and an older server sent none — and greying out every
@@ -51,7 +55,7 @@ export function PotDisplay({
           <div
             key={i}
             className={cn(
-              "flex items-baseline gap-2 leading-tight",
+              "flex items-baseline gap-2 leading-none",
               // Not hidden and not explained in words: the pots you cannot win
               // are still what the players around you are playing for, and
               // watching the side pot grow is half of watching the hand.
@@ -64,7 +68,7 @@ export function PotDisplay({
             <span
               className={cn(
                 "font-mono font-bold tabular-nums text-primary",
-                i === 0 ? "text-base" : "text-sm",
+                i === 0 ? "text-base" : "text-xs",
               )}
             >
               {pot.amount.toLocaleString()}

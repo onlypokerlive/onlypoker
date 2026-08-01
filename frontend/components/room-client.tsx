@@ -57,6 +57,11 @@ export function RoomClient({ roomId }: { roomId: string }) {
   const [busy, setBusy] = useState(false)
   const [revealed, setRevealed] = useState(false)
   const pausePollRef = useRef(false)
+  // Which poll was sent, and which one's answer is on screen. Two numbers and
+  // not one: a request has to be stamped before it is sent to be recognised as
+  // stale when it comes back.
+  const pollRef = useRef(0)
+  const answeredRef = useRef(0)
 
   // Resolve session from local storage; if absent, send to join page.
   useEffect(() => {
@@ -70,8 +75,17 @@ export function RoomClient({ roomId }: { roomId: string }) {
 
   const refresh = useCallback(async () => {
     if (!session || pausePollRef.current) return
+    // Every poll takes a number, and only a newer answer than the one already
+    // on screen is allowed to replace it. Without this a slow response lands
+    // after a faster one that was sent later and the table jumps *backwards* —
+    // which reads as a glitch, and quietly replays the moments in between the
+    // next time round, because "what has this client already seen" is measured
+    // against whatever view it is holding.
+    const ticket = ++pollRef.current
     try {
       const raw = await pokerApi.getState(roomId, session.playerId, session.token)
+      if (ticket < answeredRef.current) return
+      answeredRef.current = ticket
       setView(toGameView(raw, session.playerId))
       setError(null)
     } catch (e) {
@@ -138,7 +152,7 @@ export function RoomClient({ roomId }: { roomId: string }) {
   // button. The whole felt, not a target: at a real table you knock wherever
   // your hand happens to be.
   const canCheckNow = !!view?.isYourTurn && !!view?.legal?.canCheck && !busy
-  const { onPointerDown: onFeltTap, refused } = useDoubleTap({
+  const { refused, ...feltTap } = useDoubleTap({
     enabled: canCheckNow,
     onDoubleTap: () => handleAction("check"),
   })
@@ -149,6 +163,21 @@ export function RoomClient({ roomId }: { roomId: string }) {
     if (soundMode !== "off") playCue("error")
     toast("Double-tap checks — but only on your turn, and only when checking is free.")
   }, [refused, soundMode])
+
+  /**
+   * Put a view on screen that came from an action rather than from a poll.
+   *
+   * It is newer than anything in flight by construction — the server has just
+   * applied the decision — so it takes the next ticket, and any poll still on
+   * its way back is discarded when it lands.
+   */
+  const showFresh = useCallback(
+    (next: GameView) => {
+      answeredRef.current = ++pollRef.current
+      setView(next)
+    },
+    [],
+  )
 
   async function withBusy(fn: () => Promise<void>) {
     if (busy) return
@@ -168,7 +197,7 @@ export function RoomClient({ roomId }: { roomId: string }) {
     withBusy(async () => {
       if (!session) return
       const raw = await pokerApi.startHand(roomId, session.playerId, session.token)
-      setView(toGameView(raw, session.playerId))
+      showFresh(toGameView(raw, session.playerId))
     })
 
   const handleAction = (action: "fold" | "check" | "call" | "raise", amount?: number) =>
@@ -185,7 +214,7 @@ export function RoomClient({ roomId }: { roomId: string }) {
         view.turnId,
         session.token,
       )
-      setView(toGameView(raw, session.playerId))
+      showFresh(toGameView(raw, session.playerId))
     })
 
   const handleSitToggle = () =>
@@ -197,7 +226,7 @@ export function RoomClient({ roomId }: { roomId: string }) {
         !view.you?.sittingOut,
         session.token,
       )
-      setView(toGameView(raw, session.playerId))
+      showFresh(toGameView(raw, session.playerId))
     })
 
   const handleTableControl = (action: TableControl) =>
@@ -209,7 +238,7 @@ export function RoomClient({ roomId }: { roomId: string }) {
         action,
         session.token,
       )
-      setView(toGameView(raw, session.playerId))
+      showFresh(toGameView(raw, session.playerId))
     })
 
   if (!view) {
@@ -303,7 +332,7 @@ export function RoomClient({ roomId }: { roomId: string }) {
           {/* The gesture lives on a wrapper rather than inside the table, so
               the table stays a drawing of a table and knows nothing about
               what tapping it means. */}
-          <div onPointerDown={onFeltTap}>
+          <div {...feltTap}>
             <PokerTable
               view={{ ...view, board: shownBoard }}
               revealed={revealed}

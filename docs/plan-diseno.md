@@ -46,11 +46,18 @@ sonidos. Es lo primero que hay que decidir porque es lo único que toca backend 
 | **V4** · movimiento | ◐ | **Solo el board carta a carta** y la rama de `prefers-reduced-motion`. Faltan las fichas en arco, la recogida y el showdown en seis tiempos |
 | **P1–P5, S1, S3–S6** | ✖ | Sin empezar, salvo la mitad de **S5**: no había `<Toaster />` montado, así que *ningún* error se veía nunca |
 
-**Tres decisiones tomadas al ejecutar que se apartan de lo escrito:**
+**Cinco decisiones tomadas al ejecutar que se apartan de lo escrito:**
 
 1. **X1 sirve `kind` + `allIn` como bandera**, no `allIn` como *kind*. Alguien puede estar all-in *y* pagando, y colapsarlo pierde cuál de las dos era. Y hay un sexto *kind*, `bet`, porque «sube a 900» cuando nadie había apostado describe una mano que no ocurrió.
 2. **El anillo pasa de 37/38 a 41/41 y el asiento adelgaza a partir de siete.** No es gusto: a 320 px el anillo viejo ponía los asientos de los costados encima de un board de cinco con tres jugadores, y encima unos de otros con nueve. Lo encontró el test de §1.2 en su primera ejecución, que es exactamente para lo que estaba.
-3. **La mesa conserva su proporción y la página hace scroll.** Se probó a limitar la altura para que el asiento de abajo no quedara bajo la banda: limitarla es justo lo que provoca los solapes —nueve asientos necesitan unos 450 px de mesa— y el test lo dice en voz alta en vez de degradar en silencio. **El asiento de abajo sigue quedando bajo la banda en un móvil corto; es lo único conocido que queda feo.**
+3. **La mesa conserva su proporción y la página hace scroll.** Se probó a limitar la altura para que el asiento de abajo no quedara bajo la banda: limitarla es justo lo que provoca los solapes —nueve asientos necesitan unos 430 px de mesa— y el test lo dice en voz alta en vez de degradar en silencio. **El asiento de abajo sigue quedando bajo la banda en un móvil corto; es lo único conocido que queda feo.**
+4. **Hay una sola mesa. §1.4 pedía decidir explícitamente qué pasa con `sm:`, y la respuesta es que la mesa ancha no existía por una razón: no puede existir.** Nueve asientos de 112×124 no caben en ninguna elipse 3:2 —la altura de una mesa apaisada es menor que dos asientos apilados, así que la pareja de cada costado siempre se pisa, y los radios que más se acercan ni siquiera caben dentro de la mesa—. Se ha quitado `sm:aspect-[3/2] sm:max-w-3xl` y en pantalla ancha la mesa es *la misma*, más grande (`sm:max-w-lg`). Esto no se veía porque el modelo geométrico solo conocía la mesa vertical, que es exactamente el fallo contra el que avisaba §1.4: **el test garantizaba una invariante de una mesa que no era la que se entregaba.** Lo encontró la revisión de Codex.
+5. **El board crece a 36 px a partir de 430, no de 380.** Cinco cartas a 36 px son un bloque de 196 px y los asientos de los costados tienen que librarlo; a 390 no lo libran. Es `BIG_BOARD_AT` en `table-layout.ts`, y la matriz es quien dice que son 430.
+
+**Y dos correcciones de la revisión:**
+
+- El doble toque **exige dos pulsaciones completas** (`pointerdown` + `pointerup` sin desplazamiento), del puntero primario, sobre el paño y no sobre ninguna pieza, y se olvida al cambiar el turno. Antes bastaban dos `pointerdown` en cualquier sitio de la mesa: el comienzo de un scroll, un segundo dedo o dos toques sobre tus propias cartas pasaban un turno. Es la única acción del producto que se puede tomar sin pulsar nada, así que toda duda se resuelve hacia no disparar.
+- **Los sondeos llevan número y los atrasados se descartan.** Con `setInterval` a 1,2 s hay peticiones solapadas, y una respuesta lenta que aterrizaba después de una rápida devolvía la mesa hacia atrás y hacía que el siguiente sondeo repitiera sonidos ya emitidos. Además el marcador de agua de `seq` vive fuera de la vista anterior, que es lo único monótono de verdad.
 
 ---
 

@@ -97,7 +97,9 @@ export const LAYOUT = {
    * seat and the board is around 15px wide — nothing fits in it, and the only
    * free felt is a good way along the ring. Small slides are tried first.
    */
-  MAX_SLIDE: 72,
+  MAX_SLIDE: 96,
+  /** How far back towards the rail a bet may be nudged looking for room. */
+  MAX_PULL_BACK: 18,
 
   /** How far a stack may be pulled in towards its owner looking for room. */
   STACK_PULL: [0, 8, 16, 26],
@@ -278,6 +280,9 @@ export function betSpot(
     const box = boxAt(at, chip)
     let spent = reserved ? LAYOUT.BOARD_WEIGHT * overlapArea(box, reserved) : 0
     for (const s of blocked) spent += overlapArea(box, s)
+    // Hanging over the rail, priced the same way a stack prices it, so the two
+    // placements trade off against each other in one currency instead of two.
+    spent += Math.max(0, feltRadius(at, table) - LAYOUT.ON_THE_FELT) * LAYOUT.OFF_THE_FELT
     // Bets already placed this pass, in the spots they were just given.
     // Weighted far above a seat, because a seat has margin to graze and two
     // pills on top of each other are one unreadable number — the same failure
@@ -296,8 +301,12 @@ export function betSpot(
 
   let best = { x: c.x - out.x * start, y: c.y - out.y * start, cost: Infinity }
 
+  // Slightly *outward* as well as inward. On a crowded ring the only free felt
+  // is sometimes a few pixels behind the seat, towards the rail — which costs
+  // a little now that the rail has a price, and costs far less than sitting on
+  // a neighbour.
   for (
-    let pushed = 0;
+    let pushed = -LAYOUT.MAX_PULL_BACK;
     start + pushed <= Math.min(start + LAYOUT.MAX_PUSH, toMiddle);
     pushed += LAYOUT.PUSH_STEP
   ) {
@@ -410,12 +419,67 @@ export function estimateSeatSize({
   /** A hand has been turned over, so the cards — and the seat — are bigger. */
   revealed?: boolean
 }): Size {
+  // Past `sm:` the seat stops tracking the viewport and becomes a fixed
+  // `w-28` with `h-12` cards — which also means `compact` stops applying,
+  // because the `sm:` classes win. A model that keeps shrinking seats past
+  // 640px is describing a table nobody is looking at.
+  if (isWide(width)) return { w: 112, h: 124 }
   const w = crowded(seats)
     ? Math.min(62, Math.max(52, width * 0.17))
     : Math.min(76, Math.max(60, width * 0.2))
   // Cards + name + chips + a badge row, and a revealed hand is taller.
   const h = revealed ? (crowded(seats) ? 86 : 92) : 78
   return { w, h }
+}
+
+/**
+ * The viewport where the table stops being a phone table.
+ *
+ * §1.4 said this had to be decided explicitly rather than discovered halfway
+ * through, and here is the decision, with the working.
+ *
+ * There *was* a second table — `sm:aspect-[3/2] sm:max-w-3xl`, with `sm:w-28`
+ * seats — and it does not work. Nine 112×124 seats will not fit on a 3:2
+ * ellipse at any radius: the vertical room a landscape table has is smaller
+ * than two seats stacked, so the pair flanking each side always overlaps, and
+ * the radii that come closest do not even fit inside the table. It was never
+ * visible because the geometry model only knew about the portrait table, which
+ * is precisely the failure mode §1.4 warned about — the test guaranteed an
+ * invariant for a table that was not the one being shipped.
+ *
+ * So there is **one table**, and a wide screen gets a *bigger* one rather than
+ * a differently-shaped one. Same ellipse, same code path, one thing to reason
+ * about — and the seats grow, which is what a big screen should buy.
+ */
+export const SM_BREAKPOINT = 640
+
+/**
+ * The viewport from which the community cards are drawn at full size.
+ *
+ * Not a taste decision: five cards at 36px is a 196px block, and the seats on
+ * the flanks have to clear it. Below this the ring is too tight and the board
+ * lands on somebody. Measured against the layout matrix, not guessed.
+ */
+export const BIG_BOARD_AT = 430
+
+/** How wide the table box is allowed to get, phone and desktop. */
+const MAX_TABLE_W = 384
+const MAX_TABLE_W_WIDE = 512
+
+export function isWide(width: number): boolean {
+  return width >= SM_BREAKPOINT
+}
+
+/**
+ * The table box itself, for a given viewport.
+ *
+ * One shape at both breakpoints — see {@link SM_BREAKPOINT} for why — so this
+ * is the only place the box is worked out and the component reads the same
+ * numbers the test does.
+ */
+export function tableBox(width: number, height?: number): TableSize {
+  const w = Math.min(isWide(width) ? MAX_TABLE_W_WIDE : MAX_TABLE_W, width - 24)
+  return { w, h: height ?? (w * 4.4) / 3 }
 }
 
 /**
@@ -440,10 +504,34 @@ export function crowded(seats: number): boolean {
  * 34. Guessing generously here would be the worst of both worlds: it would
  * make the test fail on tables that are fine and pass on tables that are not.
  */
-export function estimateCentreBox(table: TableSize, boardCards: number): Box {
-  const cards = boardCards > 0 ? boardCards * 24 + (boardCards - 1) * 4 : 96
+export function estimateCentreBox(
+  table: TableSize,
+  boardCards: number,
+  {
+    width,
+    pots = 1,
+  }: {
+    /** The viewport, because the board cards grow at two breakpoints. */
+    width?: number
+    /** How many pots are being shown. Side pots make the block taller. */
+    pots?: number
+  } = {},
+): Box {
+  const w0 = width ?? table.w + 24
+  // `size="xs"` is 24×32, and past BIG_BOARD_AT it becomes 36×48. Both live in
+  // `poker-table.tsx` and must agree with this, because five 36px cards are a
+  // 196px block and the ring has to clear it: at 390px it does not, which is
+  // how a three-handed table put its flank seats on the river.
+  const cardW = w0 >= BIG_BOARD_AT ? 36 : 24
+  const cardH = w0 >= BIG_BOARD_AT ? 48 : 32
+  const cards = boardCards > 0 ? boardCards * cardW + (boardCards - 1) * 4 : 96
   const w = Math.max(96, cards)
-  const h = 34 + 8 + (boardCards > 0 ? 32 : 20)
+  // One pot is a pill; several are a stacked block that grows a line each.
+  // The lines are tight on purpose — a three-pot block at comfortable leading
+  // is 70-odd pixels of middle, and on a 320px phone seating eight that is
+  // enough to reach the seats. See `pot-display.tsx`, which has to agree.
+  const potH = pots > 1 ? 26 + (pots - 1) * 14 : 34
+  const h = potH + 8 + (boardCards > 0 ? cardH : 20)
   return boxAt({ x: table.w / 2, y: table.h * 0.42 }, { w, h })
 }
 
@@ -495,6 +583,8 @@ export interface TableLayoutInput {
   stacks?: number[]
   /** A hand has been turned over: seats are taller. */
   revealed?: boolean
+  /** How many pots are on the table. More than one makes the middle taller. */
+  pots?: number
 }
 
 export interface PlacedBox {
@@ -518,17 +608,14 @@ export interface TableLayout {
  * not an optimisation, it is the reason each layer can see the one before it.
  */
 export function layoutTable(input: TableLayoutInput): TableLayout {
-  const { width, seats, board, revealed = false } = input
-  // The table box is a 3/4.4 portrait aspect, capped at max-w-sm.
-  const w = Math.min(384, width - 24)
-  const h = input.height ?? (w * 4.4) / 3
-  const table: TableSize = { w, h }
+  const { width, seats, board, revealed = false, pots = 1 } = input
+  const table = tableBox(width, input.height)
 
   const seatSize = estimateSeatSize({ width, seats, revealed })
   const seatBoxes = Array.from({ length: seats }, (_, i) =>
     seatBox(i, seats, table, seatSize),
   )
-  const centre = estimateCentreBox(table, board)
+  const centre = estimateCentreBox(table, board, { width, pots })
 
   const boxes: PlacedBox[] = [
     { what: 'centre', seat: null, box: centre },

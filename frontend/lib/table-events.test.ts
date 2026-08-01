@@ -256,6 +256,28 @@ describe('what the server wrote down', () => {
     expect(diff(before, after).filter((e) => e === 'chips')).toHaveLength(1)
   })
 
+  it('does not replay decisions when a slow poll puts an older table back', () => {
+    // Two requests in flight, the older one answering last. Measuring "already
+    // seen" against whatever view happens to be on screen replays everything
+    // in between — every check and every raise, a second time.
+    const stale = view({ actions: [action({ seq: 4 })] })
+    const fresh = view({
+      actions: [action({ seq: 4 }), action({ seq: 5, kind: 'raise', to: 300 })],
+    })
+    expect(diffViews(stale, fresh)).toContain('raise')
+    // Same pair again, now that the client has said it got as far as seq 5.
+    expect(diffViews(stale, fresh, 5)).not.toContain('raise')
+  })
+
+  it('still reports anything past the high-water mark', () => {
+    const stale = view({ actions: [action({ seq: 4 })] })
+    const fresh = view({
+      actions: [action({ seq: 5, kind: 'raise' }), action({ seq: 6, kind: 'fold' })],
+    })
+    expect(diffViews(stale, fresh, 5)).toEqual(expect.arrayContaining(['fold']))
+    expect(diffViews(stale, fresh, 5)).not.toContain('raise')
+  })
+
   it('reports the street being swept up, and does not mistake a deal for it', () => {
     const betting = withPlayer(view({ pot: 0 }), 'p1', { bet: 30 })
     const swept = view({ pot: 60, board: ['As', 'Kd', '7h'] })

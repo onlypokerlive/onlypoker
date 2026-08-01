@@ -40,9 +40,18 @@ export type TableEvent =
 export function newActions(
   previous: GameView | null,
   current: GameView,
+  /**
+   * The highest `seq` this client has ever acted on, if the caller is keeping
+   * one. Worth keeping: the previous *view* is not a reliable high-water mark
+   * on its own, because a slow response can land after a faster one and put an
+   * older table back on screen — and then everything between the two would be
+   * announced a second time.
+   */
+  sinceSeq?: number,
 ): TableAction[] {
   if (!previous) return []
-  const seen = previous.actions.reduce((max, a) => Math.max(max, a.seq), 0)
+  const fromView = previous.actions.reduce((max, a) => Math.max(max, a.seq), 0)
+  const seen = Math.max(fromView, sinceSeq ?? 0)
   return current.actions.filter((a) => a.seq > seen)
 }
 
@@ -53,7 +62,12 @@ export function newActions(
  * nothing: arriving at a table that is already mid-hand is not a hand being
  * dealt, and treating it as one plays every sound the app has at once.
  */
-export function diffViews(previous: GameView | null, current: GameView): TableEvent[] {
+export function diffViews(
+  previous: GameView | null,
+  current: GameView,
+  /** See {@link newActions}. */
+  sinceSeq?: number,
+): TableEvent[] {
   if (!previous) return []
   const events: TableEvent[] = []
 
@@ -71,7 +85,7 @@ export function diffViews(previous: GameView | null, current: GameView): TableEv
   }
 
   // What everybody actually did, in the order they did it.
-  const fresh = newActions(previous, current)
+  const fresh = newActions(previous, current, sinceSeq)
   for (const action of fresh) {
     // All-in stops the table, so it is the moment worth naming even when the
     // decision that got there was a call.

@@ -119,7 +119,12 @@ function BoardCard({ card, delay }: { card: string; delay: number | null }) {
     <PlayingCard
       card={card}
       size="xs"
-      className="min-[380px]:h-12 min-[380px]:w-9 min-[380px]:text-xs"
+      // Full size only where the ring can take it. Five cards at 36px is a
+      // 196px block, and below 430 the seats on the flanks do not clear it —
+      // which is how a three-handed table used to put a seat on the river.
+      // The number lives in `table-layout.ts` as BIG_BOARD_AT, and the matrix
+      // is what says it is 430 and not 380.
+      className="min-[430px]:h-12 min-[430px]:w-9 min-[430px]:text-xs"
     />
   )
   if (delay == null) return face
@@ -139,7 +144,7 @@ function BoardCard({ card, delay }: { card: string; delay: number | null }) {
           card={null}
           faceDown
           size="xs"
-          className="min-[380px]:h-12 min-[380px]:w-9"
+          className="min-[430px]:h-12 min-[430px]:w-9"
         />
       </div>
     </div>
@@ -332,13 +337,13 @@ export function PokerTable({
       ref={tableRef}
       data-baize={baizeOf(view.baize)}
       data-deck={deckOf(view.deck)}
-      // The aspect ratio is not decoration and it is not negotiable: nine
-      // seats need about 450px of table before adjacent boxes start touching,
-      // and squashing the box to fit a short phone is what makes them touch.
-      // Measured, not guessed — see the layout test, which walks the heights.
-      // So the page scrolls on a short phone, as it already did, and the
-      // buttons stay pinned.
-      className="relative mx-auto aspect-[3/4.4] w-full max-w-sm sm:aspect-[3/2] sm:max-w-3xl"
+      // One shape, everywhere. The aspect ratio is not decoration and it is
+      // not negotiable: nine seats need about 450px of table before adjacent
+      // boxes start touching, and squashing the box — to fit a short phone, or
+      // into the 3:2 desktop table this used to become — is what makes them
+      // touch. A wide screen gets a *bigger* table, not a different one, which
+      // is the explicit call §1.4 asked for. See SM_BREAKPOINT.
+      className="relative mx-auto aspect-[3/4.4] w-full max-w-sm sm:max-w-lg"
     >
       {/* The rail, and the cloth inside it. Two boxes rather than a border,
           because wood and felt are different materials and a border can only

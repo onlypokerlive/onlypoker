@@ -15,14 +15,41 @@ import {
   type Box,
 } from '@/lib/table-layout'
 
-/** The phones this is actually played on. 320 is the floor we support. */
-const WIDTHS = [320, 375, 390, 430]
-const SEATS = [2, 3, 6, 9]
+/**
+ * The screens this is actually played on — and the desktop ones, which is the
+ * part that was missing.
+ *
+ * A matrix that stops at 430 guarantees the invariant for a table nobody with
+ * a laptop is looking at. Everything from 640 up crosses `sm:`, where the seat
+ * stops tracking the viewport and becomes a fixed size.
+ */
+const WIDTHS = [320, 360, 375, 390, 430, 640, 768, 1024, 1280]
+/**
+ * Every seat count a real table passes through, not a sample of it.
+ *
+ * 1 happens between the last elimination and the podium; 4, 5, 7 and 8 are
+ * every table on its way down from nine. Testing 2/3/6/9 tests the shapes
+ * somebody happened to think of.
+ */
+const SEATS = [1, 2, 3, 4, 5, 6, 7, 8, 9]
 const BOARDS = [0, 3, 4, 5]
+/** One pot is the ordinary case; three is a hand with two all-ins in it. */
+const POTS = [1, 2, 3]
 
 /** Everybody has bet, which is the state that fills the felt. */
 const allBetting = (seats: number, amount = 1200) => Array.from({ length: seats }, () => amount)
 const allStacked = (seats: number, discs = 8) => Array.from({ length: seats }, () => discs)
+
+/**
+ * The awkward table: some seats have not bet, some have shoved a five-figure
+ * pill, and some are all in with nothing left to show beside them.
+ *
+ * Uniform tables are the easy case and were the only case being checked.
+ */
+const ragged = (seats: number) => ({
+  bets: Array.from({ length: seats }, (_, i) => (i % 3 === 0 ? 0 : i % 2 ? 1200 : 24_500)),
+  stacks: Array.from({ length: seats }, (_, i) => (i % 4 === 0 ? 0 : 8)),
+})
 
 describe('nothing covers anything', () => {
   // The reason this module exists. Ten rounds of checking this by hand in a
@@ -47,30 +74,73 @@ describe('nothing covers anything', () => {
     }
   }
 
+  // Ragged tables and side pots, across the whole width range. Rolled into one
+  // assertion per width rather than one per combination, or the matrix is
+  // three thousand test names and nobody reads the output.
+  for (const width of WIDTHS) {
+    it(`${width}px · ragged bets, empty stacks and side pots`, () => {
+      const bad: string[] = []
+      for (const seats of SEATS) {
+        for (const board of BOARDS) {
+          for (const pots of POTS) {
+            for (const revealed of [false, true]) {
+              const layout = layoutTable({ width, seats, board, revealed, pots, ...ragged(seats) })
+              for (const hit of collisions(layout)) {
+                bad.push(`${seats} seats · board ${board} · ${pots} pots · ${hit}`)
+              }
+            }
+          }
+        }
+      }
+      expect(bad).toEqual([])
+    })
+  }
+
+  it('keeps everything on the table it was given', () => {
+    // A stack pushed off the felt looking for room is a stack the player
+    // cannot see. Seats are allowed to sit slightly proud of the box — that is
+    // the rail, and the page has margin either side — but nothing else is.
+    const spilled: string[] = []
+    for (const width of WIDTHS) {
+      for (const seats of SEATS) {
+        const layout = layoutTable({ width, seats, board: 5, pots: 2, ...ragged(seats) })
+        for (const { what, seat, box } of layout.boxes) {
+          const over = Math.max(
+            -box.left,
+            box.right - layout.table.w,
+            -box.top,
+            box.bottom - layout.table.h,
+          )
+          const allowance = what === 'seat' ? 12 : 0
+          if (over > allowance) spilled.push(`${width}px ${what}${seat ?? ''} by ${over.toFixed(0)}`)
+        }
+      }
+    }
+    expect(spilled).toEqual([])
+  })
+
   // A table can only be squashed so far before nine seats start touching each
   // other: the ring gets shorter, the circumference goes with it, and the
   // boxes do not. This is the floor, and it is why the table keeps its aspect
   // ratio on a short phone and lets the page scroll instead.
   it('needs the height it asks for, and says so rather than degrading quietly', () => {
-    const cramped = layoutTable({
-      width: 375,
-      height: 380,
-      seats: 9,
-      board: 5,
-      bets: allBetting(9),
-      stacks: allStacked(9),
-    })
-    expect(collisions(cramped).length).toBeGreaterThan(0)
-
-    const enough = layoutTable({
-      width: 375,
-      height: 460,
-      seats: 9,
-      board: 5,
-      bets: allBetting(9),
-      stacks: allStacked(9),
-    })
-    expect(collisions(enough)).toEqual([])
+    const nine = (height: number) =>
+      collisions(
+        layoutTable({
+          width: 375,
+          height,
+          seats: 9,
+          board: 5,
+          revealed: true,
+          bets: allBetting(9),
+          stacks: allStacked(9),
+        }),
+      )
+    // Squashed past this and the ring gets shorter while the seats do not.
+    expect(nine(300).length).toBeGreaterThan(0)
+    // Its own aspect ratio is comfortably clear of the floor, which is the
+    // point: the table keeps its shape and the page scrolls on a short phone.
+    expect(nine(370)).toEqual([])
   })
 
   it('holds when only some players have bet, which is most of a hand', () => {
