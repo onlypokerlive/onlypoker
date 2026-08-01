@@ -6,6 +6,7 @@ import { ArrowRight, ChevronDown, SlidersHorizontal, Spade } from 'lucide-react'
 
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
+import { PlayingCard } from '@/components/playing-card'
 import {
   Field,
   FieldDescription,
@@ -24,6 +25,15 @@ import {
   type FailureCategory,
 } from '@/lib/growth'
 import { BLIND_STRUCTURES, pokerApi, saveSession } from '@/lib/poker-api'
+import {
+  BAIZES,
+  DECKS,
+  DEFAULT_BAIZE,
+  DEFAULT_DECK,
+  type BaizeId,
+  type DeckId,
+} from '@/lib/table-style'
+import { cn } from '@/lib/utils'
 
 const ANTE_MODES = [
   { id: 'off', label: 'None', blurb: 'No ante. Blinds only.' },
@@ -54,6 +64,8 @@ export interface CreateRoomPreset {
   bigBlind?: number
   levelMinutes?: number
   actionSeconds?: number
+  baize?: BaizeId
+  deck?: DeckId
 }
 
 type CreateField =
@@ -118,6 +130,8 @@ export function CreateRoomForm({
   const [lateEntryLevels, setLateEntryLevels] = useState(4)
   const [rebuyLevels, setRebuyLevels] = useState(0)
   const [runItTwice, setRunItTwice] = useState(false)
+  const [baize, setBaize] = useState<BaizeId>(preset.baize ?? DEFAULT_BAIZE)
+  const [deck, setDeck] = useState<DeckId>(preset.deck ?? DEFAULT_DECK)
   const [password, setPassword] = useState('')
   const [customized, setCustomized] = useState(false)
   const [issue, setIssue] = useState<FormIssue | null>(null)
@@ -212,6 +226,8 @@ export function CreateRoomForm({
         addOn: rebuyLevels > 0,
         timeBankSeconds: seconds ? 60 : 0,
         runItTwice,
+        baize,
+        deck,
       })
       saveSession(session)
       recordRoomCreated({ source, customized })
@@ -617,6 +633,75 @@ export function CreateRoomForm({
                     </Button>
                   ))}
                 </div>
+              </Field>
+            </CustomSection>
+
+            <CustomSection title="Table look" summary="Cloth and deck shared by everyone">
+              <Field>
+                <FieldLabel>Table cloth</FieldLabel>
+                <div className="grid grid-cols-4 gap-2">
+                  {BAIZES.map((option) => (
+                    <button
+                      key={option.id}
+                      type="button"
+                      data-baize={option.id}
+                      onClick={() => {
+                        setBaize(option.id)
+                        markAdvanced('baize')
+                      }}
+                      aria-pressed={baize === option.id}
+                      title={option.blurb}
+                      className={cn(
+                        'tactile flex min-h-11 flex-col items-center gap-1 rounded-lg border p-1.5',
+                        baize === option.id ? 'border-primary' : 'border-border/60',
+                      )}
+                    >
+                      <span className="baize h-7 w-full rounded" aria-hidden />
+                      <span className="text-[10px] text-muted-foreground">{option.label}</span>
+                    </button>
+                  ))}
+                </div>
+                <FieldDescription>The cloth every player sees at this table.</FieldDescription>
+              </Field>
+
+              <Field>
+                <FieldLabel>Deck</FieldLabel>
+                <div className="grid grid-cols-4 gap-2">
+                  {DECKS.map((option) => (
+                    <button
+                      key={option.id}
+                      type="button"
+                      data-deck={option.id}
+                      onClick={() => {
+                        setDeck(option.id)
+                        markAdvanced('deck')
+                      }}
+                      aria-pressed={deck === option.id}
+                      title={option.blurb}
+                      className={cn(
+                        'tactile flex min-h-11 flex-col items-center gap-1 rounded-lg border p-1.5',
+                        deck === option.id ? 'border-primary' : 'border-border/60',
+                      )}
+                    >
+                      <span
+                        className="flex w-full items-center justify-center gap-0.5 rounded px-1 py-1.5"
+                        style={{
+                          background:
+                            'radial-gradient(ellipse at 50% 30%, #17604B, #08281D 88%)',
+                          boxShadow:
+                            'inset 0 0 0 1px rgba(0,0,0,.4), inset 0 2px 8px rgba(0,0,0,.5)',
+                        }}
+                        aria-hidden
+                      >
+                        <PlayingCard card="Ah" size="xs" />
+                        <PlayingCard card="Kd" size="xs" />
+                        <PlayingCard card={null} faceDown size="xs" />
+                      </span>
+                      <span className="text-[10px] text-muted-foreground">{option.label}</span>
+                    </button>
+                  ))}
+                </div>
+                <FieldDescription>The card faces and backs used all night.</FieldDescription>
               </Field>
             </CustomSection>
           </div>

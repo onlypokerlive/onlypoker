@@ -99,9 +99,43 @@ TIMEOUT_GRACE = 1.5
 # walks off to the kitchen must not hold it up — an unanswered offer runs once,
 # which is what happens if nobody agrees anyway.
 RUNOUT_SECONDS = 12
-# Pause between hands before the next one is dealt on its own. Long enough to
-# read the showdown, short enough that nobody has to chase the host.
+# Whether the table deals the next hand on its own. Kept as a number of seconds
+# because that is what it used to be and old rooms have it stored; what it means
+# now is only on (non-zero) or off (0). How long the pause actually lasts is
+# `_handover_seconds`.
 AUTO_DEAL_SECONDS = 8
+# How long the table sits between hands.
+#
+# Not one number, which is what it was and what made the pace wrong in both
+# directions at once. The pause exists to be *read*, and how much there is to
+# read swings by a factor of four between a hand everybody folded — which is
+# most hands — and an all-in run out on two boards. A flat eight seconds made
+# the ordinary hand feel like waiting for a bus and still cut off the one hand
+# an hour worth watching.
+#
+# The figures are **not** the pace the big rooms settle on, and that was the
+# mistake in the first pass. An online room is optimising hands per hour for
+# people playing four tables at once; this is one table, once, with friends in
+# the room, and the end of a hand is the part they talk over. Twice that pace,
+# and it still comes to less than half the flat eight seconds this started with
+# on the hands where nothing happened.
+#
+# Seven for the hand nobody showed, because that hand is the one with a decision
+# still open in it — the winner can turn over one card or both, and a pause that
+# ends before anybody has read who won is a pause nobody can decide in.
+HANDOVER_FOLD_SECONDS = 7
+HANDOVER_SHOWDOWN_SECONDS = 9
+# An all-in board is dealt out card by card on the client (`use-runout`), and
+# that reveal has to finish with time left over to take in who won.
+HANDOVER_ALL_IN_SECONDS = 5
+# A second board is a second answer to who won, and it gets read separately.
+HANDOVER_SECOND_BOARD_SECONDS = 3
+# Somebody left the tournament: the one thing at this table that does not happen
+# again, and the only reason to hold everybody a moment longer.
+HANDOVER_BUST_SECONDS = 4
+# However it adds up, it stops here. Beyond this nobody is reading anything —
+# they are waiting.
+HANDOVER_MAX_SECONDS = 18
 # Missing this many decisions in a row sits a player out, so one person who
 # walked away stops costing everyone else the full shot clock every hand.
 AUTO_SIT_OUT_TIMEOUTS = 3
@@ -589,6 +623,13 @@ class CreateRoomBody(BaseModel):
     smallBlind: int = Field(ge=1)
     bigBlind: int = Field(ge=1)
     password: str = Field(min_length=4, max_length=64)
+    # What the table is made of. Cosmetic and shared: a poker table is one
+    # object everybody is sitting at, so this belongs to the room and not to
+    # each player's settings. Validated against a list rather than taken as
+    # free text — it ends up in a `data-` attribute that selects a stylesheet
+    # rule, and an unknown value there is a table with no surface.
+    baize: str = Field(default="emerald", pattern="^(emerald|claret|midnight|slate)$")
+    deck: str = Field(default="clasica", pattern="^(clasica|casino|bloque|marfil)$")
     # 0 disables the blind clock (blinds stay where they started).
     levelMinutes: int = Field(default=10, ge=0, le=120)
     # 0 disables the shot clock.
@@ -854,8 +895,15 @@ def _no_more_hands(room: dict[str, Any]) -> bool:
 # Late entry, leaving and rebuys all break that check — which is fine, as long
 # as it is *replaced* rather than quietly dropped. So the table keeps a ledger:
 # every chip ever issued to it, and every chip taken off it. The invariant
-# becomes ``sum(stacks) + pot == issued - withdrawn``, it still holds on every
-# hand, and it is still the thing that catches a bug that moves chips wrongly.
+# becomes ``sum(stacks) + pot == issued - withdrawn``, and it still holds on
+# every hand.
+#
+# What it catches is chips appearing, vanishing or being counted twice. What it
+# cannot catch is a chip that moved *somewhere it should not have*: a pot pushed
+# to the wrong seat adds up exactly as well as one pushed to the right one. That
+# is a question about who won, and the tests that answer it plant the hands and
+# name the winner. Worth writing down because a ledger that balances reads like
+# proof of more than it proves.
 #
 # Arriving, leaving, busting and buying back in are one mechanism with four
 # doors, deliberately. They are the same question — who is at this table and
@@ -1007,12 +1055,40 @@ def _start_break(room: dict[str, Any], now: float) -> None:
 # Engine / hand orchestration
 # --------------------------------------------------------------------------- #
 def _eligible_player_ids(room: dict[str, Any]) -> list[str]:
-    return [
-        pid
-        for pid in room["order"]
-        if room["players"][pid]["chips"] > 0
-        and not room["players"][pid].get("sittingOut")
-    ]
+    """Everybody still in the tournament: chips in front of them, dealt in.
+
+    Sitting out is **not** on this list, and that is the rule rather than an
+    oversight. It used to be: somebody who sat out was skipped by the deal
+    entirely, so they paid no blinds and no antes while everybody else did —
+    which makes stepping away the cheapest move at the table. Wait out a level
+    from the sofa and come back with the same stack everybody else has been
+    paying for. The bigger the blinds, the better it gets.
+
+    So sitting out means being *away from the table*, not out of the hand. You
+    are dealt in, you post, and your hand is played out the way an absent
+    player's is: checked when it is free and folded when it costs — see
+    `_run_away`. Which is what happens in a real tournament, and it is why
+    people come back from dinner.
+    """
+    return [pid for pid in room["order"] if room["players"][pid]["chips"] > 0]
+
+
+def _anyone_at_the_table(room: dict[str, Any]) -> bool:
+    """Whether a single player with chips is actually here.
+
+    The one thing the rule above needs a brake for. Blinding an absent player
+    down is right while there is a table to be absent *from*; dealing hand
+    after hand to a room where everybody has stepped away is the app playing a
+    tournament by itself and handing the result to whoever comes back first.
+    Nobody gains — they are all being blinded equally — so nothing is lost by
+    waiting, and an evening is not.
+
+    The appointment stays set rather than being cancelled, so the first person
+    back finds a hand already due.
+    """
+    return any(
+        not room["players"][pid].get("sittingOut") for pid in _eligible_player_ids(room)
+    )
 
 
 def _save_state(room: dict[str, Any], state) -> None:
@@ -1032,6 +1108,78 @@ def _save_state(room: dict[str, Any], state) -> None:
     """
     room["stateB64"] = poker.dumps(state)
     room["turnId"] = int(room.get("turnId", 0)) + 1
+
+
+# How many decisions the table remembers. Long enough that a client polling at
+# 1.2 seconds cannot miss one — a street round a nine-handed table is nine
+# actions, and pre-actions can fire several of them between two polls — and
+# short enough to stay a footnote on every response.
+ACTION_LOG_MAX = 24
+
+
+def _action_mark(state) -> dict[str, Any]:
+    """Everything about the moment *before* an action that naming it needs.
+
+    Taken as one object so the four places that apply an action cannot each
+    forget a different half of it.
+    """
+    seat = state.actor_index
+    return {
+        "mark": poker.action_mark(state),
+        "seat": seat,
+        "bets": [int(b) for b in state.bets],
+        "stack": int(state.stacks[seat]) if seat is not None else 0,
+        "street": poker.street_name(state),
+    }
+
+
+def _record_action(
+    room: dict[str, Any],
+    before: dict[str, Any],
+    state,
+    *,
+    auto: bool = False,
+) -> None:
+    """Write down what just happened, because the view cannot be asked.
+
+    Every other moment at this table can be recovered by comparing two polled
+    views: chips appear in front of somebody, a hand goes grey, the board grows
+    a card. **Checking cannot.** Nothing about the table changes except whose
+    turn it is, and "the turn moved and nothing else did" is the same picture
+    as a street closing, a hand being dealt, or somebody's clock running out.
+    So the one action a poker table is most recognisable for is the one a
+    polled client is blind to, and that is what this list exists for.
+
+    Kept per hand and bounded, not a full history: the point is that a client
+    can catch up on what it missed between two polls, and ``seq`` — which never
+    restarts — is how it knows which of these it has already played.
+    """
+    seat = before.get("seat")
+    hand_ids = room.get("handPlayerIds") or []
+    if seat is None or seat >= len(hand_ids):
+        return
+    described = poker.describe_action(
+        state, before["mark"], seat, before["bets"], before["stack"]
+    )
+    if described is None:
+        return
+    seq = int(room.get("actionSeq", 0)) + 1
+    room["actionSeq"] = seq
+    log = room.setdefault("actionLog", [])
+    log.append(
+        {
+            "seq": seq,
+            "handNumber": int(room.get("handNumber", 0)),
+            "playerId": hand_ids[seat],
+            "street": before["street"],
+            # Nobody decided this: the clock did, or somebody who had already
+            # left. A fold that was chosen and a fold that ran out of time are
+            # the same chips and a completely different moment.
+            "auto": bool(auto),
+            **described,
+        }
+    )
+    del log[:-ACTION_LOG_MAX]
 
 
 def _set_action_deadline(room: dict[str, Any], state, now: float) -> None:
@@ -1065,25 +1213,159 @@ def _set_action_deadline(room: dict[str, Any], state, now: float) -> None:
 
 
 def _can_sit_out(room: dict[str, Any], player: dict[str, Any]) -> bool:
-    """Whether benching this player still leaves a playable table.
+    """Whether benching this player still leaves a playable table. Always.
 
-    Heads-up, sitting the absent player out would leave one eligible player and
-    two positive stacks: the tournament can neither deal nor declare a winner,
-    and it hangs forever. Leaving them in is also the truer outcome — the blinds
-    eat their stack and they bust out, exactly as they would in a real
-    tournament for walking away from the table.
+    It did not use to. Sitting out removed a player from the deal, so doing it
+    heads-up left one eligible player and two live stacks: the tournament could
+    neither deal nor declare a winner, and it hung there. This function existed
+    to refuse that, and the refusal was awkward to explain to somebody who
+    simply wanted to step away.
+
+    Now that an absent player is dealt in and blinded like everybody else, the
+    case cannot arise — the table always has the same number of hands in it —
+    and the outcome the old docstring called the truer one is what happens at
+    every seat rather than only heads-up: the blinds eat their stack and they
+    bust out, exactly as they would for walking away from a real table.
+
+    Kept as a function, and called where it was called, because "can this
+    player sit out" is a question the client asks and the answer wants one
+    place to live if it ever stops being yes.
     """
-    remaining = [
-        pid for pid in _eligible_player_ids(room) if pid != player.get("id")
-    ]
-    return len(remaining) >= 2
+    return True
+
+
+def _hand_was_shown_down(room: dict[str, Any]) -> bool:
+    """Whether two or more hands were still live when the hand ended.
+
+    Derived rather than stored, and from the same two fields `_build_view` uses,
+    so the pause and the cards on screen can never disagree about whether there
+    was a showdown.
+    """
+    hand_ids = room.get("handPlayerIds") or []
+    folded = set(room.get("foldedSeats") or [])
+    return (len(hand_ids) - len(folded)) >= 2
+
+
+def _seats_that_must_show(
+    room: dict[str, Any], state, pushed: list[int] | None = None
+) -> list[int]:
+    """Who has to turn their hand over at the end, in the order they do it.
+
+    The rule everybody at a real table knows and no app had implemented here:
+    the last player to bet or raise on the final street shows first, and from
+    then on **a hand only has to be shown to beat what is already face up, or
+    to collect a pot it has won**. Nobody else is obliged to say anything, and
+    the reason is not politeness — it is that a beaten hand shown for free is a
+    free reading of how that player plays, handed to the table by the app
+    rather than by them.
+
+    That second clause is not a detail. "Beats what is showing" is one
+    comparison and a hand can win without being the best one at the table: a
+    short stack is all in for the main pot, the two behind keep betting, and
+    the side pot goes to the better of *those two* — whose kings lose to the
+    ace-high that took the main and would therefore never be turned over. So a
+    player collected a pot with a hand nobody at the table ever saw, and with
+    7-2 running they collected the bonus for it too. A pot is claimed face up.
+
+    Everything not in this list is thrown away face down, and its owner is
+    offered the choice to show it anyway (`ShowCards`), which is the half of
+    this that makes a home game a home game.
+
+    Ordered, because the order is the answer: the walk *is* the rule.
+    """
+    hand_ids = room.get("handPlayerIds") or []
+    folded = set(room.get("foldedSeats") or [])
+    live = [i for i in range(len(hand_ids)) if i not in folded]
+    if len(live) < 2:
+        return live
+
+    board = poker.boards(state)
+    cards = board[0] if board else []
+
+    # Who is first to speak: the last player to bet or raise **on the final
+    # betting street**, which is the street the hand's last decision was made
+    # on — the river if it got there, the flop if everybody was already all in.
+    #
+    # Scoped to that street and not to the whole hand, because those are
+    # different players and only one of them owes the table anything. Bet the
+    # turn, get called, check the river through, and the turn's bettor is under
+    # no obligation to show first: on the last street nobody claimed anything,
+    # so the rule falls back to where a dealer starts asking, which is the
+    # first live seat to the left of the button.
+    hand_no = room.get("handNumber")
+    log = [e for e in (room.get("actionLog") or []) if e.get("handNumber") == hand_no]
+    last_street = log[-1].get("street") if log else None
+    opener: int | None = None
+    for entry in log:
+        if entry.get("street") != last_street:
+            continue
+        if entry.get("kind") in ("bet", "raise"):
+            seat = hand_ids.index(entry["playerId"]) if entry.get("playerId") in hand_ids else None
+            if seat is not None and seat in live:
+                opener = seat
+    if opener is None:
+        button = hand_ids.index(room["buttonId"]) if room.get("buttonId") in hand_ids else 0
+        after = [i for i in live if i > button] + [i for i in live if i <= button]
+        opener = after[0]
+
+    order = [i for i in live if i >= opener] + [i for i in live if i < opener]
+
+    # Run twice and there are two boards, two best hands and two answers to
+    # "does this beat what is showing". Nobody mucks; everything is turned
+    # over — in the order it would have been, which is what the walk above is
+    # for and why this asks after building it rather than before.
+    if len(board) > 1:
+        return order
+
+    holes = room.get("handHoleCards") or []
+    # Every seat the engine pushed chips to. Beating what is showing is not the
+    # only reason to turn a hand over — collecting is the other one, and with
+    # side pots the two come apart.
+    collected = {i for i, chips in enumerate(pushed or []) if chips > 0}
+
+    must: list[int] = []
+    best = None
+    for seat in order:
+        hole = holes[seat] if seat < len(holes) else []
+        rank = poker.hand_rank(hole, cards)
+        # A hand nobody can rank is a hand nobody may muck on the strength of.
+        if seat in collected or rank is None or best is None or rank >= best:
+            must.append(seat)
+            if rank is not None and (best is None or rank > best):
+                best = rank
+    return must
+
+
+def _handover_seconds(room: dict[str, Any]) -> int:
+    """How long to sit on the hand that just ended before dealing the next.
+
+    Built up from what actually happened, because that is what decides how long
+    anybody wants to look at it. See the constants for the reasoning.
+    """
+    if not _hand_was_shown_down(room):
+        # Nobody showed anything. There is one line of text to read and the
+        # chips to watch land, and holding the table past that is dead time.
+        return HANDOVER_FOLD_SECONDS
+
+    seconds = HANDOVER_SHOWDOWN_SECONDS
+    if any(entry.get("allIn") for entry in room.get("actionLog") or []):
+        seconds += HANDOVER_ALL_IN_SECONDS
+    if len(room.get("boardResults") or []) > 1:
+        seconds += HANDOVER_SECOND_BOARD_SECONDS
+    players = room.get("players") or {}
+    if any(
+        (players.get(entry.get("playerId")) or {}).get("chips", 1) <= 0
+        for entry in room.get("lastResults") or []
+    ):
+        seconds += HANDOVER_BUST_SECONDS
+    return min(seconds, HANDOVER_MAX_SECONDS)
 
 
 def _arm_auto_deal(room: dict[str, Any]) -> None:
     """Schedule the next deal, unless the table is stopped."""
-    seconds = int(room.get("autoDealSeconds", AUTO_DEAL_SECONDS) or 0)
-    if seconds and not _is_paused(room):
-        room["autoDealAt"] = time.time() + seconds
+    on = int(room.get("autoDealSeconds", AUTO_DEAL_SECONDS) or 0)
+    if on and not _is_paused(room):
+        room["autoDealAt"] = time.time() + _handover_seconds(room)
     else:
         room["autoDealAt"] = None
 
@@ -1136,20 +1418,115 @@ def _previous_seat(room: dict[str, Any], player_id: str) -> str | None:
 
 
 def _seat_order(button_id: str, eligible: list[str]) -> list[str]:
-    """Players in posting order, small blind first, as pokerkit expects.
+    """Players in the order pokerkit posts blinds in.
 
-    Heads-up the button *is* the small blind, so it opens the hand. Otherwise
-    the small blind is the next seat along and the button acts last.
+    Three or more, that is small blind first and the button last, so the blinds
+    open the hand and the button acts last.
+
+    **Heads-up, pokerkit reverses it**, and this is the one place at this table
+    where the obvious code was wrong in a way nothing caught. Two players and
+    pokerkit charges index 0 the *big* blind, makes index 1 the button, and
+    gives index 1 the action first — which is correct heads-up poker: the button
+    is the small blind and opens before the flop.
+
+    This used to return the button first, on the reasonable-sounding reading
+    that "index 0 is the small blind" and "heads-up the button is the small
+    blind". Both halves are true and the conclusion is not, and the result was a
+    heads-up game where **the dealer posted the big blind, the other player
+    posted the small, and the big blind acted first** — every hand, in the one
+    format where two people play the most hands. The seat tags said the right
+    thing the whole time, which is what made it survive: the view labels
+    positions from `positions`, not from the money, so the drawing agreed with
+    the plan and the plan disagreed with the engine.
     """
     i = eligible.index(button_id)
     if len(eligible) == 2:
-        return [button_id, eligible[(i + 1) % 2]]
+        return [eligible[(i + 1) % 2], button_id]
     return eligible[i + 1 :] + eligible[: i + 1]
+
+
+def _rack_up(room: dict[str, Any]) -> None:
+    """Put the table back to a lobby, with the same people and the same rules.
+
+    What actually happens at a home game when the last chip is pushed: nobody
+    goes home, somebody says "again?", and the chips go back into stacks. The
+    app's answer to that was a podium and no way off it — a screen with nothing
+    on it to press, which is the one thing a screen at the end of an evening
+    has to have.
+
+    Everything a tournament *accumulates* is cleared and everything it was
+    *set up with* is kept, which is the whole distinction. Seats, names and
+    credentials survive, so nobody rejoins and nobody loses their place at the
+    table; blinds, structure, timers and house rules survive, because they are
+    the table's, not the night's.
+
+    The ledger is restated rather than added to. Rebuys and late entries mean
+    the old tournament had more chips on it than it started with, and carrying
+    that forward would leave `chipsIssued` describing a night that is over —
+    so it is set to what this one is issuing, which is the same arithmetic
+    `create_room` does with one player.
+    """
+    for pid in room["order"]:
+        player = room["players"][pid]
+        player["chips"] = room["startingChips"]
+        player["rebuys"] = 0
+        player["addOnTaken"] = False
+        player["autoSatOut"] = False
+        player["leaving"] = False
+        player["timeBank"] = int(room.get("timeBankSeconds") or 0)
+    room["chipsIssued"] = room["startingChips"] * len(room["order"])
+    room["chipsWithdrawn"] = 0
+
+    room["tournamentNumber"] = int(room.get("tournamentNumber") or 1) + 1
+    room["phase"] = "lobby"
+    room["handNumber"] = 0
+    room["buttonId"] = None
+    room["stateB64"] = None
+    room["handPlayerIds"] = []
+    room["handStartStacks"] = []
+    room["handHoleCards"] = []
+    room["foldedSeats"] = []
+    room["actionLog"] = []
+    room["lastResults"] = []
+    room["boardResults"] = []
+    room["showSeats"] = []
+    room["shownSeats"] = {}
+    room["pendingShowSeats"] = {}
+    room["potAtEnd"] = 0
+    room["standings"] = []
+    room["bustOrder"] = []
+    room["sevenDeuceWin"] = None
+    room["sevenDeucePaid"] = False
+    room["sevenDeucePending"] = False
+    # Every clock and every appointment. A `finishAt` left over from the last
+    # tournament closes this one on its first poll.
+    room["levelIndex"] = 0
+    room["levelStartedAt"] = None
+    room["actionDeadline"] = None
+    room["autoDealAt"] = None
+    room["finishAt"] = None
+    room["closeAt"] = None
+    room["breakUntil"] = None
+    room["breaksTaken"] = 0
+    room["runoutSeats"] = []
+    room["runoutDeadline"] = None
+    room["bankRunning"] = False
+    room["paused"] = False
+    room["autoDealPaused"] = False
+    room["pausedAt"] = None
+    room["lastHand"] = False
+    room["lastHandNumber"] = None
+    # And the receipts, which name a request by the hand it was made in. Hand
+    # numbers start again from zero, so a receipt kept from the last tournament
+    # is a name the next one will use again — and the first player to fold on
+    # hand 3 would be answered with what somebody did on hand 3 last time.
+    room["receipts"] = {}
 
 
 def _start_hand(room: dict[str, Any]) -> None:
     now = time.time()
     room["autoDealAt"] = None
+    room["finishAt"] = None
     eligible = _eligible_player_ids(room)
     if len(eligible) < 2:
         _finish_tournament(room)
@@ -1159,7 +1536,9 @@ def _start_hand(room: dict[str, Any]) -> None:
     _apply_level(room, now)
     button_id = _next_button(room, eligible)
     room["buttonId"] = button_id
-    hand_ids = _seat_order(button_id, eligible)  # index 0 == small blind
+    # Index 0 is the small blind — except heads-up, where it is the big blind
+    # and the button is index 1. See `_seat_order`.
+    hand_ids = _seat_order(button_id, eligible)
     start_stacks = [room["players"][pid]["chips"] for pid in hand_ids]
     bomb = _bomb_pot_due(room, len(hand_ids))
     straddle = _straddle_for(room, len(hand_ids))
@@ -1189,9 +1568,13 @@ def _start_hand(room: dict[str, Any]) -> None:
             forced=forced,
             run_it_twice=bool(room.get("runItTwice")),
         )
+        # Read off the same rule `_seat_order` just applied, because heads-up
+        # that rule is the reverse of the one everybody assumes. Deducing it
+        # from the posted bets instead is what a straddle and a bomb pot break.
+        heads_up = len(hand_ids) == 2
         positions = {
-            "sb": 0,
-            "bb": 1,
+            "sb": 1 if heads_up else 0,
+            "bb": 0 if heads_up else 1,
             "button": hand_ids.index(button_id),
             # Under the gun posts blind and acts last preflop. Only meaningful
             # when a straddle is in play, hence -1 the rest of the time.
@@ -1215,6 +1598,11 @@ def _start_hand(room: dict[str, Any]) -> None:
     room["foldedSeats"] = []
     # Seats whose shot clock expired at least once this hand (shown in the UI).
     room["timedOutSeats"] = []
+    # What everybody did, this hand only. ``actionSeq`` is deliberately *not*
+    # reset with it: it is how a client knows whether it has already played a
+    # given moment, and a counter that restarts every hand would have it
+    # replaying the first action of every deal.
+    room["actionLog"] = []
     # Hole cards are fixed for the whole hand in Hold'em, so snapshot them at
     # deal time. pokerkit mucks the losing hand at showdown (clearing its
     # cards), but we still want to reveal every non-folded hand.
@@ -1222,6 +1610,15 @@ def _start_hand(room: dict[str, Any]) -> None:
     # Cards players chose to turn over last hand. Showing is for the hand it
     # belongs to; a new deal takes them back off the table.
     room["shownSeats"] = {}
+    # Cards a player who folded mid-hand has *asked* to turn over. Not public
+    # yet: exposing a card while there is still betting to come would be giving
+    # live players information, which is the one thing showing must never do.
+    # They move into `shownSeats` the moment the hand settles.
+    room["pendingShowSeats"] = {}
+    # And who the last showdown made show. New hand, nothing shown yet.
+    room["showSeats"] = []
+    # Last hand's pot is last hand's. See `_settle_hand`.
+    room["potAtEnd"] = 0
     # A plan is for the hand it was made during. New cards, no plans — the
     # check that reads them enforces this anyway, but leaving them lying about
     # is a shape somebody will eventually trust.
@@ -1245,7 +1642,7 @@ def _settle_hand(room: dict[str, Any], state) -> None:
     folded_seats = set(room.get("foldedSeats", []))
     # Naming a hand only makes sense when it was actually shown down. If
     # everyone folded, the winner never had to reveal anything.
-    went_to_showdown = (len(hand_ids) - len(folded_seats)) >= 2
+    went_to_showdown = _hand_was_shown_down(room)
     dealt = poker.boards(state)
     board = dealt[0]
     stored_holes = room.get("handHoleCards") or []
@@ -1265,6 +1662,21 @@ def _settle_hand(room: dict[str, Any], state) -> None:
     # and finishing ahead are different questions once side pots exist. See
     # poker.pushed_amounts.
     pushed = poker.pushed_amounts(state, len(hand_ids))
+
+    # What was in the middle when the hand ended, kept for as long as the hand
+    # is on screen.
+    #
+    # `pot_total` works the pot out as "what has left the stacks and is not
+    # still on the felt", and the moment the engine pushes the chips to whoever
+    # won them that comes to zero. So the last street of every hand had no
+    # collection to show — the river bets never got raked, they simply stopped
+    # existing — and the mound in the middle vanished the instant the hand was
+    # over, several seconds before the pot it represents crossed the felt.
+    #
+    # The total only. The breakdown into side pots is there to tell a player
+    # what their call is chasing, and once nobody has a call to make there is
+    # one pot on the table: the one being pushed.
+    room["potAtEnd"] = sum(pushed)
 
     results = []
     for i, pid in enumerate(hand_ids):
@@ -1293,12 +1705,25 @@ def _settle_hand(room: dict[str, Any], state) -> None:
         results.append(entry)
 
     room["lastResults"] = results
+    # Which hands the showdown itself turns over. Worked out once, here, and
+    # stored: it is read by every viewer on every poll and it must not be able
+    # to change its mind halfway through a reveal. See `_seats_that_must_show`.
+    room["showSeats"] = (
+        _seats_that_must_show(room, state, pushed) if went_to_showdown else []
+    )
     room["phase"] = "handover"
     room["actionDeadline"] = None
     room["actorId"] = None
     # Whatever the hand was waiting on, it is not waiting any more.
     room["runoutSeats"] = []
     room["runoutDeadline"] = None
+    # Anybody who folded and asked to show turns over now, and not one moment
+    # earlier — the request was made while the hand was still being played, and
+    # a card face up then is a card the players still in it get to use.
+    pending = room.pop("pendingShowSeats", None) or {}
+    shown = room.setdefault("shownSeats", {})
+    for seat, indices in pending.items():
+        shown[seat] = sorted(set(shown.get(seat, [])) | set(indices))
     # Before the busts are recorded: the bonus is a transfer that can empty a
     # stack, and a player taken to zero by it is out like any other.
     _pay_seven_deuce(room)
@@ -1308,9 +1733,16 @@ def _settle_hand(room: dict[str, Any], state) -> None:
     for pid in [p for p in room["order"] if room["players"][p].get("leaving")]:
         _remove_from_table(room, pid, withdraw=True)
     _record_busts(room)
-    # One player holding every chip ends the tournament.
+    # One player holding every chip ends the tournament — but not this instant.
+    #
+    # This called `_finish_tournament` here, in the same response that dealt the
+    # last card, so the hand that decides the whole night was the one hand
+    # nobody got to watch: the table was replaced by a scoreboard before the
+    # showdown, before the pot went out, before anybody saw what it was won
+    # with. Every other hand gets a pause to be looked at; this one gets the
+    # same pause, and the schedule closes the room when it is up.
     if len(_eligible_player_ids(room)) < 2:
-        _finish_tournament(room)
+        room["finishAt"] = time.time() + _handover_seconds(room)
     else:
         _arm_auto_deal(room)
 
@@ -1356,12 +1788,57 @@ def _is_seven_deuce(hole: list[str]) -> bool:
 
 
 def _cards_are_public(room: dict[str, Any], seat: int) -> bool:
-    """Whether the whole table has seen this seat's hand."""
-    hand_ids = room.get("handPlayerIds") or []
-    folded = set(room.get("foldedSeats", []))
-    if (len(hand_ids) - len(folded)) >= 2 and seat not in folded:
-        return True  # shown down
+    """Whether the whole table has seen this seat's hand.
+
+    Reaching the showdown is not the test. This used to read "there was a
+    showdown and this seat did not fold", which was the rule before the muck
+    existed and has been wrong since: most hands at a showdown are thrown away
+    face down, and calling them public paid the 7-2 bonus for a hand nobody
+    had seen — the one prize in the game that exists to be *shown*.
+
+    Two ways in, and they are the two ways cards get seen: the showdown turned
+    it over (`showSeats`), or its owner did (`shownSeats`), and the second one
+    means both cards, because half a hand proves nothing.
+    """
+    if seat in set(room.get("showSeats") or []):
+        return True
     return len(set(room.get("shownSeats", {}).get(str(seat), []))) >= 2
+
+
+def _results_for(room: dict[str, Any], viewer_id: str | None) -> list[dict[str, Any]]:
+    """The hand's results, as this viewer is allowed to see them.
+
+    `lastResults` names every hand that reached the showdown and carries the
+    five cards that made it, because the panel at the end of the hand draws
+    them — and it was going out to everybody, unfiltered. So a hand thrown away
+    face down was named, with its cards, for the whole table and for anybody
+    watching: the muck worked everywhere on screen except in the one panel that
+    comes up after every hand. `players[].cards` was carefully filtered and
+    then completely bypassed.
+
+    Same rule as the cards themselves, applied to the same information under
+    its other name: a hand the showdown turned over, one its owner turned over,
+    or your own.
+    """
+    hand_ids = room.get("handPlayerIds") or []
+    seat_of = {pid: i for i, pid in enumerate(hand_ids)}
+    out: list[dict[str, Any]] = []
+    for entry in room.get("lastResults") or []:
+        seat = seat_of.get(entry.get("playerId"))
+        public = entry.get("playerId") == viewer_id or (
+            seat is not None and _cards_are_public(room, seat)
+        )
+        if public:
+            out.append(entry)
+        else:
+            # What everybody is entitled to: who was in it and what it cost
+            # them. Not what they were holding.
+            out.append({k: v for k, v in entry.items() if k not in _PRIVATE_RESULT})
+    return out
+
+
+#: The fields of a result that say what a player was holding.
+_PRIVATE_RESULT = ("handName", "handCards")
 
 
 def _pay_seven_deuce(room: dict[str, Any]) -> None:
@@ -1509,6 +1986,8 @@ def _finish_tournament(room: dict[str, Any], by_chips: bool = False) -> None:
     room["phase"] = "finished"
     room["actionDeadline"] = None
     room["autoDealAt"] = None
+    # However we got here, the appointment to get here is kept.
+    room["finishAt"] = None
 
 
 # --------------------------------------------------------------------------- #
@@ -1625,7 +2104,9 @@ def _apply_timeouts(room: dict[str, Any]) -> dict[str, Any] | None:
         action = "fold"
     else:
         action = "call"
+    before = _action_mark(state)
     poker.apply_action(state, action)
+    _record_action(room, before, state, auto=True)
 
     if action == "fold":
         folded = room.setdefault("foldedSeats", [])
@@ -1680,10 +2161,29 @@ def _scheduled_clock(room: dict[str, Any]) -> float | None:
 
 
 def _scheduled_deal(room: dict[str, Any]) -> float | None:
-    """When the next hand deals itself."""
+    """When the next hand deals itself.
+
+    Not while the room is empty of anybody actually present — see
+    `_anyone_at_the_table`. The appointment is left standing rather than
+    cancelled, so the first person back finds a hand already due.
+    """
     if room.get("phase") != "handover" or _is_paused(room):
         return None
+    if not _anyone_at_the_table(room):
+        return None
     return room.get("autoDealAt") or None
+
+
+def _scheduled_finish(room: dict[str, Any]) -> float | None:
+    """When the pause on the last hand of the night is up.
+
+    Deliberately not stopped by a paused table: the hand is over and the winner
+    is decided, and a stopped table that never says who won is worse than a
+    stopped one that does.
+    """
+    if room.get("phase") != "handover":
+        return None
+    return room.get("finishAt") or None
 
 
 def _scheduled_break_end(room: dict[str, Any]) -> float | None:
@@ -1691,19 +2191,25 @@ def _scheduled_break_end(room: dict[str, Any]) -> float | None:
     return room.get("breakUntil") or None
 
 
-def _scheduled_leaver(room: dict[str, Any]) -> float | None:
-    """Whether somebody who has already left is holding up the hand.
+def _scheduled_away(room: dict[str, Any]) -> float | None:
+    """Whether somebody who is not at the table is holding up the hand.
 
-    Due immediately, not on the shot clock: they said goodbye, so making the
-    table wait twenty seconds for a decision nobody is going to make is the
-    thing this exists to avoid.
+    Two ways to not be there and one answer to both: they said goodbye
+    (``leaving``), or they stepped away (``sittingOut``). Their chips are still
+    in the hand either way — that is the whole point of dealing an absent
+    player in — but nobody is going to make the decision, so the hand should
+    not stop and ask.
+
+    Due immediately, not on the shot clock: making the table wait twenty
+    seconds for an answer that is not coming is the thing this exists to avoid.
     """
     if room.get("phase") != "hand" or not room.get("stateB64"):
         return None
     actor = room.get("actorId")
     if actor is None:
         return None
-    return 0.0 if room["players"].get(actor, {}).get("leaving") else None
+    player = room["players"].get(actor, {})
+    return 0.0 if player.get("leaving") or player.get("sittingOut") else None
 
 
 def _scheduled_preaction(room: dict[str, Any]) -> float | None:
@@ -1734,8 +2240,8 @@ def _run_clock(room: dict[str, Any]) -> bool:
     return _apply_timeouts(room) is not None
 
 
-def _run_leaver(room: dict[str, Any]) -> bool:
-    """Play out the hand for somebody who has gone.
+def _run_away(room: dict[str, Any]) -> bool:
+    """Play out the hand for somebody who is not there.
 
     Checking when it is free and folding when it is not — the same rule the
     shot clock uses, because it is the same situation and any other rule would
@@ -1743,20 +2249,44 @@ def _run_leaver(room: dict[str, Any]) -> bool:
     not let a player fold a hand they can see the next card of for nothing,
     which is why this cannot simply fold every time. It runs at once rather
     than on the clock, so the rest of the table is not kept waiting.
+
+    The blinds are already posted by the time this runs, and they stay posted.
+    That is the point of it: an absent player pays for their seat.
+
+    Keeps going while the seat to act is still an empty one, which is not the
+    one-per-request rule the rest of this schedule follows — and it has to be.
+    An absent player can be asked twice in a row: heads-up the big blind takes
+    their option, the street turns, and out of position they are first to speak
+    again. Answering one of those per poll left the whole table waiting a second
+    and a bit for a seat nobody was sitting in, and a table with several people
+    away spent a poll on each of them. Bounded at one time round, so a request
+    carries a street and never a whole hand.
     """
     state = poker.loads(room["stateB64"])
-    if poker.is_hand_over(state) or state.actor_index is None:
+    acted = False
+    for _ in range(len(room.get("handPlayerIds") or [])):
+        if poker.is_hand_over(state) or state.actor_index is None:
+            break
+        seat = state.actor_index
+        who = room["players"].get((room.get("handPlayerIds") or [None] * 9)[seat])
+        if not who or not (who.get("leaving") or who.get("sittingOut")):
+            break
+        legal = poker.legal_actions(state)
+        action = "call" if legal["canCheckOrCall"] and not legal["callAmount"] else "fold"
+        if action == "fold" and not legal["canFold"]:
+            action = "call"
+        before = _action_mark(state)
+        poker.apply_action(state, action)
+        # Nobody is sitting there: this is the table playing out a hand for
+        # somebody who is not at it, which is not the same moment as a decision.
+        _record_action(room, before, state, auto=True)
+        if action == "fold":
+            folded = room.setdefault("foldedSeats", [])
+            if seat not in folded:
+                folded.append(seat)
+        acted = True
+    if not acted:
         return False
-    seat = state.actor_index
-    legal = poker.legal_actions(state)
-    action = "call" if legal["canCheckOrCall"] and not legal["callAmount"] else "fold"
-    if action == "fold" and not legal["canFold"]:
-        action = "call"
-    poker.apply_action(state, action)
-    if action == "fold":
-        folded = room.setdefault("foldedSeats", [])
-        if seat not in folded:
-            folded.append(seat)
     _save_state(room, state)
     if poker.is_hand_over(state):
         _settle_hand(room, state)
@@ -1810,7 +2340,11 @@ def _run_preaction(room: dict[str, Any]) -> bool:
         changed = room["players"][player_id].pop("preAction", None) is not None
         if action is None:
             break
+        before = _action_mark(state)
         poker.apply_action(state, action, None)
+        # Chosen, just chosen early — so it is somebody's decision and not the
+        # table acting for them.
+        _record_action(room, before, state)
         if action == "fold":
             folded = room.setdefault("foldedSeats", [])
             if seat not in folded:
@@ -1869,6 +2403,12 @@ def _run_break_end(room: dict[str, Any]) -> bool:
     return True
 
 
+def _run_finish(room: dict[str, Any]) -> bool:
+    """The last hand has been looked at for long enough. Call it."""
+    _finish_tournament(room)
+    return True
+
+
 def _run_deal(room: dict[str, Any]) -> bool:
     now = time.time()
     # The end of the night comes before the break, because a table with no hand
@@ -1902,7 +2442,8 @@ def _run_deal(room: dict[str, Any]) -> bool:
 # for it.
 _SCHEDULE = (
     ("break", _scheduled_break_end, _run_break_end),
-    ("leaver", _scheduled_leaver, _run_leaver),
+    # Two ways to not be at the table, one answer. See `_scheduled_away`.
+    ("away", _scheduled_away, _run_away),
     # Before the clock, deliberately: a player who has already decided is not
     # out of time, and running the clock first would fold a hand they told us
     # they wanted to play.
@@ -1910,6 +2451,9 @@ _SCHEDULE = (
     ("runout", _scheduled_runout, _run_runout),
     ("clock", _scheduled_clock, _run_clock),
     ("deal", _scheduled_deal, _run_deal),
+    # After the deal, because the two are never both due — a table with a
+    # winner has nothing left to deal.
+    ("finish", _scheduled_finish, _run_finish),
     ("close", _scheduled_close, _run_close),
 )
 
@@ -2005,6 +2549,7 @@ def _build_view(room: dict[str, Any], viewer_id: str | None) -> dict[str, Any]:
     players_out: list[dict[str, Any]] = []
     board: list[str] = []
     pot = 0
+    pots: list[dict[str, Any]] = []
     actor_id: str | None = None
     legal: dict[str, Any] | None = None
     street = "lobby"
@@ -2020,6 +2565,9 @@ def _build_view(room: dict[str, Any], viewer_id: str | None) -> dict[str, Any]:
         # table that never runs it twice sees exactly what it always saw.
         board = dealt_boards[0]
         pot = poker.pot_total(state, room["handStartStacks"])
+        # Named by seat here and turned into player ids below, once the ids for
+        # this hand are in hand.
+        pots = poker.side_pots(state)
         street = poker.street_name(state)
         pos = room.get("positions") or poker.initial_positions(state)
         sb_i, bb_i, button_i = pos["sb"], pos["bb"], pos["button"]
@@ -2038,7 +2586,7 @@ def _build_view(room: dict[str, Any], viewer_id: str | None) -> dict[str, Any]:
         stored_holes = room.get("handHoleCards") or []
         # A showdown only happens when at least two players reach the end
         # without folding. If everyone else folded, the winner keeps cards hidden.
-        went_to_showdown = (len(hand_ids) - len(folded_seats)) >= 2
+        went_to_showdown = _hand_was_shown_down(room)
         # Only meaningful once the hand is over; mid-hand nobody has shown yet.
         shown_down = hand_over and went_to_showdown
         engine_by_pid: dict[str, dict[str, Any]] = {}
@@ -2050,7 +2598,14 @@ def _build_view(room: dict[str, Any], viewer_id: str | None) -> dict[str, Any]:
             hole = stored_holes[i] if i < len(stored_holes) else poker.hole_cards(state, i)
             # You always see your own cards. At showdown, reveal every hand that
             # did not fold.
-            reveal = (pid == viewer_id) or (hand_over and went_to_showdown and not folded)
+            # Face up because the showdown made it so — see
+            # `_seats_that_must_show`. A hand that neither beats what is
+            # already face up nor collected a pot is not turned over by the
+            # app; its owner may still choose to.
+            made_to_show = i in set(room.get("showSeats") or [])
+            reveal = (pid == viewer_id) or (
+                hand_over and went_to_showdown and not folded and made_to_show
+            )
             # Cards the player chose to turn over after the hand — the bluff
             # they want credit for, or the one card that keeps everyone
             # guessing. Only some of a hand may be shown, so this is per card.
@@ -2087,6 +2642,36 @@ def _build_view(room: dict[str, Any], viewer_id: str | None) -> dict[str, Any]:
                 # seat too: you always see your whole hand, so the cards alone
                 # cannot tell you what the rest of the table can see.
                 "shownIndices": sorted(shown),
+                # Whether the showdown obliged this hand to be face up. Public,
+                # because who had to show is a fact about the hand everybody at
+                # the table watched happen — and the client needs it to know
+                # whether *you* still have a hand nobody has seen.
+                "showedDown": bool(hand_over and went_to_showdown and not folded and made_to_show),
+                # What you have *asked* to show, while the hand is still being
+                # played. Yours only — a plan the rest of the table can read is
+                # the exposure this was written to avoid — and it stays a plan
+                # until `_settle_hand` turns the cards over.
+                "pendingShowIndices": (
+                    sorted(room.get("pendingShowSeats", {}).get(str(i), []))
+                    if pid == viewer_id
+                    else []
+                ),
+                # What you have made, against the board as it stands.
+                #
+                # Yours only, and that is the whole design: it is the one piece
+                # of private information the table would never say out loud, and
+                # sending anybody else's would be dealing the hand face up.
+                # Named here rather than worked out on the client because the
+                # evaluator is already here, and two evaluators is two answers.
+                "handName": (
+                    (
+                        (poker.evaluate_hand(hole, board) or {}).get("name")
+                        if len(hole) + len(board) >= 5
+                        else poker.describe_hole(hole)
+                    )
+                    if pid == viewer_id and hole
+                    else None
+                ),
                 "timedOut": i in timed_out_seats,
             }
     else:
@@ -2116,6 +2701,8 @@ def _build_view(room: dict[str, Any], viewer_id: str | None) -> dict[str, Any]:
             "cards": None,
             "timedOut": False,
             "shownIndices": [],
+            "pendingShowIndices": [],
+            "showedDown": False,
             "out": p["chips"] <= 0,
             # Sat out by the shot clock rather than by choice, so the UI can
             # explain what happened and offer the way back in.
@@ -2143,6 +2730,7 @@ def _build_view(room: dict[str, Any], viewer_id: str | None) -> dict[str, Any]:
             "bigBlind": room["bigBlind"],
             "startingChips": room["startingChips"],
             "handNumber": room["handNumber"],
+            "tournamentNumber": int(room.get("tournamentNumber") or 1),
             "maxSeats": MAX_SEATS,
             "actionSeconds": int(room.get("actionSeconds") or 0),
             "anteMode": room.get("anteMode", "off"),
@@ -2152,6 +2740,10 @@ def _build_view(room: dict[str, Any], viewer_id: str | None) -> dict[str, Any]:
             # Whether the hand on the table right now is a bomb pot.
             "bombPot": bool(room.get("bombPot")),
             "sevenDeuce": int(room.get("sevenDeuce") or 0),
+            # What this table is made of. Rooms made before there was a
+            # choice get the default, which is the table everybody already had.
+            "baize": room.get("baize") or "emerald",
+            "deck": room.get("deck") or "clasica",
             "levelMinutes": int(room.get("levelMinutes") or 0),
             "autoDealSeconds": int(room.get("autoDealSeconds") or 0),
             # The table is stopped: no deals, and the blind clock is held still.
@@ -2180,16 +2772,65 @@ def _build_view(room: dict[str, Any], viewer_id: str | None) -> dict[str, Any]:
         # What each board came to, once the hand is over.
         "boardResults": room.get("boardResults") or [],
         "pot": pot,
+        # What the pot came to, on the hands that are over.
+        #
+        # `pot` is an accounting fact — chips that have left the stacks and are
+        # not still on the felt — and the moment the engine pushes them to
+        # whoever won, it is correctly zero. But the table has two moments left
+        # to draw after that and both need this number: the last street's bets
+        # being raked in, which otherwise simply stopped existing, and the pot
+        # sitting in the middle until it is paid, which otherwise vanished
+        # several seconds before the chips representing it crossed the felt.
+        #
+        # Deliberately *not* folded into `pot`. During a handover these chips
+        # are already in the winner's stack, and a total that counted them
+        # twice would be a total that no longer adds up — which is the one
+        # thing the books have to do. See `_settle_hand`.
+        "potAtEnd": int(room.get("potAtEnd") or 0),
+        # The pot broken out, main first. A single number is a lie the moment
+        # somebody is all in for less than the bet: the short stack is playing
+        # for the main pot and everybody else for that plus a side pot they
+        # cannot win, and told only the total a player cannot work out what
+        # their call is chasing. Sums to ``pot`` by construction.
+        "pots": [
+            {
+                "amount": p["amount"],
+                "playerIds": [hand_ids[s] for s in p["seats"] if s < len(hand_ids)],
+            }
+            for p in pots
+        ],
         "street": street,
         "actorId": actor_id,
         "legal": legal,
-        "lastResults": room.get("lastResults", []),
+        # What everybody did, this hand, newest last. The one moment a polled
+        # client cannot recover by comparing two pictures is a check — nothing
+        # changes but whose turn it is — so it is written down instead of
+        # inferred. ``seq`` never restarts, so a client knows what it has
+        # already seen even across a deal.
+        "actions": room.get("actionLog", []),
+        # Per viewer, because it says what people were holding. See
+        # `_results_for` — this is the same filter as `players[].cards`, and it
+        # is here because it was missing.
+        "lastResults": _results_for(room, viewer_id),
         "standings": room.get("standings", []),
         # Whether this hand was actually shown down. The table can't infer it
         # from the phase: a hand won by folds also ends in "handover", and
         # treating that as a showdown puts the winner's cards on screen for the
         # player next to them to read.
         "wentToShowdown": shown_down,
+        # The hands that have to be turned over, in the order they are — the
+        # walk `_seats_that_must_show` does, which *is* the rule.
+        #
+        # Sent rather than worked out again on the client, because it was being
+        # worked out again on the client and getting two different answers: the
+        # last aggressor of the whole hand instead of the last street, and,
+        # where nobody had bet, whichever seat happened to be first in an array
+        # each viewer has rotated to put themselves at the bottom — so two
+        # people at the same table watched two different showdowns and each saw
+        # themselves show first.
+        "showOrder": [
+            hand_ids[s] for s in (room.get("showSeats") or []) if s < len(hand_ids)
+        ],
         # Who collected the 7-2 bonus this hand, and what it came to.
         "sevenDeuceWin": room.get("sevenDeuceWin"),
         # The bonus is there for the taking but the cards are still down.
@@ -2303,6 +2944,7 @@ async def create_room(body: CreateRoomBody) -> dict[str, Any]:
         "startingChips": body.startingChips,
         "phase": "lobby",
         "handNumber": 0,
+        "tournamentNumber": 1,
         "order": [host_id],
         "players": {
             host_id: {
@@ -2332,6 +2974,8 @@ async def create_room(body: CreateRoomBody) -> dict[str, Any]:
         "straddle": body.straddle,
         "bombPotEvery": body.bombPotEvery,
         "sevenDeuce": body.sevenDeuce,
+        "baize": body.baize,
+        "deck": body.deck,
         "actionDeadline": None,
         "autoDealSeconds": AUTO_DEAL_SECONDS,
         "autoDealAt": None,
@@ -2844,9 +3488,13 @@ async def transfer_host(
 
 
 class ShowBody(BaseModel):
-    playerId: str
     # Which of your two cards to turn over: [0], [1] or both.
-    indices: list[int] = Field(min_length=1, max_length=2)
+    #
+    # Empty is only meaningful mid-hand, where this is still a plan and taking
+    # it back is a legal move. Once the hand is over the cards are on the table
+    # and there is nothing to send an empty list about.
+    playerId: str
+    indices: list[int] = Field(max_length=2)
     # Which hand you meant to show. Same reasoning as on /action: a request
     # delayed in the network is an intention about the hand it was made for,
     # and applying it to whatever is on the table when it lands turns "show my
@@ -2860,14 +3508,25 @@ async def show_cards(
     body: ShowBody,
     x_player_token: str | None = fastapi.Header(default=None),
 ) -> dict[str, Any]:
-    """Turn your own cards face up after the hand.
+    """Turn your own cards face up, or say that you are going to.
 
     Half of what makes a home game a home game: the bluff nobody would believe
     unless you prove it, and the single card shown to keep them guessing. Only
     your own hand, only the one just played, and only until the next deal.
 
-    There is no way back. Once a card is public the table has seen it, so the
-    client asks before sending rather than offering an undo that cannot exist.
+    Two phases, and which one this is depends entirely on when it arrives:
+
+    * **During the hand**, and only from a player who has folded, it is a
+      *plan*. The decision to show is made the moment you throw the hand away
+      and it has gone cold by the time the pot is pushed — but the cards
+      themselves cannot appear while there is still betting to come, because a
+      card face up then is a card the live players get to use. Reversible right
+      up to the end: an empty list takes it back, and a new one replaces it.
+      Nobody but you can see it (`pendingShowSeats`).
+    * **After the hand**, it is the thing itself, and there is no way back.
+      Once a card is public the table has seen it, so the client asks before
+      sending rather than offering an undo that cannot exist. An empty list
+      here is refused rather than treated as "show nothing".
     """
     async with _RoomLock(room_id):
         room = await load_room(room_id)
@@ -2880,7 +3539,7 @@ async def show_cards(
             )
         if body.handNumber != room["handNumber"]:
             raise fastapi.HTTPException(409, "That hand is already over.")
-        if room["phase"] != "handover":
+        if room["phase"] not in ("hand", "handover"):
             raise fastapi.HTTPException(400, "There is no hand to show right now.")
         hand_ids = room.get("handPlayerIds") or []
         if body.playerId not in hand_ids:
@@ -2894,6 +3553,23 @@ async def show_cards(
         held = len((room.get("handHoleCards") or [[]])[seat])
         if any(i < 0 or i >= held for i in body.indices):
             raise fastapi.HTTPException(400, "You do not have that card.")
+        if room["phase"] == "hand":
+            # Mid-hand. Only somebody who has folded can decide this — a player
+            # with a live hand showing a card is passing information to the
+            # players still deciding what to do about it — and the decision is
+            # recorded rather than acted on: the cards go face up when the hand
+            # settles, along with everybody else's.
+            #
+            # Replaced rather than added to, and an empty list is allowed:
+            # until the cards are actually turned over this is a plan, and a
+            # plan you cannot change is a plan nobody will risk making.
+            if seat not in set(room.get("foldedSeats", [])):
+                raise fastapi.HTTPException(400, "You are still in this hand.")
+            room.setdefault("pendingShowSeats", {})[str(seat)] = sorted(set(body.indices))
+            await save_room(room)
+            return _build_view(room, body.playerId)
+        if not body.indices:
+            raise fastapi.HTTPException(400, "Say which cards to show.")
         shown = room.setdefault("shownSeats", {})
         # Adding rather than replacing: showing one card and then the other is
         # a normal thing to do, and the first one is already public.
@@ -3030,6 +3706,39 @@ async def start_hand(
         return _build_view(room, body.playerId)
 
 
+@app.post("/rooms/{room_id}/again")
+async def play_again(
+    room_id: str,
+    body: ActionBody,
+    x_player_token: str | None = fastapi.Header(default=None),
+) -> dict[str, Any]:
+    """Another one, same table, same people, same rules.
+
+    The end of a tournament is not the end of an evening. See `_rack_up`.
+    """
+    async with _RoomLock(room_id):
+        room = await load_room(room_id)
+        if not room:
+            raise fastapi.HTTPException(404, "Room not found.")
+        _authenticate(room, body.playerId, x_player_token)
+        if body.playerId != room["hostId"]:
+            raise fastapi.HTTPException(403, "Only the host can start another.")
+        # Asked before the phase is, and that order is the point: a retry of
+        # this arrives at a room that is already a lobby, so checking the phase
+        # first would answer the second tap with "this tournament is still
+        # going" — about a tournament that the first tap ended.
+        if _receipt(room, body.requestId):
+            return _build_view(room, body.playerId)
+        if room["phase"] != "finished":
+            raise fastapi.HTTPException(400, "This tournament is still going.")
+        # `_rack_up` clears the receipts — they are named by hand number and
+        # the hand numbers start again — so this one is written after it.
+        _rack_up(room)
+        _keep_receipt(room, body.requestId, {"ok": True})
+        await save_room(room)
+        return _build_view(room, body.playerId)
+
+
 @app.post("/rooms/{room_id}/action")
 async def take_action(
     room_id: str,
@@ -3098,10 +3807,12 @@ async def take_action(
         # deadline the answer is read from.
         _charge_the_time_bank(room, body.playerId, time.time())
 
+        before = _action_mark(state)
         try:
             poker.apply_action(state, body.action, body.amount)
         except poker.ActionError as exc:
             raise fastapi.HTTPException(400, str(exc))
+        _record_action(room, before, state)
 
         if body.action == "fold":
             folded = room.setdefault("foldedSeats", [])

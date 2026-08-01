@@ -60,7 +60,16 @@ export function BuyChips({
 
   const buy = (what: "rebuy" | "add-on") =>
     run(() =>
-      pokerApi.buyChips(roomId, you!.id, what, view.handNumber, session?.token),
+      pokerApi.buyChips(
+        roomId,
+        you!.id,
+        what,
+        view.handNumber,
+        // Which purchase this is. Two rebuys can fall inside one hand number —
+        // see `buyChips` — and the count is what tells them apart.
+        what === "rebuy" ? you!.rebuys : Number(Boolean(you!.addOnTaken)),
+        session?.token,
+      ),
     )
 
   return (

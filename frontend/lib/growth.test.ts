@@ -3,6 +3,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 import {
   failureCategory,
   recordCreateAttempt,
+  recordFinishCtaImpression,
   recordGameStarted,
   recordInviteOutcome,
   recordRoomCreated,
@@ -42,19 +43,22 @@ describe('growth measurement', () => {
     expect(vi.mocked(track).mock.calls.some(([name]) => name === 'Guest Became Host')).toBe(false)
   })
 
-  it('deduplicates a game start for one room', () => {
-    recordGameStarted('ABC123', 4)
-    recordGameStarted('ABC123', 5)
+  it('deduplicates a start within a tournament and records same-room replay', () => {
+    recordGameStarted('ABC123', 1, 4)
+    recordGameStarted('ABC123', 1, 5)
+    recordGameStarted('ABC123', 2, 6)
 
-    expect(track).toHaveBeenCalledTimes(1)
+    expect(track).toHaveBeenCalledTimes(2)
     expect(track).toHaveBeenCalledWith('Game Started', { playerCount: 4 })
+    expect(track).toHaveBeenCalledWith('Game Started', { playerCount: 6 })
   })
 
   it('deduplicates joins and exposes the host segment on a finish', () => {
     recordRoomJoined('ROOM1', 'player')
     recordRoomJoined('ROOM1', 'player')
-    recordTournamentFinished('ROOM1', 4, 22, false)
-    recordTournamentFinished('ROOM1', 5, 23, true)
+    recordTournamentFinished('ROOM1', 1, 4, 22, false)
+    recordTournamentFinished('ROOM1', 1, 5, 23, true)
+    recordTournamentFinished('ROOM1', 2, 5, 23, true)
 
     expect(vi.mocked(track).mock.calls.filter(([name]) => name === 'Room Joined')).toHaveLength(1)
     expect(track).toHaveBeenCalledWith('Tournament Finished', {
@@ -62,7 +66,25 @@ describe('growth measurement', () => {
       handCount: 22,
       isHost: false,
     })
-    expect(vi.mocked(track).mock.calls.filter(([name]) => name === 'Tournament Finished')).toHaveLength(1)
+    expect(track).toHaveBeenCalledWith('Tournament Finished', {
+      playerCount: 5,
+      handCount: 23,
+      isHost: true,
+    })
+    expect(vi.mocked(track).mock.calls.filter(([name]) => name === 'Tournament Finished')).toHaveLength(2)
+  })
+
+  it('counts result-action visibility once for each tournament in a room', () => {
+    recordFinishCtaImpression('ROOM1', 1, true, false)
+    recordFinishCtaImpression('ROOM1', 1, true, true)
+    recordFinishCtaImpression('ROOM1', 2, true, true)
+
+    const impressions = vi.mocked(track).mock.calls.filter(
+      ([name]) => name === 'Finish CTA Impression',
+    )
+    expect(impressions).toHaveLength(2)
+    expect(impressions[0]?.[1]).toMatchObject({ initiallyVisible: false })
+    expect(impressions[1]?.[1]).toMatchObject({ initiallyVisible: true })
   })
 
   it('records diagnostic attempts with only coarse viewport and control counts', () => {

@@ -6,6 +6,7 @@ import { Button } from "@/components/ui/button"
 import { Slider } from "@/components/ui/slider"
 import { cn } from "@/lib/utils"
 import { inBigBlinds, presets, sizingContext, snapToPreset } from "@/lib/bet-sizing"
+import { useTactile } from "@/lib/use-tactile"
 import type { GameView } from "@/lib/poker-api"
 
 /**
@@ -49,6 +50,11 @@ export function ActionBar({
     setRaiseTo(min)
   }, [min, max, view.handNumber, view.street])
 
+  // Every decision button gets it. It is the cheapest guard there is against
+  // an irreversible action being tapped twice, because the answer arrives
+  // before the network's does.
+  const tactile = useTactile()
+
   const sizing = useMemo(() => sizingContext(view), [view])
   const sizes = useMemo(() => (sizing ? presets(sizing) : []), [sizing])
 
@@ -59,7 +65,7 @@ export function ActionBar({
         ? ` · ${Math.ceil(secondsLeft)}s`
         : ""
     return (
-      <div className="flex h-16 items-center justify-center rounded-xl border border-border/60 bg-card/60 text-sm text-muted-foreground">
+      <div className="flex h-11 items-center justify-center rounded-xl border border-border/60 bg-card/60 text-[13px] text-muted-foreground">
         {waiting}
         {countdown}
       </div>
@@ -84,9 +90,18 @@ export function ActionBar({
   // multi-thumb emits an array. Normalize both so a bad shape can't produce NaN.
   const readSliderValue = (v: number | readonly number[]) => (Array.isArray(v) ? v[0] : (v as number))
   const sendRaise = (n: number) => onAction("raise", clamp(n))
-  // One big blind at a time is the step players think in. It is also the step
-  // that stays useful as the blinds climb, which a fixed number of chips isn't.
-  const step = Math.max(1, view.bigBlind)
+  // The step players think in: half a big blind, on every street.
+  //
+  // It was a whole blind preflop for a while, on the reasoning that opens are
+  // counted in whole blinds — you open to three, you three-bet to nine. Which
+  // is true of the sizes people *name* and not of the ones they make: two and
+  // a half is the standard open, and a stepper that cannot reach it is a
+  // stepper you have to drag the slider past. Half a blind reaches every size
+  // anybody actually uses and costs one extra tap on the ones it does not.
+  //
+  // Rounded, because chips are whole things: a half of an odd big blind is not
+  // an amount anybody can push forward.
+  const step = Math.max(1, Math.round(view.bigBlind / 2))
 
   // Shot clock. Running out is not a penalty when checking is free, so say
   // exactly which action the clock is about to take.
@@ -101,55 +116,65 @@ export function ActionBar({
   const urgent = timed && secondsLeft! <= 5
   const autoAction = legal.canCheck ? "Checking" : "Folding"
 
+  const clockLabel = timed
+    ? urgent
+      ? `${autoAction} in ${Math.ceil(secondsLeft!)}s`
+      : view.bankRunning
+        ? `${Math.ceil(secondsLeft!)}s of bank`
+        : `${Math.ceil(secondsLeft!)}s to act`
+    : null
+
   return (
     <div
       className={cn(
-        "flex flex-col gap-3 rounded-xl border bg-card/90 p-3 shadow-lg transition-colors",
+        "relative flex flex-col rounded-xl border bg-card/90 shadow-lg transition-colors",
+        "gap-[calc(6px*var(--zu,1))] p-[calc(6px*var(--zu,1))]",
         urgent ? "border-destructive/70" : "border-accent/40",
       )}
     >
+      {/* The clock, on the bar's own top edge rather than in a row of its own.
+          A row cost twenty-four pixels of screen — and every pixel this band
+          takes comes off the table above it, where the bottom seat is you. As
+          an edge it costs three, and it is *more* legible there, because a bar
+          that spans the whole control reads as the control draining rather than
+          as a widget that happens to be near it. The seconds keep their words
+          and move in beside the amount. */}
       {timed && (
-        <div className="flex items-center gap-3">
+        <div
+          className="absolute inset-x-0 top-0 h-[3px] overflow-hidden rounded-t-xl bg-border/60"
+          role="progressbar"
+          aria-label={view.bankRunning ? "Time bank remaining" : "Action time remaining"}
+          aria-valuemin={0}
+          aria-valuemax={100}
+          aria-valuenow={Math.round(timePct)}
+        >
+          {/* `scaleX`, not `width` — the same way the blind clock's hairline
+              drains. A width that eases lays the page out again on every frame
+              of every second of every decision; a transform goes straight to
+              the compositor and never touches layout. */}
           <div
-            className="h-1.5 flex-1 overflow-hidden rounded-full bg-border"
-            role="progressbar"
-            aria-label={view.bankRunning ? "Time bank remaining" : "Action time remaining"}
-            aria-valuemin={0}
-            aria-valuemax={100}
-            aria-valuenow={Math.round(timePct)}
-          >
-            <div
-              className={cn(
-                "h-full rounded-full transition-[width] duration-200 ease-linear",
-                urgent ? "bg-destructive" : "bg-primary",
-              )}
-              style={{ width: `${timePct}%` }}
-            />
-          </div>
-          <span
             className={cn(
-              "w-24 shrink-0 text-right font-mono text-xs tabular-nums",
-              urgent ? "font-bold text-destructive" : "text-muted-foreground",
+              "h-full w-full origin-left transition-transform duration-200 ease-linear",
+              urgent ? "bg-destructive" : "bg-primary",
             )}
-            role="timer"
-          >
-            {/* Saying which clock is running matters: a countdown that
-                restarts on its own reads as a glitch unless it is named. */}
-            {urgent
-              ? `${autoAction} in ${Math.ceil(secondsLeft!)}s`
-              : view.bankRunning
-                ? `${Math.ceil(secondsLeft!)}s of bank`
-                : `${Math.ceil(secondsLeft!)}s to act`}
-          </span>
+            style={{ transform: `scaleX(${timePct / 100})` }}
+          />
         </div>
       )}
 
       {canRaise && (
-        <div className="flex flex-col gap-2">
+        <div className="flex flex-col gap-[calc(6px*var(--zu,1))]">
           {/* The sizes that cover most bets, so the slider becomes the
-              exception rather than the only way through. */}
-          {sizes.length > 0 && (
-            <div className="grid grid-flow-col auto-cols-fr gap-1.5">
+              exception rather than the only way through.
+
+              Two or more, though. `presets` always ends the list with All-in,
+              so a short stack with nothing else affordable produced a row
+              containing one full-width "All-in" button — sitting forty pixels
+              above the raise button, which already says All-in the moment the
+              slider reaches the top. Thirty-four pixels of table spent saying
+              the same thing twice. */}
+          {sizes.length > 1 && (
+            <div className="grid grid-flow-col auto-cols-fr gap-[calc(6px*var(--zu,1))]">
               {sizes.map((p) => (
                 <Button
                   key={p.label}
@@ -158,8 +183,14 @@ export function ActionBar({
                   variant={clamp(raiseTo) === p.amount ? "secondary" : "outline"}
                   disabled={busy}
                   onClick={() => setRaiseTo(p.amount)}
-                  className="px-1 text-xs font-semibold tabular-nums"
-                  aria-label={`Raise to ${p.amount}`}
+                  // These remain the primary sizing controls, so each keeps a
+                  // full touch target even though exact sizing is collapsed.
+                  className="min-h-11 px-1 text-xs font-semibold tabular-nums"
+                  // "Set raise to", not "Raise to": this button moves the
+                  // slider, it does not commit chips — and the button that
+                  // *does* commit them is three inches below with almost the
+                  // same words on it.
+                  aria-label={`Set raise to ${p.amount}`}
                 >
                   {p.label}
                 </Button>
@@ -198,12 +229,18 @@ export function ActionBar({
                 value={raiseTo}
                 min={min}
                 max={max}
+                // A chip, not a blind. The stepper moves in half blinds; this
+                // control is for exact stack and all-in amounts.
                 step={1}
                 onValueChange={(v) =>
                   setRaiseTo(clamp(snapToPreset(readSliderValue(v), sizes, max - min)))
                 }
                 className="flex-1"
                 aria-label="Raise amount"
+                aria-valuetext={`${clamp(raiseTo).toLocaleString()} chips · ${inBigBlinds(
+                  clamp(raiseTo),
+                  view.bigBlind,
+                )}`}
               />
               <Button
                 type="button"
@@ -221,31 +258,111 @@ export function ActionBar({
         </div>
       )}
 
-      <div className="grid grid-cols-3 gap-2">
-        {legal.canFold && (
-          <Button size="lg" variant="destructive" disabled={busy} onClick={() => onAction("fold")}>
+      {/* The words, whenever there is a clock at all.
+          They used to be held back until the last five seconds, on the argument
+          that the draining edge above and the ring round your avatar already
+          carried the time. They carry that time is *passing*; neither of them
+          says how much is left, and how much is left is the entire question —
+          it is the difference between having a moment to think and not. Twelve
+          pixels, and the shortest phone supported still adds up.
+
+          The bank is the case that has to be said in words whatever else is on
+          screen: a countdown that restarts on its own reads as a glitch. */}
+      {timed && (
+        // Out of the box, sitting on its own top edge.
+        //
+        // It was a row, and a row of a control panel is a row of felt: the
+        // seventeen pixels it took came off the table, every hand, whether or
+        // not anybody was looking at it. Absolutely positioned it costs the
+        // layout nothing and reads better — a label on the rim of the thing
+        // that is draining, rather than a line of text sitting between the
+        // slider and the buttons where the thumb is about to land.
+        <div
+          role="timer"
+          className={cn(
+            "pointer-events-none absolute -top-[9px] left-1/2 z-10 -translate-x-1/2 rounded-full border px-2 py-[1px] font-mono text-[11px] font-bold leading-none tabular-nums shadow-sm",
+            urgent
+              ? "border-destructive/60 bg-destructive/15 text-destructive"
+              : "border-border/60 bg-card text-muted-foreground",
+          )}
+        >
+          {clockLabel}
+        </div>
+      )}
+
+      {/* The amount lives *on* the button, on its own line, so committing chips
+          and reading how many are the same glance. It used to be on the slider
+          two rows up, which is where nobody looks at the moment they press. */}
+      <div className="actions">
+        {legal.canFold ? (
+          <button
+            {...tactile}
+            type="button"
+            className="tactile act act-fold"
+            disabled={busy}
+            onClick={() => onAction("fold")}
+          >
             Fold
-          </Button>
+          </button>
+        ) : (
+          // Kept as an empty cell rather than removed: the three buttons must
+          // not change places when folding stops being legal, or the thumb that
+          // learned where "raise" is finds "call" there instead.
+          <span aria-hidden />
         )}
         {legal.canCheck ? (
-          <Button size="lg" variant="secondary" disabled={busy} onClick={() => onAction("check")}>
+          <button
+            {...tactile}
+            type="button"
+            className="tactile act act-call"
+            disabled={busy}
+            onClick={() => onAction("check")}
+          >
             Check
-          </Button>
+          </button>
         ) : (
-          <Button size="lg" variant="secondary" disabled={busy} onClick={() => onAction("call")}>
-            Call {callAmt.toLocaleString()}
-          </Button>
+          <button
+            {...tactile}
+            type="button"
+            className="tactile act act-call"
+            disabled={busy}
+            onClick={() => onAction("call")}
+          >
+            Call
+            <small>{callAmt.toLocaleString()}</small>
+          </button>
         )}
         {canRaise ? (
-          <Button size="lg" disabled={busy} onClick={() => sendRaise(raiseTo)}>
-            {clamp(raiseTo) >= max ? "All-in" : "Raise"}
-          </Button>
+          <button
+            {...tactile}
+            type="button"
+            className="tactile act act-raise"
+            disabled={busy}
+            onClick={() => sendRaise(raiseTo)}
+            aria-label={
+              clamp(raiseTo) >= max
+                ? `Go all in for ${max.toLocaleString()}`
+                : `Raise to ${clamp(raiseTo).toLocaleString()}`
+            }
+          >
+            {clamp(raiseTo) >= max ? "All-in" : "Raise to"}
+            <small>{clamp(raiseTo).toLocaleString()}</small>
+          </button>
         ) : raiseIsAllInOnly ? (
-          <Button size="lg" disabled={busy} onClick={() => sendRaise(max)}>
-            All-in {max.toLocaleString()}
-          </Button>
+          <button
+            {...tactile}
+            type="button"
+            className="tactile act act-raise"
+            disabled={busy}
+            onClick={() => sendRaise(max)}
+          >
+            All-in
+            <small>{max.toLocaleString()}</small>
+          </button>
         ) : (
-          <Button size="lg" disabled>Raise</Button>
+          <button type="button" className="act act-raise" disabled>
+            Raise
+          </button>
         )}
       </div>
     </div>

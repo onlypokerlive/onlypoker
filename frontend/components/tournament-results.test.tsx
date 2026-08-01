@@ -2,7 +2,7 @@ import { render, screen } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
-import { TournamentResults, rematchHref } from './tournament-results'
+import { PlayAgain, TournamentResults } from './tournament-results'
 import { gameView, player } from '@/lib/test-fixtures'
 import {
   recordFinishCta,
@@ -56,14 +56,20 @@ describe('the tournament conversion loop', () => {
     expect(recordResultsShared).toHaveBeenCalledWith('native', 2, false)
   })
 
-  it('offers a settings-preserving rematch and a fresh table', async () => {
-    render(<TournamentResults view={finished} />)
+  it('offers a same-table replay and a fresh table', async () => {
+    const onPlayAgain = vi.fn()
+    render(
+      <>
+        <TournamentResults view={finished} />
+        <PlayAgain onPlayAgain={onPlayAgain} />
+      </>,
+    )
 
     expect(recordFinishCtaImpression).not.toHaveBeenCalledTimes(2)
 
     await userEvent.click(screen.getByRole('button', { name: 'Play again' }))
-    expect(mocks.push).toHaveBeenLastCalledWith(rematchHref(finished))
-    expect(recordFinishCta).toHaveBeenCalledWith('rematch', false)
+    expect(onPlayAgain).toHaveBeenCalledOnce()
+    expect(recordFinishCta).toHaveBeenCalledWith('rematch', true)
 
     await userEvent.click(screen.getByRole('button', { name: 'Create your table' }))
     expect(mocks.push).toHaveBeenLastCalledWith('/?source=finished-table#create-table')

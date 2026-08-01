@@ -25,11 +25,6 @@
   --color-input: var(--input);
   --color-ring: var(--ring);
 
-  --color-felt: var(--felt);
-  --color-felt-rail: var(--felt-rail);
-  --color-gold: var(--gold);
-  --color-chip: var(--chip);
-
   --font-sans: var(--font-geist-sans), ui-sans-serif, system-ui, sans-serif;
   --font-serif: var(--font-playfair), ui-serif, Georgia, serif;
   --font-mono: var(--font-geist-mono), ui-monospace, monospace;
@@ -72,12 +67,6 @@
   --border: oklch(0.3 0.02 160);
   --input: oklch(0.3 0.02 160);
   --ring: oklch(0.8 0.13 85);
-
-  /* Poker-specific tokens */
-  --felt: oklch(0.42 0.09 158);
-  --felt-rail: oklch(0.28 0.03 40);
-  --gold: oklch(0.8 0.13 85);
-  --chip: oklch(0.55 0.02 160);
 
   --radius: 0.75rem;
 }
@@ -144,7 +133,8 @@
   }
 }
 
-/* One shared room surface: matte enough for long games, but visibly a place. */
+/* Shared room surfaces keep the lobby and utility panels in the same private,
+   low-light room as the newer material-driven poker table. */
 .room-stage,
 .room-panel {
   border: 1px solid oklch(0.46 0.045 158 / 0.46);
@@ -162,7 +152,7 @@
 }
 
 .room-stage::after {
-  content: "";
+  content: '';
   position: absolute;
   inset: auto 1.25rem 0;
   height: 1px;
@@ -170,7 +160,6 @@
   pointer-events: none;
 }
 
-/* The lobby's signature is also its occupancy visualization. */
 .lobby-seat-rail {
   border: 9px solid oklch(0.27 0.045 48);
   border-radius: 50%;
@@ -182,16 +171,762 @@
     0 22px 55px oklch(0.06 0.01 160 / 0.38);
 }
 
-/* Green felt table surface */
-.table-felt {
-  background:
-    radial-gradient(
-      ellipse at center,
-      oklch(0.48 0.1 158) 0%,
-      oklch(0.4 0.09 158) 55%,
-      oklch(0.33 0.07 158) 100%
-    );
+/* ------------------------------------------------------------------------ *
+ * The table's materials
+ *
+ * Cloth and wood are a *choice the host makes*, so they are variables rather
+ * than classes — the components stay in Tailwind and only ever read
+ * `var(--…)`, and nothing has to be rewritten to plain CSS to make a second
+ * table possible.
+ *
+ * The variables hang off `[data-baize]` and `[data-deck]` rather than off the
+ * table itself, deliberately. The picker on the create-room screen has to draw
+ * a swatch of each one *next to each other*, and tokens that only exist inside
+ * the table can only ever paint the table.
+ * ------------------------------------------------------------------------ */
+/*
+ * Each cloth carries its own accent, its own ivory and its own red.
+ *
+ * This is the part that was missing, and it is why four cloths used to read as
+ * one table repainted: the gold was a single app-wide token, so a blue table
+ * and a green table were lit by the same lamp. Here the accent belongs to the
+ * cloth — the blue table is lit cyan, the grey one teal — and changing the felt
+ * changes what the pot, the rings, the buttons and the winner's plate are made
+ * of. Values are the prototype's, hex for hex; they were tuned against each
+ * other by eye and re-deriving them in another colour space only moves them.
+ */
+[data-baize='emerald'],
+:root {
+  --baize-a: #12513f;
+  --baize-b: #04170f;
+  --spot: rgba(255, 231, 183, 0.16);
+  --rail-a: #5a3422;
+  --rail-b: #24130c;
+  --inlay: #c39a4e;
+  --inlay-hi: #ebd5a0;
+  --accent: #d8ac58;
+  --accent-ink: #201404;
+  --danger: #8e2f28;
+  --ivory: #f4ecdc;
+  --plate-a: rgba(14, 9, 6, 0.9);
+  --plate-b: rgba(6, 4, 3, 0.93);
+}
+
+[data-baize='claret'] {
+  --baize-a: #6b1f28;
+  --baize-b: #240a0e;
+  --spot: rgba(255, 214, 170, 0.15);
+  --rail-a: #7a5330;
+  --rail-b: #2e1c0f;
+  --inlay: #d3ae6a;
+  --inlay-hi: #f2dfb4;
+  --accent: #e6c177;
+  --accent-ink: #24140a;
+  --danger: #f0705f;
+  --ivory: #f6eedf;
+  --plate-a: rgba(20, 8, 8, 0.92);
+  --plate-b: rgba(10, 4, 4, 0.95);
+}
+
+[data-baize='midnight'] {
+  --baize-a: #0f4c86;
+  --baize-b: #05182e;
+  --spot: rgba(190, 228, 255, 0.17);
+  --rail-a: #e8edf2;
+  --rail-b: #8e9cab;
+  --inlay: #0b3b6b;
+  --inlay-hi: #ffffff;
+  --accent: #2fb2ec;
+  --accent-ink: #04203a;
+  --danger: #c2352c;
+  --ivory: #f7fafd;
+  --plate-a: rgba(5, 20, 38, 0.92);
+  --plate-b: rgba(3, 12, 24, 0.95);
+}
+
+[data-baize='slate'] {
+  --baize-a: #23262b;
+  --baize-b: #0b0c0e;
+  --spot: rgba(210, 226, 255, 0.11);
+  --rail-a: #3c4046;
+  --rail-b: #16181b;
+  --inlay: #8e949c;
+  --inlay-hi: #d6dbe1;
+  --accent: #7fd4c4;
+  --accent-ink: #062018;
+  --danger: #c4544a;
+  --ivory: #edeff2;
+  --plate-a: rgba(12, 13, 15, 0.92);
+  --plate-b: rgba(6, 7, 8, 0.95);
+}
+
+/*
+ * The decks.
+ *
+ * These used to be four back colours, which meant the choice changed nothing
+ * about the card you actually read. A deck is its *face*: the paper, the ink,
+ * the fillet, the letterform. So each one now sets all of that — and the back
+ * comes along with it, because a deck with a mismatched back is two decks.
+ *
+ * `--cgrain` is the strength of the paper noise. Zero is a plastic casino card
+ * and that is correct for the casino deck; the ivory one wants the most.
+ */
+[data-deck='clasica'],
+:root {
+  --cpa: #fffefa;
+  --cpb: #efe5d0;
+  --cink: #14100c;
+  --cred: #c4342c;
+  --cblue: #1d5fa8;
+  --cgreen: #17693f;
+  --cedge: rgba(52, 40, 24, 0.55);
+  --cframe: rgba(255, 255, 255, 0.85);
+  --cgrain: 0.14;
+  --back-a: #23507a;
+  --back-b: #12283f;
+  --back-c: #0b1a2b;
+}
+
+[data-deck='casino'] {
+  --cpa: #ffffff;
+  --cpb: #f2f5f8;
+  --cink: #0a0c10;
+  --cred: #dc2f26;
+  --cblue: #1668c8;
+  --cgreen: #0e8a4e;
+  --cedge: rgba(16, 22, 30, 0.5);
+  --cframe: rgba(255, 255, 255, 0.95);
+  --cgrain: 0;
+  --back-a: #8e1f22;
+  --back-b: #4c0f12;
+  --back-c: #2a080a;
+}
+
+[data-deck='bloque'] {
+  --cpa: #ffffff;
+  --cpb: #edf1f4;
+  --cink: #12161c;
+  --cred: #d02f2a;
+  --cblue: #1461c4;
+  --cgreen: #0f8551;
+  --cedge: rgba(16, 22, 30, 0.55);
+  --cframe: rgba(255, 255, 255, 0.95);
+  --cgrain: 0;
+  --back-a: #1d5f4a;
+  --back-b: #0d3226;
+  --back-c: #061c15;
+}
+
+[data-deck='marfil'] {
+  --cpa: #fbf4e4;
+  --cpb: #ebdcbc;
+  --cink: #26200f;
+  --cred: #a8322b;
+  --cblue: #25548c;
+  --cgreen: #1c6042;
+  --cedge: rgba(112, 86, 40, 0.62);
+  --cframe: rgba(196, 157, 84, 0.75);
+  --cgrain: 0.2;
+  --back-a: #6a4a24;
+  --back-b: #3a2712;
+  --back-c: #21160a;
+}
+
+/*
+ * Fractal noise, once.
+ *
+ * Every surface here — cloth, paper, the lip of the table — is a gradient plus
+ * this. It is what separates a *material* from a coloured shape, and it costs
+ * one data URI shared by all of them rather than one per surface.
+ */
+/*
+ * The room takes the table's light.
+ *
+ * Everything outside the felt — buttons, focus rings, the pot, the blind clock
+ * — used to be lit by one app-wide gold whatever cloth was on the table, so a
+ * blue table had a gold button sitting under it and the screen read as two
+ * pieces of software. Rebinding the four shadcn tokens that carry accent means
+ * the choice of cloth reaches the whole room, and no component has to know it
+ * happened.
+ *
+ * Applied on the room's own element, not on `:root`: the lobby and the
+ * create-room screen have no table yet, and should stay house colours.
+ */
+.table-lit {
+  --primary: var(--accent);
+  --primary-foreground: var(--accent-ink);
+  --ring: var(--accent);
+  --destructive: var(--danger);
+}
+
+.grain::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  pointer-events: none;
+  mix-blend-mode: overlay;
+  opacity: 0.3;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='140' height='140'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='.9' numOctaves='3' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='140' height='140' filter='url(%23n)'/%3E%3C/svg%3E");
+}
+
+/*
+ * Cloth.
+ *
+ * Two radial gradients, not one: the lower one is the body of the felt and the
+ * upper one is the *lamp* — a soft ellipse of warm light near the top edge,
+ * which is the single thing that stops a table reading as a flat green oval.
+ * `--spot` carries the colour of that light, and it is per-cloth because the
+ * lamp over a blue table is not the lamp over a green one.
+ */
+.baize {
+  background-image:
+    radial-gradient(ellipse 74% 58% at 50% 4%, var(--spot), transparent 68%),
+    radial-gradient(ellipse at 50% 42%, var(--baize-a), var(--baize-b) 82%);
   box-shadow:
-    inset 0 0 60px oklch(0.2 0.05 158 / 0.7),
-    inset 0 0 0 2px oklch(0.55 0.1 90 / 0.25);
+    /* The inlaid line, then the shadow the rail throws onto the cloth. A flat
+       surface has no shadow at its own edge, and that shadow is most of what
+       reads as "a table". */
+    0 0 0 2px var(--inlay),
+    0 0 0 3px rgba(0, 0, 0, 0.45),
+    inset 0 3px 14px rgba(0, 0, 0, 0.7),
+    inset 0 0 64px rgba(0, 0, 0, 0.55);
+}
+
+/*
+ * The rail. Grain runs around the ring, so the bands are angular rather than
+ * linear — a straight grain on a curved rail reads as a printed photograph of
+ * wood laid over a ring. The highlight along the top is the varnish.
+ */
+.rail {
+  background-image:
+    repeating-conic-gradient(
+      from 0deg at 50% 50%,
+      rgba(0, 0, 0, 0.16) 0deg 1.1deg,
+      transparent 1.1deg 3.3deg,
+      rgba(255, 255, 255, 0.05) 3.3deg 3.9deg,
+      transparent 3.9deg 7deg
+    ),
+    linear-gradient(168deg, var(--rail-a) 0%, var(--rail-b) 46%, var(--rail-a) 100%);
+  box-shadow:
+    0 16px 44px rgba(0, 0, 0, 0.62),
+    inset 0 2px 0 rgba(255, 255, 255, 0.07);
+}
+
+.rail::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  pointer-events: none;
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.22), transparent 34%);
+}
+
+/*
+ * The naipe.
+ *
+ * Four shadows doing four jobs, and every one of them earns its place: the drop
+ * puts the card above the cloth, the hairline is the card's own cut edge, the
+ * inset frame is the printed white margin every real card has, and the last one
+ * is the paper curving away along the spine. Take any of them out and two cards
+ * side by side stop being two cards and become one white smear — which is
+ * exactly what the old centred-rank face did at seat size.
+ */
+.card-face {
+  background-image: linear-gradient(168deg, var(--cpa) 0%, var(--cpa) 44%, var(--cpb) 100%);
+  color: var(--cink);
+  box-shadow:
+    0 3px 8px rgba(0, 0, 0, 0.5),
+    0 0 0 0.5px var(--cedge),
+    inset 0 0 0 1px var(--cframe),
+    inset -7px 0 9px -8px rgba(0, 0, 0, 0.32);
+}
+
+/* Paper grain. Without it the white is plastic. Multiply, so it darkens the
+   fibres rather than veiling the whole card. */
+.card-face::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  opacity: var(--cgrain);
+  mix-blend-mode: multiply;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='90' height='90'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='.85' numOctaves='2' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='90' height='90' filter='url(%23n)'/%3E%3C/svg%3E");
+}
+
+/*
+ * What each deck does differently.
+ *
+ * Not four palettes — four presses. The anatomy in `playing-card.tsx` is the
+ * same for all of them, and these are the four ways of printing it.
+ */
+
+/* Casino: a television index. No grain, no filigree, the rank as large as the
+   corner will take. The one to pick if anybody is watching on a phone across
+   the room. */
+[data-deck='casino'] .card-face b {
+  font-size: 1.16em;
+  letter-spacing: -0.08em;
+}
+
+/* Bloque: the corner is a solid tab of the suit colour with the figure knocked
+   out in white. At thumbnail size it is the most legible thing that exists —
+   the mark survives being 12 pixels tall, which no outline does. */
+[data-deck='bloque'] .card-ix {
+  left: 0;
+  top: 0;
+  padding: 2px 3px 3px;
+  border-radius: 4px 0 7px 0;
+  background: currentColor;
+}
+[data-deck='bloque'] .card-ix b,
+[data-deck='bloque'] .card-ix i {
+  color: #fff;
+}
+[data-deck='bloque'] .card-pip {
+  opacity: 0.88;
+}
+
+/* Marfil: old paper and a double fillet of gold, with the figures set in a
+   serif. The deck for the long nights, and the whole reason to pick it. */
+[data-deck='marfil'] .card-face {
+  box-shadow:
+    0 3px 8px rgba(0, 0, 0, 0.5),
+    0 0 0 0.5px var(--cedge),
+    inset 0 0 0 1px rgba(255, 255, 255, 0.55),
+    inset 0 0 0 2px var(--cframe),
+    inset -7px 0 9px -8px rgba(0, 0, 0, 0.3);
+}
+[data-deck='marfil'] .card-face b {
+  font-family: Georgia, 'Times New Roman', serif;
+  font-weight: 700;
+  letter-spacing: 0;
+}
+[data-deck='marfil'] .card-pip {
+  opacity: 0.82;
+}
+
+/* Casino prints its pip at full strength; it has no grain to compete with. */
+[data-deck='casino'] .card-pip {
+  opacity: 1;
+}
+
+/*
+ * The back, from the same deck.
+ *
+ * A diagonal weave over a two-stop ground, with the inlay showing as a border
+ * *inside* the edge — a printed back stops short of its own cut edge, and that
+ * inset ring is what says "printed" rather than "filled".
+ */
+.card-back {
+  background-image:
+    repeating-linear-gradient(45deg, rgba(255, 255, 255, 0.09) 0 3px, transparent 3px 7px),
+    linear-gradient(158deg, var(--back-a), var(--back-b) 62%, var(--back-c));
+  box-shadow:
+    0 3px 8px rgba(0, 0, 0, 0.55),
+    inset 0 0 0 1px rgba(255, 255, 255, 0.13),
+    inset 0 0 0 4px color-mix(in srgb, var(--inlay) 20%, transparent);
+}
+
+/*
+ * A chip, seen from above.
+ *
+ * The conic gradient is the edge spots — the eight painted notches round the
+ * rim of every clay chip — and it is the entire reason a disc reads as a
+ * *chip* rather than a counter. The radial highlight at 38%/30% is the lamp
+ * catching the moulded face. `--cc` is set per disc from its denomination.
+ */
+.chip {
+  /* Warm ivory, barely tinted by the chip it sits in — a real inlay is printed
+     card stock, not a lighter shade of the clay. */
+  --cc-inlay: color-mix(in srgb, var(--cc) 8%, #f7f1e2);
+  --cc-dark: color-mix(in srgb, var(--cc) 62%, #000);
+  border-radius: 50%;
+  background:
+    /* 1. The specular. A soft crescent up and to the left, weak enough that it
+          does not turn a black chip grey — the old one was a white smear across
+          half the face, which is what a plastic counter looks like under a
+          flash, not what clay looks like under a lamp. */
+    radial-gradient(ellipse 44% 32% at 32% 22%, rgba(255, 255, 255, 0.34), transparent 74%),
+    /* 2. The inlay: the printed disc pressed into the middle of every real
+          chip. A hairline of its own shadow where it sits below the clay, then
+          the step down in the moulding. This is the piece that was missing, and
+          the reason a chip without one reads as a board-game counter however
+          good the rim is — the eye finds the pale centre first and everything
+          else is the frame around it.
+
+          Fifty-six per cent of the diameter, not sixty-six. Too big and the
+          chip reads as a washer; this is where a real one sits. */
+      radial-gradient(
+        circle,
+        var(--cc-inlay) 0 25%,
+        color-mix(in srgb, var(--cc-inlay) 58%, #6a5c42) 25% 27%,
+        var(--cc-dark) 27% 30%,
+        transparent 30%
+      ),
+    /* 3. The clay, with a window cut in it for the edge spots to show through.
+          A window rather than painting the spots on top: it keeps them inside
+          the rim with clay showing beyond, which is where they are on a real
+          chip and the single detail that stops the rim reading as a striped
+          ring. The hairline at 45% is the tooling mark. */
+      radial-gradient(
+        circle,
+        var(--cc) 0 34%,
+        var(--cc-dark) 34% 35%,
+        var(--cc) 35% 36%,
+        transparent 36% 45%,
+        var(--cc) 45% 100%
+      ),
+    /* 4. And the spots themselves — six narrow ones, not four wide ones. */
+      repeating-conic-gradient(from 15deg, #fbf7ec 0deg 13deg, var(--cc) 13deg 60deg);
+  box-shadow:
+    /* Cast onto whatever is under it. */
+    0 1.5px 3px rgba(0, 0, 0, 0.6),
+    /* The cut edge. */ inset 0 0 0 0.5px rgba(0, 0, 0, 0.55),
+    /* And the bevel: lit along the top lip, in shadow along the bottom. Two
+       inset shadows are the whole difference between a flat disc and a moulded
+       object with thickness — and in a stack they are also what separates each
+       chip from the one under it. */
+      inset 0 1.5px 1px -0.5px rgba(255, 255, 255, 0.55),
+    inset 0 -2px 2.5px -1px rgba(0, 0, 0, 0.45);
+}
+
+/*
+ * The shadow that lands a stack on the cloth.
+ *
+ * An ellipse wider than the chip and squashed flat, sitting just under the
+ * base. Without it a stack floats a few millimetres above the felt, and it is
+ * the cheapest object-ness there is.
+ */
+.chip-foot {
+  position: absolute;
+  left: 50%;
+  bottom: -3px;
+  height: 7px;
+  border-radius: 50%;
+  translate: -50% 0;
+  background: radial-gradient(ellipse, rgba(0, 0, 0, 0.55), transparent 70%);
+  pointer-events: none;
+}
+
+/*
+ * The plate.
+ *
+ * A player is the plate; the avatar and the cards above it are held by it. Two
+ * near-black stops rather than a flat panel, because it sits on cloth that is
+ * itself lit unevenly — a flat fill reads as a hole cut in the table.
+ */
+.plate {
+  background-image: linear-gradient(180deg, var(--plate-a), var(--plate-b));
+  border: 1px solid color-mix(in srgb, var(--inlay) 24%, transparent);
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.5);
+}
+
+/* ------------------------------------------------------------------------ *
+ * A card landing
+ *
+ * It comes in from where the deck is, turns edge-on, and opens face up. The
+ * turn is a horizontal squeeze and a swap of what is drawn — deliberately not
+ * `preserve-3d` with `backface-visibility` on nested faces, which is the
+ * arrangement Safari leaves cards unpainted with. One element, one axis, and
+ * the back fades out at the exact moment the card has no width to see.
+ * ------------------------------------------------------------------------ */
+@keyframes card-arrive {
+  0% {
+    transform: translate(0, -34px) rotate(-7deg) scaleX(1);
+    opacity: 0;
+  }
+  30% {
+    opacity: 1;
+  }
+  55% {
+    transform: translate(0, 0) rotate(0deg) scaleX(0.06);
+    opacity: 1;
+  }
+  100% {
+    transform: translate(0, 0) rotate(0deg) scaleX(1);
+    opacity: 1;
+  }
+}
+
+/* Stepped, not faded: at the halfway point the card is edge-on and there is
+   nothing to cross-fade — a fade would be visible as a ghost through it. */
+@keyframes card-turn-over {
+  0%,
+  54.9% {
+    opacity: 1;
+  }
+  55%,
+  100% {
+    opacity: 0;
+  }
+}
+
+.card-arriving {
+  animation: card-arrive 420ms cubic-bezier(0.2, 0.7, 0.3, 1) backwards;
+}
+
+/*
+ * `both`, and the second half of that word is the whole point.
+ *
+ * With `backwards` alone the back is hidden for exactly 420ms and then the
+ * element goes back to its own style — which is opaque. So the flop turned
+ * over, and then, a fifth of a second later, three card backs faded back in on
+ * top of the faces and sat there for the rest of the street. Nothing in the
+ * markup was wrong and nothing in the keyframes was wrong; the animation simply
+ * stopped holding its last frame, which is the default and is almost never what
+ * a reveal wants.
+ */
+.card-arriving-back {
+  animation: card-turn-over 420ms linear both;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  /*
+   * No flight and no turn — but the *timing survives*. A showdown that
+   * resolves in a single frame does not tell somebody who turned motion off
+   * who won; it just shows them the answer. So each card still lands on its
+   * own beat, it simply appears there.
+   */
+  .card-arriving {
+    animation-name: card-appear;
+  }
+  .card-arriving-back {
+    animation-name: card-appear-gone;
+  }
+}
+
+@keyframes card-appear {
+  0%,
+  54.9% {
+    opacity: 0;
+  }
+  55%,
+  100% {
+    opacity: 1;
+  }
+}
+
+@keyframes card-appear-gone {
+  0%,
+  100% {
+    opacity: 0;
+  }
+}
+
+/*
+ * The hop half of a chip's arc.
+ *
+ * A chip crossing the felt is two elements: the outer one translates from A to
+ * B in a straight line, this one rises and falls underneath it. Straight line
+ * plus hop is an arc, and both halves are transforms, so a whole street's worth
+ * of chips is compositor work rather than layout work.
+ *
+ * Doing it as one curved path would mean computing a transform per frame in
+ * JavaScript. There is no version of that which survives nine of them at once
+ * on the phone somebody actually brought to the game.
+ */
+@keyframes chip-hop {
+  0%,
+  100% {
+    translate: 0 0;
+  }
+  50% {
+    translate: 0 var(--arc, -14px);
+  }
+}
+
+.chip-hop {
+  animation: chip-hop 420ms cubic-bezier(0.33, 0, 0.67, 1) both;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  /* The flight itself is never started in this case — see `useReducedMotion` —
+     but the rule stays, because a class that animates only sometimes is a class
+     somebody will reuse somewhere the guard does not run. */
+  .chip-hop {
+    animation: none;
+  }
+}
+
+/*
+ * The seat on the spot, running out of time.
+ *
+ * A beat rather than a fade: `animate-pulse` takes the whole seat down to half
+ * opacity, which dims the name and the chip count at exactly the moment
+ * somebody needs to read them. This pulses the glow around the seat and leaves
+ * the contents alone.
+ */
+@keyframes seat-beat {
+  0%,
+  100% {
+    box-shadow: 0 0 14px oklch(0.58 0.2 25 / 0.35);
+  }
+  50% {
+    box-shadow: 0 0 26px oklch(0.58 0.2 25 / 0.75);
+  }
+}
+
+.beat {
+  animation: seat-beat 900ms ease-in-out infinite;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .beat {
+    animation: none;
+    box-shadow: 0 0 22px oklch(0.58 0.2 25 / 0.6);
+  }
+}
+
+/*
+ * A control that answers back.
+ *
+ * The press is 60ms and 1px — below what anybody notices as an animation and
+ * exactly what stops an irreversible action being tapped twice, because the
+ * finger gets an answer before the network does.
+ */
+.tactile {
+  position: relative;
+  overflow: hidden;
+  isolation: isolate;
+  -webkit-tap-highlight-color: transparent;
+  transition:
+    transform 160ms cubic-bezier(0.2, 0.85, 0.3, 1),
+    box-shadow 160ms,
+    filter 160ms;
+}
+
+/*
+ * Down instantly, up slowly.
+ *
+ * The asymmetry is the whole trick, and it is one line: 45ms on the way down
+ * and 160ms on the way back. A press that eases *in* feels like the app
+ * thinking about it; a press that snaps down and rises at its own pace feels
+ * like a physical key. On a control that folds a hand, that is the difference
+ * between waiting and tapping again.
+ */
+.tactile:active:not(:disabled) {
+  transform: translateY(2.5px) scale(0.978);
+  box-shadow:
+    0 1px 3px rgba(0, 0, 0, 0.5),
+    inset 0 3px 7px rgba(0, 0, 0, 0.3);
+  filter: brightness(0.93) saturate(1.05);
+  transition-duration: 45ms;
+}
+
+/*
+ * The three decisions.
+ *
+ * Fold is the narrowest and raise the widest — 1 : 1.15 : 1.35 — because the
+ * three are not equally wanted. The most destructive one gets the least thumb
+ * and sits furthest from where the thumb rests, which is the cheapest possible
+ * guard against a misfire, and it costs nothing because the other two get the
+ * room instead.
+ */
+.actions {
+  display: grid;
+  grid-template-columns: 1fr 1.15fr 1.35fr;
+  gap: calc(7px * var(--zu, 1));
+}
+
+.act {
+  /* Every size in here is times `--zu`, the scale your own zone is drawn at on
+     this screen — see `zoneScale`. A 52px button on a 6-inch phone and a 52px
+     button on an SE are the same button on two thirds of the screen, and the
+     difference comes out of the table. */
+  min-height: calc(52px * var(--zu, 1));
+  border-radius: calc(13px * var(--zu, 1));
+  border: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 1px;
+  font-size: calc(13px * var(--zu, 1));
+  font-weight: 700;
+  cursor: pointer;
+  box-shadow:
+    0 6px 16px rgba(0, 0, 0, 0.45),
+    inset 0 1px 0 rgba(255, 255, 255, 0.22);
+}
+
+.act:disabled {
+  cursor: not-allowed;
+  opacity: 0.45;
+  box-shadow: none;
+}
+
+.act small {
+  font-family: var(--font-mono), ui-monospace, monospace;
+  font-variant-numeric: tabular-nums;
+  font-size: calc(12.5px * var(--zu, 1));
+  font-weight: 800;
+}
+
+.act:focus-visible {
+  outline: 2px solid var(--ivory);
+  outline-offset: 2px;
+}
+
+/* Each one is lit from above — the lighter stop at the top is what makes a flat
+   fill read as a moulded key rather than a coloured rectangle. */
+.act-fold {
+  background: linear-gradient(
+    180deg,
+    color-mix(in srgb, var(--danger) 86%, #fff 14%),
+    var(--danger)
+  );
+  color: #fff;
+}
+
+.act-call {
+  background: linear-gradient(180deg, #fff, var(--ivory));
+  color: #14100c;
+}
+
+.act-raise {
+  background: linear-gradient(
+    180deg,
+    color-mix(in srgb, var(--accent) 80%, #fff 20%),
+    var(--accent)
+  );
+  color: var(--accent-ink);
+}
+
+/*
+ * And a flash from wherever the finger actually landed.
+ *
+ * From the touch point rather than the middle, because that is what makes it
+ * read as "this registered *your* tap" instead of "something lit up". On a
+ * control that folds a hand, that acknowledgement is the difference between
+ * waiting and tapping again.
+ */
+.tactile::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  background: radial-gradient(
+    circle at var(--tap-x, 50%) var(--tap-y, 50%),
+    oklch(1 0 0 / 0.4) 0%,
+    transparent 55%
+  );
+  opacity: 0;
+  transition: opacity 340ms ease-out;
+  pointer-events: none;
+}
+
+.tactile[data-tapped='true']::after {
+  opacity: 1;
+  /* Snaps on, fades off — the reverse reads as a delay. */
+  transition: none;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .tactile:active:not(:disabled) {
+    transform: none;
+  }
+  .tactile::after {
+    display: none;
+  }
 }

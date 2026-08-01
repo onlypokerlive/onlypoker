@@ -17,16 +17,36 @@ import {
 import type { GameView } from '@/lib/poker-api'
 import { shareTournamentPoster } from '@/lib/tournament-poster'
 
-export function rematchHref(view: GameView): string {
-  const params = new URLSearchParams({
-    source: 'rematch',
-    sb: String(view.smallBlind),
-    bb: String(view.bigBlind),
-    chips: String(view.startingChips),
-    level: String(view.levelMinutes),
-    action: String(view.actionSeconds),
-  })
-  return `/?${params.toString()}#create-table`
+/** Keep the current group at the current table for the fastest next game. */
+export function PlayAgain({
+  onPlayAgain,
+  busy = false,
+}: {
+  onPlayAgain?: () => void
+  busy?: boolean
+}) {
+  if (!onPlayAgain) {
+    return (
+      <p className="text-center text-xs text-muted-foreground">
+        Stay where you are — the host can deal another.
+      </p>
+    )
+  }
+
+  return (
+    <Button
+      size="lg"
+      onClick={() => {
+        recordFinishCta('rematch', true)
+        onPlayAgain()
+      }}
+      disabled={busy}
+      className="w-full max-w-md"
+    >
+      <RotateCcw data-icon="inline-start" />
+      Play again
+    </Button>
+  )
 }
 
 /** Final table, share artifact, and the shortest route into the next night. */
@@ -41,12 +61,13 @@ export function TournamentResults({ view }: { view: GameView }) {
       const rect = actionsRef.current?.getBoundingClientRect()
       recordFinishCtaImpression(
         view.roomId,
+        view.tournamentNumber,
         view.isHost,
         Boolean(rect && rect.top >= 0 && rect.bottom <= window.innerHeight),
       )
     })
     return () => window.cancelAnimationFrame(frame)
-  }, [view.roomId, view.isHost, view.standings.length])
+  }, [view.roomId, view.tournamentNumber, view.isHost, view.standings.length])
 
   if (!view.standings.length) return null
   const tiedStacks = view.standings.some(
@@ -79,13 +100,9 @@ export function TournamentResults({ view }: { view: GameView }) {
     }
   }
 
-  function moveToCreation(action: 'create' | 'rematch') {
-    recordFinishCta(action, view.isHost)
-    router.push(
-      action === 'rematch'
-        ? rematchHref(view)
-        : '/?source=finished-table#create-table',
-    )
+  function moveToCreation() {
+    recordFinishCta('create', view.isHost)
+    router.push('/?source=finished-table#create-table')
   }
 
   return (
@@ -98,7 +115,7 @@ export function TournamentResults({ view }: { view: GameView }) {
         <div className="rounded-xl border border-primary/20 bg-primary/5 px-3 py-2.5">
           <h3 className="font-serif text-lg font-semibold text-foreground">Keep the night going</h3>
           <p className="mt-0.5 text-xs leading-relaxed text-muted-foreground">
-            Share the final table, reuse these settings, or host a fresh one.
+            Share the final table or open a fresh one of your own.
           </p>
         </div>
 
@@ -107,16 +124,10 @@ export function TournamentResults({ view }: { view: GameView }) {
           {sharing ? 'Making the poster…' : 'Share the night'}
         </Button>
 
-        <div className="grid grid-cols-2 gap-2 md:grid-cols-1">
-          <Button size="lg" variant="secondary" onClick={() => moveToCreation('rematch')}>
-            <RotateCcw data-icon="inline-start" />
-            Play again
-          </Button>
-          <Button size="lg" variant="outline" onClick={() => moveToCreation('create')}>
-            <Plus data-icon="inline-start" />
-            Create your table
-          </Button>
-        </div>
+        <Button size="lg" variant="outline" onClick={moveToCreation}>
+          <Plus data-icon="inline-start" />
+          Create your table
+        </Button>
 
         <details className="rounded-xl border border-border/50 bg-card/50 px-3 py-2">
           <summary className="cursor-pointer text-center text-xs font-medium text-muted-foreground">

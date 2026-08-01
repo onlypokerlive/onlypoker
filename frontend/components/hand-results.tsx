@@ -61,7 +61,10 @@ export function HandResults({
       )}
       <ul className="flex flex-col gap-1 overflow-y-auto">
         {sorted.map((r) => {
-          const won = r.delta > 0
+          // Highlighted for taking a pot, not for finishing ahead. The column
+          // on the right is the other question and keeps its own answer: a
+          // chop leaves both of them at zero and both of them winners.
+          const won = r.won > 0
           // They chose to turn cards over after the fact, so "won without
           // showing" stops being true the moment they do.
           const turnedOver = !!view.players.find((p) => p.id === r.playerId)?.shownIndices

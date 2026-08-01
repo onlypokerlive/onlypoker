@@ -1,6 +1,8 @@
 "use client"
 
-import { useState } from "react"
+import { useEffect, useRef, useState } from "react"
+import { X } from "lucide-react"
+import { toast } from "sonner"
 
 import { Button } from "@/components/ui/button"
 import { cn } from "@/lib/utils"
@@ -41,7 +43,33 @@ export function PreActions({
   session: Session | null
 }) {
   const [busy, setBusy] = useState(false)
+  /**
+   * What was just tapped, before the server has said so.
+   *
+   * The row used to be drawn straight from `view.preAction`, which arrives on
+   * the next poll — so tapping "Check / fold" did nothing visible for up to a
+   * second and a bit. On a control whose whole job is to commit you to folding
+   * a hand you have not seen the action on, a second of *looking like it did
+   * not register* is the difference between a plan and a plan you no longer
+   * trust — and the natural response is to tap it again, which is the gesture
+   * that cancels it.
+   */
+  const [pending, setPending] = useState<PreAction | null | undefined>(undefined)
+  const settled = useRef<PreAction | null>(view.preAction ?? null)
   const you = view.you
+
+  // The server has caught up: stop guessing. Compared against the last value we
+  // *saw* rather than against `pending`, so a change made from somewhere else —
+  // the plan being spent when the turn came round — still clears it.
+  useEffect(() => {
+    const now = view.preAction ?? null
+    if (now !== settled.current) {
+      settled.current = now
+      setPending(undefined)
+    }
+  }, [view.preAction])
+
+  const chosen = pending !== undefined ? pending : (view.preAction ?? null)
 
   // Only while there is a hand you are in and it is somebody else's turn.
   // Planning your own turn is not planning — it is acting, by a second route.
@@ -53,43 +81,73 @@ export function PreActions({
   if (!view.actorId || you.chips <= 0) return null
 
   async function choose(action: PreAction) {
+    // Cancelling is tapping the same one again, and it is the reason this is a
+    // set of toggles rather than a set of buttons: a plan made three players
+    // ago is a plan you are allowed to change your mind about, right up until
+    // the action reaches you.
+    const next = chosen === action ? null : action
+    setPending(next)
     setBusy(true)
     try {
       await pokerApi.setPreAction(
         roomId,
         you!.id,
-        view.preAction === action ? "clear" : action,
+        next ?? "clear",
         view.handNumber,
         session?.token,
       )
       onDone()
+    } catch (e) {
+      // It did not take. Showing it as chosen would be the worst outcome this
+      // control has: a fold somebody believes is armed and is not, or believes
+      // is cancelled and is not. Said out loud as well as drawn — a button that
+      // silently springs back is a button somebody presses again.
+      setPending(undefined)
+      toast.error(e instanceof Error ? e.message : "That plan did not stick.")
     } finally {
       setBusy(false)
     }
   }
 
+  const picked = CHOICES.find((c) => c.id === chosen)
+
   return (
     <div className="flex flex-col gap-1">
       <div className="flex items-center gap-1.5">
-        {CHOICES.map((c) => (
-          <Button
-            key={c.id}
-            size="sm"
-            variant={view.preAction === c.id ? "secondary" : "outline"}
-            disabled={busy}
-            aria-pressed={view.preAction === c.id}
-            onClick={() => choose(c.id)}
-            className={cn("flex-1", view.preAction === c.id && "ring-1 ring-accent")}
-          >
-            {c.label}
-          </Button>
-        ))}
+        {CHOICES.map((c) => {
+          const on = chosen === c.id
+          return (
+            <Button
+              key={c.id}
+              size="sm"
+              // Filled, not outlined-with-a-ring. A ring on an outline button
+              // is the difference between two greys, and this is the one
+              // control on the screen that acts on your behalf without asking
+              // again — it has to be obvious across a room which one is armed.
+              variant={on ? "default" : "outline"}
+              disabled={busy}
+              aria-pressed={on}
+              onClick={() => choose(c.id)}
+              className={cn("flex-1 gap-1", on && "font-bold")}
+            >
+              {/* The way out, drawn on the thing it undoes. Tapping the button
+                  again is what cancels; nobody guesses that from a button that
+                  merely looks pressed. */}
+              {on && <X className="size-3" aria-hidden />}
+              {c.label}
+            </Button>
+          )
+        })}
       </div>
-      <span className="text-center text-[11px] text-muted-foreground">
+      <span
+        className={cn(
+          "text-center text-[11px]",
+          picked ? "font-medium text-accent" : "text-muted-foreground",
+        )}
+      >
         {/* Saying what it will do beats hoping the label carries it: these fire
             without asking again, which is the point and also the risk. */}
-        {CHOICES.find((c) => c.id === view.preAction)?.hint ??
-          "Decide now and it plays itself when your turn comes."}
+        {picked ? `${picked.hint} Tap again to cancel.` : "Decide now and it plays itself when your turn comes."}
       </span>
     </div>
   )

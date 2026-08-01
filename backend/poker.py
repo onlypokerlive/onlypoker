@@ -15,7 +15,10 @@ from typing import Any
 
 from pokerkit import (
     Automation,
+    CheckingOrCalling,
     ChipsPushing,
+    CompletionBettingOrRaisingTo,
+    Folding,
     Mode,
     NoLimitTexasHoldem,
     StandardHighHand,
@@ -51,6 +54,14 @@ def create_hand(
     is the small blind, index 1 the big blind, and the final index the button
     (pokerkit posts blinds positionally from index 0).
 
+    **Except heads-up, where pokerkit reverses it** — with two players index 0
+    posts the *big* blind and index 1 is the button, posts the small blind, and
+    acts first before the flop. That is correct poker and it is not what the
+    line above says, so it is worth being blunt about: pass two stacks in the
+    order [big blind, button] or the button pays the wrong blind and the wrong
+    player opens. See ``_seat_order`` in main.py, which is the only caller that
+    has to know.
+
     ``ante_from_big_blind`` is the modern big-blind ante: one player posts for
     the whole table, which is the same dead money with a fraction of the
     fiddling. It needs ``ante_trimming_status=False`` — trimming exists to
@@ -70,7 +81,18 @@ def create_hand(
     ``apply_action`` keep refusing it, so the table plays the same either way.
     """
     if ante and ante_from_big_blind:
-        raw_antes: Any = {1: ante}  # index 1 is the big blind, by construction
+        # Key 1 is the *second forced-bet slot*, not player index 1, and the
+        # distinction only shows up heads-up — where it is the whole thing.
+        #
+        # pokerkit applies the same reversal to this map that it applies to the
+        # blinds, so the slot resolves to whoever is charged the big blind.
+        # Traced rather than reasoned about: at two players it comes off player
+        # index 0, who has `bets` 10 and is the big blind; at three it comes off
+        # index 1, who is also the big blind. The key stays 1 at every field
+        # size and the ante follows the big blind at every field size. Changing
+        # it to 0 "to match heads-up" takes the ante off the button, which is
+        # the seat that owes nothing.
+        raw_antes: Any = {1: ante}
     else:
         raw_antes = ante
     return NoLimitTexasHoldem.create_state(
@@ -331,6 +353,103 @@ def pot_total(state, hand_start_stacks: list[int]) -> int:
     return max(0, committed - front)
 
 
+def side_pots(state) -> list[dict[str, Any]]:
+    """The pots as they actually stand, main first, with who can win each.
+
+    A single number is a lie as soon as somebody is all in for less than the
+    bet: the short stack is playing for the main pot and everybody else is
+    playing for that *plus* a side pot they cannot win. Told only the total, a
+    player cannot work out what their call is actually chasing.
+
+    Sums to :func:`pot_total` by construction — pokerkit's pots exclude what is
+    still out on the felt this street, which is the same line that function
+    draws. Empty between hands and once the chips have been pushed.
+    """
+    out: list[dict[str, Any]] = []
+    for pot in state.pots:
+        amount = int(pot.amount)
+        if amount <= 0:
+            continue
+        out.append({"amount": amount, "seats": [int(i) for i in pot.player_indices]})
+    return out
+
+
+def action_mark(state) -> int:
+    """A bookmark in the engine's own log, taken before an action is applied.
+
+    Paired with :func:`describe_action`, which reads back everything the
+    engine recorded past this point.
+    """
+    return len(state.operations)
+
+
+def describe_action(
+    state,
+    mark: int,
+    seat: int,
+    bets_before: list[int],
+    stack_before: int,
+) -> dict[str, Any] | None:
+    """Name what a player just did, from the table's point of view.
+
+    pokerkit has three verbs; a table has five. Checking and calling are the
+    same move to the engine and the opposite move to everyone watching, and
+    opening a street is not the same thing as raising somebody — "raises to
+    900" when nobody had bet describes a hand that never happened.
+
+    Read off the operations the engine wrote rather than off the state
+    afterwards, because by the time this runs the state has moved on twice
+    over: pokerkit collects the bets the moment a street closes, so the last
+    call of a street reports a table where nobody had bet anything, and it
+    pushes the pot the moment a hand ends, so the last fold of a hand reports
+    a player whose stack went *up*.
+    """
+    verb = None
+    amount = 0
+    for op in state.operations[mark:]:
+        if getattr(op, "player_index", None) != seat:
+            continue
+        if isinstance(op, Folding):
+            verb, amount = "fold", 0
+            break
+        if isinstance(op, CheckingOrCalling):
+            verb, amount = "call", int(op.amount)
+            break
+        if isinstance(op, CompletionBettingOrRaisingTo):
+            verb, amount = "raise", int(op.amount)
+            break
+    if verb is None:
+        return None
+
+    mine = int(bets_before[seat]) if seat < len(bets_before) else 0
+    others = [b for i, b in enumerate(bets_before) if i != seat]
+    highest = max(others) if others else 0
+
+    if verb == "fold":
+        kind, put_in, to = "fold", 0, mine
+    elif verb == "call":
+        # The engine's amount is what leaves the stack, so a free card is a
+        # zero and that is exactly the check the table would call out.
+        kind = "call" if amount > 0 else "check"
+        put_in, to = amount, mine + amount
+    else:
+        # A raise names the level it raises *to*, not what it costs.
+        kind = "raise" if highest > 0 else "bet"
+        put_in, to = amount - mine, amount
+
+    return {
+        "kind": kind,
+        # What this decision cost them, and where it left their bet. Both,
+        # because "calls 300" and "raises to 900" are the two numbers a table
+        # says out loud and neither can be worked out from the other.
+        "amount": put_in,
+        "to": to,
+        # Their whole stack went in. Not a kind of its own: somebody can be
+        # all in *and* calling, and collapsing the two loses which it was.
+        "allIn": kind != "fold" and stack_before - put_in <= 0,
+    }
+
+
 # --------------------------------------------------------------------------- #
 # Hand naming
 # --------------------------------------------------------------------------- #
@@ -389,6 +508,30 @@ def _describe(cards: list[str], label: str) -> str:
     return label
 
 
+_RANK_ORDER = "23456789TJQKA"
+
+
+def describe_hole(hole: list[str]) -> str | None:
+    """What two cards are, before there is a board to make anything with.
+
+    Preflop `evaluate_hand` has nothing to evaluate — five cards is its minimum
+    — and "no hand yet" is not what somebody holding two aces wants to be told.
+    So the two cards get named the way players say them out loud: a pair, or two
+    ranks and whether they share a suit.
+    """
+    if len(hole) != 2 or any(len(c) < 2 for c in hole):
+        return None
+    r1, s1 = hole[0][0], hole[0][1]
+    r2, s2 = hole[1][0], hole[1][1]
+    if r1 not in _RANK_ORDER or r2 not in _RANK_ORDER:
+        return None
+    if r1 == r2:
+        return f"Pair of {_PLURAL.get(r1, r1)}"
+    high, low = sorted((r1, r2), key=_RANK_ORDER.index, reverse=True)
+    suited = "suited" if s1 == s2 else "offsuit"
+    return f"{_SINGULAR[high].capitalize()}-{_SINGULAR[low]} {suited}"
+
+
 def evaluate_hand(hole: list[str], board: list[str]) -> dict[str, Any] | None:
     """Best five cards a player can make, and what that hand is called.
 
@@ -404,6 +547,21 @@ def evaluate_hand(hole: list[str], board: list[str]) -> dict[str, Any] | None:
         return None
     cards = [card_str(c) for c in hand.cards]
     return {"cards": cards, "name": _describe(cards, hand.entry.label.value)}
+
+
+def hand_rank(hole: list[str], board: list[str]):
+    """How strong one hand is, as something two of them can be compared with.
+
+    Returns None when it cannot be worked out, and every caller treats that as
+    "assume it has to be shown": a hand nobody can rank is not a hand anybody
+    should be allowed to muck on the strength of.
+    """
+    if len(hole) + len(board) < 5:
+        return None
+    try:
+        return StandardHighHand.from_game("".join(hole), "".join(board))
+    except Exception:
+        return None
 
 
 # Cards each remaining street would have been dealt, given how much board is

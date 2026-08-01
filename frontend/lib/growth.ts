@@ -157,10 +157,11 @@ export function recordActionRejected(
 
 export function recordFinishCtaImpression(
   roomId: string,
+  tournamentNumber: number,
   isHost: boolean,
   initiallyVisible: boolean,
 ) {
-  once(`finish-cta:${roomId}`, () =>
+  once(`finish-cta:${roomId}:${tournamentNumber}`, () =>
     emit('Finish CTA Impression', {
       isHost,
       initiallyVisible,
@@ -272,17 +273,24 @@ export function recordInviteShared({
   emit('Invite Shared', { method, surface, phase, isHost, playerCount })
 }
 
-export function recordGameStarted(roomId: string, playerCount: number) {
-  once(`start:${roomId}`, () => emit('Game Started', { playerCount }))
+export function recordGameStarted(
+  roomId: string,
+  tournamentNumber: number,
+  playerCount: number,
+) {
+  once(`start:${roomId}:${tournamentNumber}`, () =>
+    emit('Game Started', { playerCount }),
+  )
 }
 
 export function recordTournamentFinished(
   roomId: string,
+  tournamentNumber: number,
   playerCount: number,
   handCount: number,
   isHost: boolean,
 ) {
-  once(`finish:${roomId}`, () =>
+  once(`finish:${roomId}:${tournamentNumber}`, () =>
     emit('Tournament Finished', { playerCount, handCount, isHost }),
   )
 }

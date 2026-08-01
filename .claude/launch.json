@@ -4,8 +4,15 @@
     {
       "name": "poker",
       "runtimeExecutable": "pnpm",
-      "runtimeArgs": ["--dir", "frontend", "dev"],
-      "port": 3000
+      "runtimeArgs": [
+        "--dir",
+        "frontend",
+        "dev"
+      ],
+      "port": 3000,
+      "env": {
+        "POKER_DEV_PROXY": "1"
+      }
     }
   ]
 }

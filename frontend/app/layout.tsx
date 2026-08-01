@@ -1,6 +1,7 @@
 import { Analytics } from '@vercel/analytics/next'
 import type { Metadata, Viewport } from 'next'
 import { Geist, Geist_Mono, Playfair_Display } from 'next/font/google'
+import { Toaster } from '@/components/ui/sonner'
 import './globals.css'
 
 const geistSans = Geist({
@@ -60,6 +61,11 @@ export default function RootLayout({
           Skip to main content
         </a>
         {children}
+        {/* Nothing was rendering these. Every `toast.error` the app has ever
+            raised — a rejected action, a lost connection, a seat that closed
+            — went nowhere, which reads as the tap not registering. Mounted
+            here so it covers every route rather than only the table. */}
+        <Toaster />
         {process.env.NODE_ENV === 'production' && <Analytics />}
       </body>
     </html>

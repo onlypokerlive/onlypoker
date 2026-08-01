@@ -108,12 +108,34 @@ test.describe('responsive host-conversion journey', () => {
         (await guest.page.getByRole('button', { name: /^All-in/ }).isVisible()),
       )
       .toBe(true)
-    const firstActor = (await host.page.getByRole('button', { name: /^All-in/ }).isVisible())
-      ? host.page
-      : guest.page
-    const secondActor = firstActor === host.page ? guest.page : host.page
+    const firstActorIsHost = await host.page
+      .getByRole('button', { name: /^All-in/ })
+      .isVisible()
+    const firstActor = firstActorIsHost ? host.page : guest.page
+    const firstActorName = firstActorIsHost ? 'Alex' : 'Sam'
+    const secondActor = firstActorIsHost ? guest.page : host.page
+    const waitForAction = (page: Page) =>
+      page.waitForResponse(
+        (response) =>
+          response.request().method() === 'POST' &&
+          new URL(response.url()).pathname.endsWith(`/rooms/${host.roomId}/action`),
+      )
+
+    const allInResponse = waitForAction(firstActor)
     await firstActor.getByRole('button', { name: /^All-in/ }).click()
-    await secondActor.getByRole('button', { name: /^Call/ }).click()
+    expect((await allInResponse).ok()).toBe(true)
+
+    // The fixed mobile action zone can briefly retain the previous poll's
+    // controls. Wait until this browser has observed the all-in before using
+    // its freshly rendered call action.
+    await expect(
+      secondActor.getByText(new RegExp(`${firstActorName} is all-in for`)),
+    ).toBeVisible()
+    const call = secondActor.getByRole('button', { name: /^Call/ })
+    await expect(call).toBeEnabled()
+    const callResponse = waitForAction(secondActor)
+    await call.click()
+    expect((await callResponse).ok()).toBe(true)
 
     await expect(host.page.getByText('Keep the night going')).toBeVisible({ timeout: 25_000 })
     await expect(guest.page.getByText('Keep the night going')).toBeVisible({ timeout: 25_000 })
@@ -128,11 +150,18 @@ test.describe('responsive host-conversion journey', () => {
       'friday-night-poker-final-table.png',
     )
 
-    await host.page.getByRole('button', { name: 'Play again' }).click()
-    await expect(host.page.getByRole('button', { name: 'Create rematch' })).toBeVisible()
-
     await guest.page.getByRole('button', { name: 'Create your table' }).click()
-    await expect(guest.page.getByRole('button', { name: 'Create table' })).toBeVisible()
+    const nextTableForm = guest.page.locator('#create-table form')
+    await expect(nextTableForm).toHaveAttribute('data-ready', 'true')
+    await nextTableForm.getByLabel('Your name').fill('Sam')
+    await nextTableForm.getByLabel('Room password').fill(PASSWORD)
+    await nextTableForm.getByRole('button', { name: 'Create table' }).click()
+    await guest.page.waitForURL(/\/room\/[A-Z0-9]+$/)
+    await expect(guest.page.getByRole('button', { name: 'Invite players' })).toBeVisible()
+
+    await host.page.getByRole('button', { name: 'Play again' }).click()
+    await expect(host.page).toHaveURL(new RegExp(`/room/${host.roomId}$`))
+    await expect(host.page.getByRole('button', { name: 'Start game' })).toBeVisible()
 
     await guest.context.close()
     await host.context.close()

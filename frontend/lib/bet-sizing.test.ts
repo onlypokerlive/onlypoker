@@ -78,9 +78,24 @@ describe('presets', () => {
     expect(presets(c).map((p) => p.label)).toEqual(['½', '¾', 'Pot', 'All-in'])
   })
 
-  it('collapses a size you cannot afford into all-in', () => {
-    // Short stack: every preset is above what is left, so only all-in survives.
+  it('measures against the stack once the pot has outgrown it', () => {
+    // Short stack against a big pot: every pot fraction is more than there is
+    // behind, so all four clamp to the maximum and the row would offer one
+    // button reading "All-in" — arithmetically true and useless, because 40 and
+    // 60 are perfectly good bets and nothing offered a way to reach them.
+    //
+    // This is the spot that decides tournaments, so the sizes switch to shares
+    // of what is left.
     const c = ctx({ pot: 600, betsOnFelt: 0, callAmount: 0, minRaise: 20, maxRaise: 120 })
+    expect(presets(c).map((p) => p.amount)).toEqual([40, 60, 90, 120])
+    expect(presets(c).map((p) => p.label)).toEqual(['⅓', '½', '¾', 'All-in'])
+  })
+
+  it('still collapses to all-in when there is genuinely one bet left', () => {
+    // A stack so short that even a third of it is below the minimum raise.
+    // Here the single button is the truth, and the sizing row is not drawn at
+    // all — see the action bar.
+    const c = ctx({ pot: 600, betsOnFelt: 0, callAmount: 0, minRaise: 100, maxRaise: 120 })
     expect(presets(c)).toEqual([{ label: 'All-in', amount: 120 }])
   })
 

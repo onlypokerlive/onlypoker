@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import os
 import pathlib
+import random
 import sys
 
 import pytest
@@ -19,6 +20,7 @@ os.environ.pop("KV_REST_API_URL", None)
 os.environ.pop("UPSTASH_REDIS_REST_URL", None)
 
 import main  # noqa: E402
+import poker  # noqa: E402
 
 
 class FakeClock:
@@ -413,6 +415,171 @@ def test_last_player_standing_wins_the_tournament(client, clock):
     assert any(r["delta"] > 0 for r in view["lastResults"])
 
 
+def test_the_hand_that_ends_the_night_is_played_out_like_any_other(client, clock):
+    """The most-watched hand of the night used to be the one nobody saw.
+
+    Settling replaced the table with a scoreboard in the same response that
+    dealt the last card: no showdown, no pot crossing the felt, no seeing what
+    it was won with. The hand that decides everything got less of a look at it
+    than the hand before it. Now it takes the same pause every other hand does,
+    and the standings come after.
+    """
+    room_id, ids = table(client, 2, actionSeconds=0)
+    start(client, room_id, ids[0])
+    ending = None
+    for _ in range(80):
+        view = state(client, room_id, ids[0])
+        phase = view["room"]["phase"]
+        if phase == "finished":
+            break
+        if phase == "handover":
+            room = client.portal.call(main.load_room, room_id)
+            if room.get("finishAt"):
+                ending = view
+                break
+            clock.advance(main.HANDOVER_MAX_SECONDS + 1)
+            continue
+        actor = view["actorId"]
+        legal = state(client, room_id, actor)["legal"]
+        if legal and legal["canRaise"]:
+            act(client, room_id, actor, "raise", legal["maxRaise"])
+        else:
+            act(client, room_id, actor, "call")
+
+    assert ending, "the tournament never came down to one player"
+    # Still a table, with the hand that just ended sitting on it.
+    assert ending["room"]["phase"] == "handover"
+    assert len(ending["lastResults"]) == 2
+    assert ending["potAtEnd"] > 0, "and the pot is still in the middle"
+    assert not ending["standings"], "the podium comes afterwards, not instead"
+
+    clock.advance(main.HANDOVER_MAX_SECONDS + 1)
+    view = state(client, room_id, ids[0])
+    assert view["room"]["phase"] == "finished"
+    assert [s["place"] for s in view["standings"]] == [1, 2]
+
+
+def play_to_the_end(client, clock, room_id, ids):
+    """Shove every hand until somebody has all the chips."""
+    for _ in range(120):
+        view = state(client, room_id, ids[0])
+        phase = view["room"]["phase"]
+        if phase == "finished":
+            return view
+        if phase == "handover":
+            clock.advance(main.HANDOVER_MAX_SECONDS + 1)
+            continue
+        actor = view["actorId"]
+        if not actor:
+            clock.advance(main.HANDOVER_MAX_SECONDS + 1)
+            continue
+        legal = state(client, room_id, actor)["legal"]
+        if legal and legal["canRaise"]:
+            act(client, room_id, actor, "raise", legal["maxRaise"])
+        else:
+            act(client, room_id, actor, "call")
+    raise AssertionError("the tournament never came down to one player")
+
+
+def again(client, room_id, player_id, request_id="again:1"):
+    return client.post(
+        f"/api/rooms/{room_id}/again",
+        headers=auth(player_id),
+        json={"playerId": player_id, "action": "again", "requestId": request_id},
+    )
+
+
+def test_the_table_can_play_another_one(client, clock):
+    """The end of a tournament is not the end of an evening.
+
+    Everybody is still in the room and the chips are still on the table, so
+    "again?" is the only thing anybody says at that moment — and the app's
+    answer was a podium with nothing on it to press.
+    """
+    room_id, ids = table(client, 3, actionSeconds=0, levelMinutes=0)
+    start(client, room_id, ids[0])
+    finished = play_to_the_end(client, clock, room_id, ids)
+    assert finished["room"]["phase"] == "finished"
+    hands = finished["room"]["handNumber"]
+    assert hands > 0
+
+    assert again(client, room_id, ids[0]).status_code == 200
+    view = state(client, room_id, ids[0])
+    assert view["room"]["phase"] == "lobby"
+    assert view["room"]["handNumber"] == 0
+    assert not view["standings"], "last night's podium is not this night's"
+    # Everybody is back, on the same seat, with a full stack.
+    assert len(view["players"]) == 3
+    for player in view["players"]:
+        assert player["chips"] == view["room"]["startingChips"]
+        assert player["out"] is False
+        assert player["rebuys"] == 0
+    assert books_balance(client, room_id)
+
+    # And it plays: the whole point is that this is a table, not a receipt.
+    assert start(client, room_id, ids[0]).status_code == 200
+    assert state(client, room_id, ids[0])["room"]["phase"] == "hand"
+
+
+def test_only_the_host_can_deal_another_one(client, clock):
+    room_id, ids = table(client, 3, actionSeconds=0, levelMinutes=0)
+    start(client, room_id, ids[0])
+    play_to_the_end(client, clock, room_id, ids)
+    assert again(client, room_id, ids[1]).status_code == 403
+    # And not while one is still being played.
+    room_id2, ids2 = table(client, 3, actionSeconds=0, levelMinutes=0)
+    start(client, room_id2, ids2[0])
+    refused = again(client, room_id2, ids2[0])
+    assert refused.status_code == 400
+    assert "still going" in refused.json()["detail"]
+
+
+def test_two_taps_on_play_again_are_one_tournament(client, clock):
+    """A retry lands on a room that is already a lobby.
+
+    Checking the phase before the receipt would answer the second tap with
+    "this tournament is still going" — about a tournament the first tap ended.
+    And a second rack-up mid-hand would put everybody's chips back while a hand
+    was being played.
+    """
+    room_id, ids = table(client, 3, actionSeconds=0, levelMinutes=0)
+    start(client, room_id, ids[0])
+    play_to_the_end(client, clock, room_id, ids)
+    assert again(client, room_id, ids[0], "again:room:41").status_code == 200
+    assert state(client, room_id, ids[0])["room"]["tournamentNumber"] == 2
+    assert start(client, room_id, ids[0]).status_code == 200
+    # The same tap arriving late, with a hand on the table.
+    assert again(client, room_id, ids[0], "again:room:41").status_code == 200
+    current = state(client, room_id, ids[0])
+    assert current["room"]["phase"] == "hand"
+    assert current["room"]["tournamentNumber"] == 2
+    assert books_balance(client, room_id)
+
+
+def test_a_new_tournament_does_not_answer_with_the_last_ones_receipts(client, clock):
+    """Hand numbers start again, and requests are named by hand number.
+
+    So a receipt kept across the reset is a name the next tournament will use
+    again — and the first player to fold on hand 1 would be answered with
+    whatever somebody did on hand 1 last time, which is a fold that never
+    happened.
+    """
+    room_id, ids = table(client, 3, actionSeconds=0, levelMinutes=0)
+    start(client, room_id, ids[0])
+    play_to_the_end(client, clock, room_id, ids)
+    # A decision from the tournament that just ended, named the way the client
+    # names one: the player, the hand it was made in, and the turn.
+    room = client.portal.call(main.load_room, room_id)
+    stale = f"a:{ids[1]}:1:7"
+    main._keep_receipt(room, stale, {"ok": True})
+    client.portal.call(main.save_room, room)
+
+    again(client, room_id, ids[0], "again:room:9")
+    room = client.portal.call(main.load_room, room_id)
+    assert stale not in room["receipts"]
+    assert list(room["receipts"]) == ["again:room:9"]
+
+
 def test_placings_follow_bust_order(clock):
     """Busting later is a better finish, and the survivor takes first place."""
     room = {
@@ -489,13 +656,120 @@ def test_next_hand_is_dealt_without_the_host(client, clock):
 
     view = state(client, room_id, ids[0])
     assert view["room"]["phase"] == "handover"
-    assert view["autoDealAt"] == pytest.approx(view["serverTime"] + main.AUTO_DEAL_SECONDS)
+    # Everybody folded, so there is nothing on the table to read.
+    assert view["autoDealAt"] == pytest.approx(
+        view["serverTime"] + main.HANDOVER_FOLD_SECONDS
+    )
 
-    clock.advance(main.AUTO_DEAL_SECONDS + 1)
+    clock.advance(main.HANDOVER_MAX_SECONDS + 1)
     # A player who is not the host polling is enough to get the cards out.
     view = state(client, room_id, ids[1])
     assert view["room"]["phase"] == "hand"
     assert view["room"]["handNumber"] == 2
+
+
+def play_to_showdown(client, room_id, ids):
+    """Call and check whoever is to act until the hand ends with cards up."""
+    for _ in range(60):
+        view = state(client, room_id, ids[0])
+        if view["room"]["phase"] != "hand":
+            return view
+        actor = view["actorId"]
+        if actor is None:
+            return view
+        if act(client, room_id, actor, "check").status_code != 200:
+            act(client, room_id, actor, "call")
+    raise AssertionError("hand did not finish")
+
+
+def handover_pause(client, room_id, player_id):
+    view = state(client, room_id, player_id)
+    assert view["room"]["phase"] == "handover"
+    return view["autoDealAt"] - view["serverTime"]
+
+
+def test_a_showdown_is_held_longer_than_a_hand_nobody_showed(client, clock):
+    """The pause exists to be read, so it is as long as there is to read.
+
+    One number for both cases is wrong in both directions at once: eight
+    seconds of nothing after a fold-around — which is most hands — and the same
+    eight to take in a showdown, an all-in and a knockout at once.
+    """
+    room_id, ids = table(client, 2, actionSeconds=0, levelMinutes=0)
+    start(client, room_id, ids[0])
+    play_to_showdown(client, room_id, ids)
+
+    pause = handover_pause(client, room_id, ids[0])
+    assert pause == pytest.approx(main.HANDOVER_SHOWDOWN_SECONDS)
+    assert pause > main.HANDOVER_FOLD_SECONDS
+
+
+def test_an_all_in_gets_long_enough_to_watch_the_board_come(client, clock):
+    """The client deals an all-in board out card by card (``use-runout``).
+
+    If the pause is only as long as a normal showdown, the next hand takes the
+    board away while the reveal is still running — which turns the one hand an
+    hour worth watching into the one hand nobody gets to see.
+    """
+    # Two halves, because heads-up an all-in usually ends the tournament and
+    # there is no handover left to measure. First: the signal exists on the
+    # wire — the action log is where the pause reads it from.
+    room_id, ids = table(client, 2, actionSeconds=0, levelMinutes=0)
+    start(client, room_id, ids[0])
+    actor = state(client, room_id, ids[0])["actorId"]
+    # Their own view: `legal` is only filled in for the player it belongs to,
+    # and heads-up the first to act is the button, which is not the host.
+    legal = state(client, room_id, actor)["legal"]
+    res = act(client, room_id, actor, "raise", legal["maxRaise"])
+    assert res.status_code == 200, res.text
+    assert any(entry["allIn"] for entry in actions(client, room_id, ids[0]))
+
+    # Second: the pause spends it.
+    room = {
+        "autoDealSeconds": main.AUTO_DEAL_SECONDS,
+        "handPlayerIds": ["a", "b"],
+        "foldedSeats": [],
+        "actionLog": [{"allIn": True}],
+        "boardResults": [],
+        "lastResults": [],
+        "players": {"a": {"chips": 10}, "b": {"chips": 10}},
+    }
+    assert main._handover_seconds(room) == (
+        main.HANDOVER_SHOWDOWN_SECONDS + main.HANDOVER_ALL_IN_SECONDS
+    )
+
+
+def test_the_pause_stops_where_reading_stops(client, clock):
+    """However the reasons add up, past this nobody is reading — they are waiting."""
+    room = {
+        "autoDealSeconds": main.AUTO_DEAL_SECONDS,
+        "handPlayerIds": ["a", "b", "c"],
+        "foldedSeats": [],
+        "actionLog": [{"allIn": True}],
+        "boardResults": [{"cards": []}, {"cards": []}],
+        "lastResults": [{"playerId": "a"}],
+        "players": {"a": {"chips": 0}, "b": {"chips": 10}, "c": {"chips": 10}},
+    }
+    assert main._handover_seconds(room) == main.HANDOVER_MAX_SECONDS
+
+
+def test_a_hand_nobody_showed_is_not_paced_by_what_happened_in_it(client, clock):
+    """A fold-around has nothing to read whatever went on before the last fold.
+
+    Written down because the obvious implementation adds the all-in bonus to
+    every hand that contained one, and the hand where somebody shoves and takes
+    it down uncalled is exactly the hand with nothing to look at.
+    """
+    room = {
+        "autoDealSeconds": main.AUTO_DEAL_SECONDS,
+        "handPlayerIds": ["a", "b"],
+        "foldedSeats": [1],
+        "actionLog": [{"allIn": True}],
+        "boardResults": [],
+        "lastResults": [],
+        "players": {"a": {"chips": 10}, "b": {"chips": 10}},
+    }
+    assert main._handover_seconds(room) == main.HANDOVER_FOLD_SECONDS
 
 
 def test_host_can_pause_and_resume_dealing(client, clock):
@@ -602,62 +876,233 @@ def test_the_last_strike_is_what_sits_them_out(client, clock):
     assert benched["autoSatOut"] is True
 
 
-def test_heads_up_is_never_benched_into_a_dead_table(client, clock):
-    """Benching one of two players leaves a table that can't deal or finish.
+def test_walking_away_heads_up_costs_the_blinds_and_not_the_table(client, clock):
+    """Benching used to deadlock a heads-up table. Now it just costs money.
 
-    They keep their seat instead and the blinds take the stack, which is what
-    walking away from a real tournament costs you.
+    Sitting somebody out removed them from the deal, so heads-up it left one
+    eligible player and two live stacks: nothing to deal, nobody to crown. The
+    old answer was to refuse to bench them at all. The real answer is that
+    being away from the table does not take you out of the hand — you are dealt
+    in and the blinds take the stack, which is what walking away from a real
+    tournament costs you.
     """
-    room_id, ids = table(client, 2, levelMinutes=0)
+    # Four big blinds each, so the blinds get where they are going in a few
+    # hands rather than fifty. Nothing else about this depends on the size.
+    room_id, ids = table(
+        client, 2, smallBlind=50, bigBlind=100, startingChips=400, levelMinutes=0
+    )
     start(client, room_id, ids[0])
 
-    for _ in range(30):
-        clock.advance(25)
+    # One of them is here and playing; the other never answers. Both walking
+    # away is a different case — see the test below — and would stop the deal.
+    benched = False
+    for _ in range(200):
         view = state(client, room_id, ids[0])
-        if view["room"]["phase"] == "handover":
-            clock.advance(main.AUTO_DEAL_SECONDS + 1)
-            view = state(client, room_id, ids[0])
-        if view["room"]["phase"] == "finished":
+        benched = benched or any(p["autoSatOut"] for p in view["players"])
+        phase = view["room"]["phase"]
+        if phase == "finished":
             break
-        assert not any(p["autoSatOut"] for p in view["players"]), (
-            "a heads-up player was benched, which deadlocks the tournament"
-        )
+        if phase == "handover" or not view["actorId"]:
+            clock.advance(main.HANDOVER_MAX_SECONDS + 1)
+        elif view["actorId"] == ids[0]:
+            act(client, room_id, ids[0], "call")
+        else:
+            clock.advance(30)  # nobody there to answer
 
-    # Either still playing or someone got blinded out — never stuck.
     view = state(client, room_id, ids[0])
-    assert view["room"]["phase"] in ("hand", "handover", "finished")
-    if view["room"]["phase"] == "handover":
-        assert view["autoDealAt"] is not None
+    # The clock benched them, which it used to refuse to do heads-up...
+    assert benched, "the absent player was protected from being benched"
+    # ...and being benched did not save them: they were blinded out, and the
+    # table reached an end rather than hanging with two live stacks.
+    assert view["room"]["phase"] == "finished", "the table hung instead of ending"
+    assert [s["place"] for s in view["standings"]] == [1, 2]
+    assert books_balance(client, room_id)
 
 
-def test_choosing_to_sit_out_cannot_strand_a_heads_up_table(client, clock):
-    """The clock's rule has to bind the button too.
+def test_sitting_out_heads_up_is_allowed_and_still_ends(client, clock):
+    """It used to be refused, because it stranded the table. It no longer does.
 
-    Being benched by the shot clock and choosing to sit out leave exactly the
-    same table behind: one eligible player, two live stacks, nothing that can
-    deal or declare a winner. Only the route was guarded, so the button walked
-    straight past it.
+    Refusing was the right answer to the wrong rule: an absent player was
+    skipped by the deal, so heads-up there was nothing left to deal. Now they
+    are dealt in and blinded, so stepping away is always allowed — and it costs
+    the same thing it costs anywhere else.
     """
-    room_id, ids = table(client, 2, levelMinutes=0)
+    room_id, ids = table(
+        client, 2, smallBlind=50, bigBlind=100, startingChips=400,
+        actionSeconds=0, levelMinutes=0,
+    )
     start(client, room_id, ids[0])
 
+    view = state(client, room_id, ids[1])
+    assert view["you"]["canSitOut"] is True
     res = client.post(
         f"/api/rooms/{room_id}/sit",
         headers=auth(ids[1]),
-        json={"playerId": ids[1], "action": "sit"}
+        json={"playerId": ids[1], "action": "sit"},
     )
-    assert res.status_code == 400
-    assert "without enough" in res.json()["detail"]
+    assert res.status_code == 200
+    assert any(p["sittingOut"] for p in state(client, room_id, ids[0])["players"])
 
-    view = state(client, room_id, ids[0])
-    assert not any(p["sittingOut"] for p in view["players"])
-    # And the UI is told in advance, so the button is disabled rather than
-    # offered and then refused.
-    assert view["you"]["canSitOut"] is False
+    # And the table keeps going without them until it has a winner. The absent
+    # seat is never *waited on*: the schedule answers for it, so it can show as
+    # the actor on the poll that dealt the hand and never on the one after —
+    # which is what `_run_away` is for, and what a shot clock ticking down on an
+    # empty chair would not be.
+    waited = 0
+    worst_wait = 0
+    for _ in range(200):
+        view = state(client, room_id, ids[0])
+        if view["room"]["phase"] == "finished":
+            break
+        if view["room"]["phase"] == "handover" or not view["actorId"]:
+            clock.advance(main.HANDOVER_MAX_SECONDS + 1)
+            continue
+        if view["actorId"] != ids[0]:
+            waited += 1
+            worst_wait = max(worst_wait, waited)
+            continue
+        waited = 0
+        act(client, room_id, ids[0], "call")
+    assert state(client, room_id, ids[0])["room"]["phase"] == "finished"
+    assert worst_wait <= 1, f"the table waited {worst_wait} polls on an empty seat"
+    assert books_balance(client, room_id)
 
-    # The hand still plays out and the table still reaches an end.
+
+def play_hands(client, clock, room_id, ids, hands):
+    """Play `hands` hands out, with whoever is present calling everything.
+
+    Not `fold_until_hand_over`: folding everybody hands the pot to the one
+    player who is not folding, and when that player is the one sitting out the
+    blinds they paid come straight back. A test of what being away costs has to
+    let the people who are there contest the pot.
+
+    Returns how many hands actually finished.
+    """
+    done = 0
+    for _ in range(hands * 30):
+        if done >= hands:
+            break
+        view = state(client, room_id, ids[0])
+        phase = view["room"]["phase"]
+        if phase == "finished":
+            break
+        if phase == "handover":
+            done += 1
+            clock.advance(main.HANDOVER_MAX_SECONDS + 1)
+            continue
+        actor = view["actorId"]
+        if not actor:
+            clock.advance(main.HANDOVER_MAX_SECONDS + 1)
+            continue
+        # Never acted for: the schedule answers for anybody who is not here.
+        if room_players(client, room_id)[actor].get("sittingOut"):
+            continue
+        act(client, room_id, actor, "call")
+    return done
+
+
+def room_players(client, room_id):
+    return client.portal.call(main.load_room, room_id)["players"]
+
+
+def test_sitting_out_does_not_dodge_the_blinds(client, clock):
+    """The whole of it, in one arithmetic.
+
+    Sitting out used to take a player out of the deal, so they posted nothing
+    while everybody else posted — which makes stepping away the cheapest move
+    at the table. Wait out a level from the sofa and come back with the same
+    stack the people who kept playing have been paying for. The bigger the
+    blinds, the better it gets.
+    """
+    room_id, ids = table(
+        client, 3, smallBlind=50, bigBlind=100, startingChips=3000,
+        actionSeconds=0, levelMinutes=0,
+    )
+    away = ids[2]
+    client.post(
+        f"/api/rooms/{room_id}/sit",
+        headers=auth(away),
+        json={"playerId": away, "action": "sit"},
+    )
+    start(client, room_id, ids[0])
+    room = client.portal.call(main.load_room, room_id)
+    # Dealt in, which is the whole of it. Skipped by the deal they pay nothing.
+    assert away in room["handPlayerIds"]
+    before = room["players"][away]["chips"]
+
+    # Six hands the two present players actually contest, so the absent one
+    # folds rather than winning by default. Three-handed, the blinds reach
+    # every seat twice over six hands.
+    played = play_hands(client, clock, room_id, ids, 6)
+    assert played >= 6, f"only got through {played} hands"
+
+    room = client.portal.call(main.load_room, room_id)
+    after = room["players"][away]["chips"]
+    assert after < before, "the absent player paid nothing while everybody else did"
+    # They folded every hand, so what they are down is the blinds that reached
+    # them and never more than that.
+    assert before - after <= 6 * (room["smallBlind"] + room["bigBlind"])
+    assert books_balance(client, room_id)
+
+
+def test_an_absent_player_is_blinded_all_the_way_out(client, clock):
+    """Far enough that it ends: they bust, and the tournament records it.
+
+    Paying the blinds is only the honest rule if it eventually costs the seat.
+    A player who bleeds to zero and then sits there for ever is a table that
+    cannot finish.
+    """
+    room_id, ids = table(
+        client, 3, smallBlind=50, bigBlind=100, startingChips=400,
+        actionSeconds=0, levelMinutes=0,
+    )
+    away = ids[2]
+    client.post(
+        f"/api/rooms/{room_id}/sit",
+        headers=auth(away),
+        json={"playerId": away, "action": "sit"},
+    )
+    start(client, room_id, ids[0])
+    play_hands(client, clock, room_id, ids, 20)
+
+    room = client.portal.call(main.load_room, room_id)
+    assert room["players"][away]["chips"] == 0, "the blinds never finished the job"
+    assert away in room["bustOrder"] or room["phase"] == "finished"
+    assert books_balance(client, room_id)
+
+
+def test_a_table_where_everybody_stepped_away_stops_dealing(client, clock):
+    """The brake on the rule above.
+
+    Blinding an absent player down is right while there is a table to be absent
+    from. Dealing hand after hand into an empty room is the app playing the
+    tournament by itself and handing the result to whoever comes back first.
+    The appointment stays set, so the first person back finds a hand due.
+    """
+    room_id, ids = table(client, 3, actionSeconds=0, levelMinutes=0)
+    start(client, room_id, ids[0])
     fold_until_hand_over(client, room_id, ids)
-    assert state(client, room_id, ids[0])["room"]["phase"] in ("handover", "finished")
+    for pid in ids:
+        client.post(
+            f"/api/rooms/{room_id}/sit",
+            headers=auth(pid),
+            json={"playerId": pid, "action": "sit"},
+        )
+
+    room = client.portal.call(main.load_room, room_id)
+    assert room["autoDealAt"] is not None, "the appointment was cancelled, not held"
+    assert main._scheduled_deal(room) is None, "it dealt into an empty room"
+
+    clock.advance(main.HANDOVER_MAX_SECONDS + 10)
+    assert state(client, room_id, ids[0])["room"]["phase"] == "handover"
+
+    # One of them comes back, and the hand that was due is dealt at once.
+    client.post(
+        f"/api/rooms/{room_id}/sit",
+        headers=auth(ids[0]),
+        json={"playerId": ids[0], "action": "in"},
+    )
+    assert state(client, room_id, ids[0])["room"]["phase"] == "hand"
 
 
 def test_sitting_out_stays_available_once_a_third_player_is_seated(client, clock):
@@ -865,7 +1310,12 @@ def test_hand_name_is_none_before_the_river():
     assert poker.evaluate_hand(["Ad", "9h"], ["2s"]) is None
 
 
-def test_showdown_reports_what_everyone_had(client, clock):
+def test_the_showdown_names_the_hands_it_turned_over(client, clock):
+    """Every hand the showdown made face up, named, with the five that made it.
+
+    Not every hand that reached it: `lastResults` says what a player was
+    holding, so it answers to the same rule the cards do.
+    """
     room_id, ids = table(client, 2, actionSeconds=0, levelMinutes=0)
     start(client, room_id, ids[0])
     # Nobody folds, so the hand is shown down.
@@ -875,11 +1325,54 @@ def test_showdown_reports_what_everyone_had(client, clock):
             break
         act(client, room_id, view["actorId"], "call")
 
+    room = client.portal.call(main.load_room, room_id)
+    face_up = {room["handPlayerIds"][s] for s in room["showSeats"]}
+    assert face_up, "the hand was checked down; somebody had to show"
     results = state(client, room_id, ids[0])["lastResults"]
     assert len(results) == 2
     for entry in results:
-        assert entry["handName"], f"no hand name for {entry['name']}"
-        assert len(entry["handCards"]) == 5
+        if entry["playerId"] in face_up:
+            assert entry["handName"], f"no hand name for {entry['name']}"
+            assert len(entry["handCards"]) == 5
+
+
+def test_a_mucked_hand_is_not_named_in_the_results(client, clock):
+    """The muck has to hold in the panel that comes up after every hand.
+
+    `players[].cards` was filtered carefully and `lastResults` was not, so the
+    hand a player threw away face down was named — with the five cards that
+    made it — for the other players and for anybody watching. Everything on
+    screen respected the muck except the one thing everybody reads.
+    """
+    room_id, ids = table(client, 3, actionSeconds=0, levelMinutes=0)
+    room = showdown_between(
+        client, room_id, ids, {0: ["2c", "3d"], 1: ["As", "Ks"], 2: ["4h", "5h"]}
+    )
+    # Seat 2 is the worst hand and collected nothing, so it never turned over.
+    assert 2 not in set(room["showSeats"])
+    mucked = room["handPlayerIds"][2]
+
+    for watcher in (room["handPlayerIds"][0], room["handPlayerIds"][1]):
+        entry = next(
+            r for r in state(client, room_id, watcher)["lastResults"]
+            if r["playerId"] == mucked
+        )
+        assert "handName" not in entry
+        assert "handCards" not in entry
+        # What they are entitled to: who was in it and what it cost them.
+        assert entry["name"] and "delta" in entry and "won" in entry
+
+    # There is no anonymous spectator to check: the room is private and every
+    # viewer is somebody at the table, which is why the two above are the
+    # audience this has to hold against.
+    assert client.get(f"/api/rooms/{room_id}/state").status_code == 403
+
+    # Its owner still sees their own, which is the whole point of a muck.
+    mine = next(
+        r for r in state(client, room_id, mucked)["lastResults"]
+        if r["playerId"] == mucked
+    )
+    assert mine["handCards"] and mine["handName"]
 
 
 def test_a_hand_won_by_folding_names_nothing(client, clock):
@@ -1151,6 +1644,10 @@ def test_a_chopped_pot_still_counts_as_winning_with_seven_deuce(client, clock):
         {"playerId": room["handPlayerIds"][1], "name": "b", "delta": 0},
         {"playerId": room["handPlayerIds"][2], "name": "c", "delta": -10},
     ]
+    # Both halves of a chop collected, so the showdown turned both over. Part of
+    # the state being planted and not a detail: the bonus is paid on cards the
+    # table has seen, and reaching a showdown is not the same as being shown.
+    room["showSeats"] = [0, 1]
     room["sevenDeucePaid"] = False
     before = {pid: p["chips"] for pid, p in room["players"].items()}
     main._pay_seven_deuce(room)
@@ -1174,6 +1671,7 @@ def test_two_seven_deuces_chopping_do_not_charge_each_other(client, clock):
         {"playerId": room["handPlayerIds"][1], "name": "b", "delta": 0},
         {"playerId": room["handPlayerIds"][2], "name": "c", "delta": -20},
     ]
+    room["showSeats"] = [0, 1]
     room["sevenDeucePaid"] = False
     before = {pid: p["chips"] for pid, p in room["players"].items()}
     main._pay_seven_deuce(room)
@@ -2027,7 +2525,8 @@ def test_somebody_removed_from_the_table_cannot_still_collect(client, clock):
     assert sum(p["chips"] for p in view["players"]) < total_before
 
 
-def test_nothing_can_be_shown_while_the_hand_is_running(client, clock):
+def test_a_live_hand_cannot_be_shown_while_it_is_being_played(client, clock):
+    """The one thing showing must never do is help somebody still deciding."""
     room_id, ids = table(client, 3, actionSeconds=0, levelMinutes=0)
     start(client, room_id, ids[0])
     room = client.portal.call(main.load_room, room_id)
@@ -2035,14 +2534,80 @@ def test_nothing_can_be_shown_while_the_hand_is_running(client, clock):
     assert res.status_code == 400
 
 
+def fold_the_actor(client, room_id, viewer):
+    """Fold whoever is on the clock and return their id. The hand carries on."""
+    actor = state(client, room_id, viewer)["actorId"]
+    assert act(client, room_id, actor, "fold").status_code == 200
+    return actor
+
+
+def test_a_folded_player_picks_what_to_show_without_it_reaching_the_table(client, clock):
+    """The decision is made on the fold; the cards cannot appear until the end.
+
+    Both halves matter. Asking two minutes later, when the pot has been pushed
+    and the table has moved on, is asking at the wrong moment — but a card
+    turned over while there is still betting to come is a card the players
+    still in the hand get to use.
+    """
+    room_id, ids = table(client, 3, actionSeconds=0, levelMinutes=0)
+    start(client, room_id, ids[0])
+    folder = fold_the_actor(client, room_id, ids[0])
+    watcher = next(p for p in ids if p != folder)
+
+    assert show(client, room_id, folder, [0]).status_code == 200
+    # Nobody can see it, and that includes the fact that it was asked for.
+    assert seat_of(client, room_id, folder, watcher)["cards"] is None
+    assert seat_of(client, room_id, folder, watcher)["shownIndices"] == []
+    assert seat_of(client, room_id, folder, watcher)["pendingShowIndices"] == []
+    # You can see your own plan, which is the only way to change your mind.
+    assert seat_of(client, room_id, folder, folder)["pendingShowIndices"] == [0]
+
+
+def test_the_card_a_folded_player_picked_turns_over_when_the_hand_settles(client, clock):
+    room_id, ids = table(client, 3, actionSeconds=0, levelMinutes=0)
+    start(client, room_id, ids[0])
+    folder = fold_the_actor(client, room_id, ids[0])
+    real = client.portal.call(main.load_room, room_id)["handHoleCards"][
+        client.portal.call(main.load_room, room_id)["handPlayerIds"].index(folder)
+    ]
+    assert show(client, room_id, folder, [1]).status_code == 200
+
+    fold_until_hand_over(client, room_id, ids)
+    watcher = next(p for p in ids if p != folder)
+    assert seat_of(client, room_id, folder, watcher)["cards"] == [None, real[1]]
+
+
+def test_a_plan_to_show_can_be_taken_back_while_it_is_still_a_plan(client, clock):
+    """Nothing has happened yet, so the undo is real — and a decision you
+    cannot reverse is one nobody will risk making in the two seconds they
+    have."""
+    room_id, ids = table(client, 3, actionSeconds=0, levelMinutes=0)
+    start(client, room_id, ids[0])
+    folder = fold_the_actor(client, room_id, ids[0])
+
+    show(client, room_id, folder, [0, 1])
+    assert show(client, room_id, folder, []).status_code == 200
+    assert seat_of(client, room_id, folder, folder)["pendingShowIndices"] == []
+
+    fold_until_hand_over(client, room_id, ids)
+    watcher = next(p for p in ids if p != folder)
+    assert seat_of(client, room_id, folder, watcher)["cards"] is None
+
+
+def test_after_the_hand_there_is_nothing_to_take_back(client, clock):
+    room_id, ids = table(client, 3, actionSeconds=0, levelMinutes=0)
+    start(client, room_id, ids[0])
+    fold_until_hand_over(client, room_id, ids)
+    shower = client.portal.call(main.load_room, room_id)["handPlayerIds"][0]
+    assert show(client, room_id, shower, []).status_code == 400
+
+
 def test_somebody_who_was_not_in_the_hand_cannot_show(client, clock):
     room_id, ids = table(client, 3, actionSeconds=0, levelMinutes=0)
-    # Sit one player out so the hand is dealt without them.
-    client.post(
-        f"/api/rooms/{room_id}/sit",
-        headers=auth(ids[2]),
-        json={"playerId": ids[2], "action": "sit"},
-    )
+    # With no chips in front of them they are not dealt in — which is now the
+    # only way to be at the table and out of the hand. Sitting out is not: an
+    # absent player is dealt in and blinded like everybody else.
+    bust(client, room_id, ids[2])
     start(client, room_id, ids[0])
     fold_until_hand_over(client, room_id, ids)
     assert show(client, room_id, ids[2], [0]).status_code == 403
@@ -2163,10 +2728,84 @@ def test_everyone_still_at_the_table_pays_the_same_blinds():
     assert max(counts) - min(counts) <= 1, dict(zip(survivors, counts))
 
 
-def test_heads_up_the_button_is_the_small_blind():
-    """Heads-up the button posts the small blind and acts first preflop."""
-    assert main._seat_order("A", ["A", "B"]) == ["A", "B"]
-    assert main._seat_order("B", ["A", "B"]) == ["B", "A"]
+def test_heads_up_the_button_is_the_small_blind(client, clock):
+    """Heads-up the button posts the small blind and acts first preflop.
+
+    Asserted against the **money and the action**, not against the seat order.
+    The old version of this test checked `_seat_order` returned the button
+    first, which was the plan — and the plan was wrong, because pokerkit
+    reverses the blinds with two players. Every assertion passed while the
+    dealer posted the big blind, the other player posted the small, and the big
+    blind opened the hand. A test that only checks what we meant cannot catch
+    being wrong about what the engine does.
+    """
+    room_id, ids = table(client, 2, actionSeconds=0, levelMinutes=0)
+    start(client, room_id, ids[0])
+    view = state(client, room_id, ids[0])
+    seats = {p["id"]: p for p in view["players"]}
+    button = next(p for p in view["players"] if p["isButton"])
+
+    assert button["isSmallBlind"] is True, "heads-up the button is the small blind"
+    assert button["isBigBlind"] is False
+    # The money, which is the half that was wrong.
+    assert button["bet"] == view["room"]["smallBlind"]
+    other = next(p for p in view["players"] if not p["isButton"])
+    assert other["isBigBlind"] is True
+    assert other["bet"] == view["room"]["bigBlind"]
+    # And the action: the button opens before the flop.
+    assert view["actorId"] == button["id"], "the button acts first preflop"
+    assert seats[view["actorId"]]["isSmallBlind"] is True
+
+
+def test_heads_up_the_button_acts_last_after_the_flop(client, clock):
+    """The other half of the rule, and the half that changes hands.
+
+    Preflop the button is in first because they are the small blind; from the
+    flop on they are last, because position follows the button and not the
+    blind. Getting the seat order backwards swaps both at once, so both are
+    checked.
+    """
+    room_id, ids = table(client, 2, actionSeconds=0, levelMinutes=0)
+    start(client, room_id, ids[0])
+    view = state(client, room_id, ids[0])
+    button_id = next(p["id"] for p in view["players"] if p["isButton"])
+
+    act(client, room_id, button_id, "call")  # button completes
+    view = state(client, room_id, ids[0])
+    act(client, room_id, view["actorId"], "call")  # big blind checks their option
+
+    view = state(client, room_id, ids[0])
+    assert len(view["board"]) == 3, view["board"]
+    assert view["actorId"] != button_id, "the big blind is first to act on the flop"
+
+
+def test_heads_up_the_big_blind_ante_comes_out_of_the_big_blind(client, clock):
+    """Which is a different seat heads-up than at a full table.
+
+    ``create_hand`` posts it by index, and heads-up index 0 is the big blind
+    rather than index 1 — so the obvious constant takes it off the button.
+    """
+    room_id, ids = table(client, 2, anteMode="bb", actionSeconds=0, levelMinutes=0)
+    start(client, room_id, ids[0])
+    view = state(client, room_id, ids[0])
+    big = next(p for p in view["players"] if p["isBigBlind"])
+    button = next(p for p in view["players"] if p["isButton"])
+    ante = view["room"]["ante"]
+    assert ante > 0
+    # The big blind is down their blind and the ante; the button only their own.
+    assert big["chips"] == view["room"]["startingChips"] - big["bet"] - ante
+    assert button["chips"] == view["room"]["startingChips"] - button["bet"]
+
+
+def test_the_seat_order_is_what_pokerkit_posts_blinds_in():
+    """The unit underneath, stated in the direction that is actually true."""
+    # Three or more: small blind first, button last.
+    assert main._seat_order("D", ["A", "B", "C", "D"]) == ["A", "B", "C", "D"]
+    assert main._seat_order("B", ["A", "B", "C", "D"]) == ["C", "D", "A", "B"]
+    # Heads-up: the *non*-button seat first, because pokerkit charges index 0
+    # the big blind with two players.
+    assert main._seat_order("A", ["A", "B"]) == ["B", "A"]
+    assert main._seat_order("B", ["A", "B"]) == ["A", "B"]
 
 
 def test_positions_are_recorded_not_deduced(client, clock):
@@ -2646,7 +3285,11 @@ def test_folding_for_free_stays_impossible_in_cash_mode(client, clock):
             assert act(client, room_id, actor, "fold").status_code == 400
             return
         act(client, room_id, actor, "call")
-    pytest.skip("no free check came up in this deal")
+    # Everybody calling preflop always comes round to the big blind with
+    # nothing to call — that is what the big blind is — so this line is only
+    # reached when the free check has stopped happening, which is the
+    # behaviour under test. Skipping on it is a green tick for the bug.
+    raise AssertionError("the big blind never got a free option in cash mode")
 
 
 # --------------------------------------------------------------------------- #
@@ -3063,6 +3706,32 @@ def books_balance(client, room_id):
     return on_table == main._chips_balance(room)
 
 
+def test_the_pot_is_still_reported_after_it_has_been_pushed(client, clock):
+    """Two facts, and folding them into one breaks whichever it is folded into.
+
+    `pot` is chips that have left the stacks and are not on the felt, so once
+    the engine pushes them it is zero and has to be — the books add up only if
+    nothing is counted in the middle *and* in a stack. But a table with nothing
+    in the middle cannot rake the last street in or push a pot out, and both of
+    those happen after the number goes to zero. So the hand that is over
+    reports what it came to as well, separately, and the two never overlap.
+    """
+    room_id, ids = table(client, 3, actionSeconds=0, levelMinutes=0)
+    start(client, room_id, ids[0])
+    view = fold_until_hand_over(client, room_id, ids)
+
+    assert view["room"]["phase"] == "handover"
+    assert view["pot"] == 0, "the chips are in the winner's stack now"
+    assert view["potAtEnd"] > 0, "and this is what they came to"
+    assert view["potAtEnd"] == sum(r["won"] for r in view["lastResults"])
+    assert books_balance(client, room_id), "counted once, not twice"
+
+    # And it belongs to the hand it happened in.
+    clock.advance(main.HANDOVER_MAX_SECONDS + 1)
+    start(client, room_id, ids[0])
+    assert state(client, room_id, ids[0])["potAtEnd"] == 0
+
+
 def test_a_latecomer_plays_from_the_next_deal_not_this_one(client, clock):
     room_id, ids = table(client, 3, lateEntryLevels=4, actionSeconds=0, levelMinutes=10)
     start(client, room_id, ids[0])
@@ -3289,6 +3958,61 @@ def test_buying_back_in_undoes_the_bust(client, clock):
     assert room["players"][ids[2]]["chips"] == room["startingChips"]
     assert ids[2] not in room["bustOrder"], "not out any more"
     assert room["players"][ids[2]]["rebuys"] == 1
+    assert books_balance(client, room_id)
+
+
+def test_two_rebuys_inside_one_hand_are_two_purchases(client, clock):
+    """A retry and a second purchase are not the same request.
+
+    The client names a purchase so that tapping twice cannot buy twice. Named
+    after the player, the hand and the kind, two *different* rebuys can share
+    all three: bust, buy back in, and lose the new stack before the next deal —
+    the 7-2 bonus is settled after the pot and can take it in one go. The
+    second purchase then asked under the first one's name, the server found the
+    receipt, answered 200, and handed over no chips. The player saw a purchase
+    that had not happened.
+    """
+    room_id, ids = table(
+        client, 3, rebuyLevels=4, rebuysPerPlayer=2, actionSeconds=0, levelMinutes=10
+    )
+    start(client, room_id, ids[0])
+    fold_until_hand_over(client, room_id, ids)
+    me = ids[2]
+    hand = client.portal.call(main.load_room, room_id)["handNumber"]
+
+    def purchase(taken):
+        """Exactly the name the client builds. See `pokerApi.buyChips`."""
+        return client.post(
+            f"/api/rooms/{room_id}/rebuy",
+            headers=auth(me),
+            json={
+                "playerId": me,
+                "action": "rebuy",
+                "requestId": f"b:{me}:{hand}:rebuy:{taken}",
+            },
+        )
+
+    bust(client, room_id, me)
+    assert purchase(0).status_code == 200
+    # The same tap again is still one purchase — that part has to keep working.
+    assert purchase(0).status_code == 200
+    room = client.portal.call(main.load_room, room_id)
+    assert room["players"][me]["rebuys"] == 1
+    assert room["players"][me]["chips"] == room["startingChips"]
+
+    bust(client, room_id, me)
+    # The name the client used to send, which had no ordinal in it and so is
+    # this string for both purchases. It answers with the first one's receipt:
+    # a 200 with nothing behind it, which is the whole bug.
+    assert purchase(0).status_code == 200
+    assert client.portal.call(main.load_room, room_id)["players"][me]["chips"] == 0
+
+    assert purchase(1).status_code == 200
+    room = client.portal.call(main.load_room, room_id)
+    # The premise, stated: none of this crossed a deal.
+    assert room["handNumber"] == hand
+    assert room["players"][me]["rebuys"] == 2
+    assert room["players"][me]["chips"] == room["startingChips"]
     assert books_balance(client, room_id)
 
 
@@ -4132,3 +4856,408 @@ def fold_until_hand_over(client, room_id, ids):
         if res.status_code != 200:
             act(client, room_id, actor, "call")
     raise AssertionError("hand did not finish")
+
+
+# --------------------------------------------------------------------------- #
+# What just happened (X1) and what it is being played for (X2)
+# --------------------------------------------------------------------------- #
+def actions(client, room_id, player_id):
+    return state(client, room_id, player_id)["actions"]
+
+
+def test_a_check_leaves_a_trace_when_nothing_else_would(client, clock):
+    """The whole point of the log.
+
+    A check moves no chips, folds nobody and grows no board — two polled views
+    either side of it are identical apart from whose turn it is, which is the
+    same picture as a street closing or a clock expiring. Without this the
+    table cannot tell anyone that anything happened.
+    """
+    room_id, ids = table(client, 3)
+    start(client, room_id, ids[0])
+    # Get to a flop with everyone still in: call, call, check.
+    for _ in range(3):
+        view = state(client, room_id, ids[0])
+        if view["street"] != "preflop":
+            break
+        act(client, room_id, view["actorId"], "call")
+
+    view = state(client, room_id, ids[0])
+    assert view["street"] == "flop"
+    before = state(client, room_id, ids[0])["players"]
+    checker = view["actorId"]
+    act(client, room_id, checker, "call")  # free — a check
+    after = state(client, room_id, ids[0])
+
+    # Nothing a diff could have caught.
+    assert [p["chips"] for p in after["players"]] == [p["chips"] for p in before]
+    assert [p["bet"] for p in after["players"]] == [p["bet"] for p in before]
+    assert after["pot"] == view["pot"]
+    # But the table knows.
+    last = after["actions"][-1]
+    assert last["kind"] == "check"
+    assert last["playerId"] == checker
+    assert last["amount"] == 0
+    assert last["auto"] is False
+
+
+def test_opening_a_street_is_a_bet_and_answering_one_is_a_raise(client, clock):
+    room_id, ids = table(client, 3)
+    start(client, room_id, ids[0])
+    view = state(client, room_id, ids[0])
+    # Preflop there are blinds up, so the first aggressive action is a raise.
+    opener = view["actorId"]
+    act(client, room_id, opener, "raise", 40)
+    assert actions(client, room_id, ids[0])[-1]["kind"] == "raise"
+    assert actions(client, room_id, ids[0])[-1]["to"] == 40
+
+    # Everybody calls to see a flop, where nobody has bet yet.
+    for _ in range(4):
+        view = state(client, room_id, ids[0])
+        if view["street"] != "preflop":
+            break
+        act(client, room_id, view["actorId"], "call")
+
+    view = state(client, room_id, ids[0])
+    assert view["street"] == "flop"
+    act(client, room_id, view["actorId"], "raise", 60)
+    opened = actions(client, room_id, ids[0])[-1]
+    assert opened["kind"] == "bet"
+    assert opened["to"] == 60
+    assert opened["amount"] == 60
+
+    answered = state(client, room_id, ids[0])
+    act(client, room_id, answered["actorId"], "raise", 180)
+    assert actions(client, room_id, ids[0])[-1]["kind"] == "raise"
+
+
+def test_a_call_says_what_it_cost_and_where_it_left_them(client, clock):
+    room_id, ids = table(client, 3)
+    start(client, room_id, ids[0])
+    view = state(client, room_id, ids[0])
+    act(client, room_id, view["actorId"], "raise", 40)
+    view = state(client, room_id, ids[0])
+    caller = view["actorId"]
+    posted = next(p["bet"] for p in view["players"] if p["id"] == caller)
+    act(client, room_id, caller, "call")
+    last = actions(client, room_id, ids[0])[-1]
+    assert last["kind"] == "call"
+    assert last["to"] == 40
+    # What it actually cost them, which is not the same as the level they
+    # called to whenever they already had a blind out there.
+    assert last["amount"] == 40 - posted
+
+
+def test_the_last_action_of_a_hand_is_still_described_correctly(client, clock):
+    """The pot is pushed before this runs, and the stacks have already moved.
+
+    Reading the answer off the state afterwards reports a fold by a player
+    whose stack went *up*, so the description has to come from the engine's
+    own record of what it did.
+    """
+    room_id, ids = table(client, 2)
+    start(client, room_id, ids[0])
+    view = state(client, room_id, ids[0])
+    folder = view["actorId"]
+    act(client, room_id, folder, "fold")
+    last = actions(client, room_id, ids[0])[-1]
+    assert last["kind"] == "fold"
+    assert last["playerId"] == folder
+    assert last["allIn"] is False
+
+
+def test_going_all_in_is_marked_without_losing_what_it_was(client, clock):
+    room_id, ids = table(client, 2, startingChips=100, smallBlind=5, bigBlind=10)
+    start(client, room_id, ids[0])
+    view = state(client, room_id, ids[0])
+    shover = view["actorId"]
+    act(client, room_id, shover, "raise", 100)
+    last = actions(client, room_id, ids[0])[-1]
+    assert last["allIn"] is True
+    # Still a raise. Collapsing it to "all-in" would lose whether they were
+    # calling somebody or putting the table to a decision.
+    assert last["kind"] == "raise"
+
+    view = state(client, room_id, ids[0])
+    caller = view["actorId"]
+    act(client, room_id, caller, "call")
+    called = actions(client, room_id, ids[0])[-1]
+    assert called["kind"] == "call"
+    assert called["allIn"] is True
+
+
+def test_a_fold_by_the_clock_is_marked_apart_from_one_that_was_chosen(client, clock):
+    room_id, ids = table(client, 3)
+    start(client, room_id, ids[0])
+    view = state(client, room_id, ids[0])
+    act(client, room_id, view["actorId"], "raise", 60)
+    clock.advance(40)
+    view = state(client, room_id, ids[0])
+    timed_out = [a for a in view["actions"] if a["auto"]]
+    assert timed_out, "the clock's own fold was not written down"
+    assert timed_out[-1]["kind"] == "fold"
+    chosen = [a for a in view["actions"] if not a["auto"]]
+    assert chosen[-1]["kind"] == "raise"
+
+
+def test_the_sequence_never_restarts_so_a_client_can_tell_what_it_has_seen(
+    client, clock
+):
+    room_id, ids = table(client, 2)
+    start(client, room_id, ids[0])
+    fold_until_hand_over(client, room_id, ids)
+    first = state(client, room_id, ids[0])["actions"]
+    assert first
+    highest = first[-1]["seq"]
+
+    start(client, room_id, ids[0])
+    view = state(client, room_id, ids[0])
+    # A new deal clears the hand's actions...
+    assert all(a["handNumber"] == view["room"]["handNumber"] for a in view["actions"])
+    act(client, room_id, view["actorId"], "call")
+    # ...but not the counter, or every deal would replay its first action.
+    assert state(client, room_id, ids[0])["actions"][-1]["seq"] > highest
+
+
+def test_the_log_stays_short_enough_to_ride_on_every_response(client, clock):
+    room_id, ids = table(client, 2)
+    start(client, room_id, ids[0])
+    for _ in range(80):
+        view = state(client, room_id, ids[0])
+        if view["room"]["phase"] != "hand" or view["actorId"] is None:
+            break
+        act(client, room_id, view["actorId"], "call")
+    assert len(state(client, room_id, ids[0])["actions"]) <= main.ACTION_LOG_MAX
+
+
+def test_one_pot_is_served_as_one_pot(client, clock):
+    room_id, ids = table(client, 3)
+    start(client, room_id, ids[0])
+    view = state(client, room_id, ids[0])
+    act(client, room_id, view["actorId"], "call")
+    view = state(client, room_id, ids[0])
+    assert len(view["pots"]) <= 1
+    assert sum(p["amount"] for p in view["pots"]) == view["pot"]
+
+
+def test_a_short_all_in_splits_the_pot_and_names_who_can_win_each(client, clock):
+    """Today the view says one number, and it is not true for anybody.
+
+    A player all in for 100 into two stacks of 1000 is playing for the main
+    pot only; the other two are playing for that and a side pot the short
+    stack cannot touch. Told a single total, nobody can work out what their
+    call is chasing.
+    """
+    room_id, ids = table(client, 3, startingChips=1000, smallBlind=5, bigBlind=10)
+    # Give the first player a short stack by taking chips off them directly:
+    # what is being tested is the shape of the pot, not how they got there.
+    room = client.portal.call(main.load_room, room_id)
+    short = room["order"][0]
+    room["players"][short]["chips"] = 100
+    client.portal.call(main.save_room, room)
+
+    start(client, room_id, ids[0])
+    # The short stack only ever calls, so their whole stack goes in behind a
+    # bet bigger than it — the only way a side pot forms. The other two stop
+    # at 300 rather than shoving, so both still have chips behind and the hand
+    # is still being played when the pots are read.
+    for _ in range(8):
+        view = state(client, room_id, ids[0])
+        if view["street"] != "preflop" or view["actorId"] is None:
+            break
+        actor = view["actorId"]
+        legal = state(client, room_id, actor)["legal"]
+        highest = max(p["bet"] for p in view["players"])
+        if actor != short and legal and legal["canRaise"] and highest < 300:
+            act(client, room_id, actor, "raise", 300)
+        else:
+            act(client, room_id, actor, "call")
+
+    view = state(client, room_id, ids[0])
+    assert view["room"]["phase"] == "hand", "the hand should still be live"
+    assert len(view["pots"]) > 1, "a short all-in did not produce a side pot"
+    # Every pot names who is playing for it, and the short stack is only in
+    # the first one.
+    assert short in view["pots"][0]["playerIds"]
+    assert short not in view["pots"][1]["playerIds"]
+    # And the parts still add up to the whole, so a client can render either.
+    assert sum(p["amount"] for p in view["pots"]) == view["pot"]
+
+
+# --------------------------------------------------------------------------- #
+# Showing at a showdown: who has to, and who never does
+# --------------------------------------------------------------------------- #
+#: The deal these showdown tests are written against: a board of
+#: ``Tc 2s 6h Kh 9c`` — no flush, no straight, nothing anybody can play on its
+#: own. Fixed, because the hands below are planted and the *board* was not: a
+#: random five cards rescues a hand meant to lose about one time in six, and a
+#: test that fails every sixth run for a reason unrelated to the code is a test
+#: nobody reads the output of any more. Every test using it re-states what the
+#: board does to its hands, so a changed deck fails on the premise and not on
+#: the conclusion.
+SHOWDOWN_DEAL = 10
+
+
+def showdown_between(client, room_id, ids, seats_cards, seed=SHOWDOWN_DEAL):
+    """Play a hand to the river with everybody checking, with rigged hands.
+
+    `seats_cards` is {seat: [card, card]}. Every other seat gets something
+    bland, so the test is about the hands it planted and not about the deck.
+    """
+    random.seed(seed)
+    start(client, room_id, ids[0])
+    room = client.portal.call(main.load_room, room_id)
+    for seat, hole in seats_cards.items():
+        room["handHoleCards"][seat] = list(hole)
+    client.portal.call(main.save_room, room)
+    for _ in range(60):
+        view = state(client, room_id, ids[0])
+        if view["room"]["phase"] != "hand" or not view["actorId"]:
+            break
+        act(client, room_id, view["actorId"], "call")
+    return client.portal.call(main.load_room, room_id)
+
+
+def test_a_beaten_hand_that_speaks_last_is_never_turned_over(client, clock):
+    """The rule nobody had implemented: you only show to beat what is showing.
+
+    Everybody checks to the river, so the first to speak is the seat left of
+    the button. A hand that cannot beat what is already face up goes into the
+    muck unseen — it is the player's information, not the table's, and an app
+    that turns it over is handing out a reading of how they play.
+    """
+    room_id, ids = table(client, 3, actionSeconds=0, levelMinutes=0)
+    # Seat 0 is first to speak with everybody checking; seat 1 beats it.
+    room = showdown_between(
+        client, room_id, ids, {0: ["2c", "3d"], 1: ["As", "Ks"], 2: ["4h", "5h"]}
+    )
+    assert room["phase"] == "handover"
+    # The premise, stated rather than assumed: on this board seat 1 has kings,
+    # seat 0 has deuces and seat 2 has nothing at all.
+    board = poker.boards(poker.loads(room["stateB64"]))[0]
+    ranks = [poker.hand_rank(room["handHoleCards"][i], board) for i in range(3)]
+    assert ranks[1] > ranks[0] > ranks[2], f"the deal changed under this test: {board}"
+    shown = set(room["showSeats"])
+    assert 0 in shown, "the first to speak always shows"
+    assert 1 in shown, "and so does the hand that beats it"
+    assert 2 not in shown, "a hand that beats nothing showing stays face down"
+
+    watcher = ids[0]
+    seats = {
+        p["name"]: p
+        for p in state(client, room_id, watcher)["players"]
+    }
+    hidden = room["handPlayerIds"][2]
+    seen = next(p for p in state(client, room_id, watcher)["players"] if p["id"] == hidden)
+    assert seen["cards"] is None
+    assert seen["showedDown"] is False
+    # Still holding two cards, face down — a muck is not a fold.
+    assert seen["cardsCount"] == 2
+    assert seats  # the table is intact
+
+
+def test_the_best_hand_at_the_table_always_shows(client, clock):
+    """Whatever else is mucked, the hand that takes it is face up.
+
+    Asserted against the hands the test planted rather than against the
+    engine's winner on purpose: rigging changes the snapshot the showdown
+    reads, not the cards pokerkit dealt, and the claim being made here is about
+    the rule — the best hand of the ones on the table has to be shown.
+    """
+    room_id, ids = table(client, 3, actionSeconds=0, levelMinutes=0)
+    room = showdown_between(
+        client, room_id, ids, {0: ["2c", "3d"], 1: ["As", "Ks"], 2: ["4h", "5h"]}
+    )
+    board = poker.boards(poker.loads(room["stateB64"]))[0]
+    ranks = [poker.hand_rank(room["handHoleCards"][i], board) for i in range(3)]
+    best = max(range(3), key=lambda i: ranks[i])
+    assert best in set(room["showSeats"])
+
+
+def test_a_hand_nobody_had_to_show_can_still_be_shown(client, clock):
+    """The choice is the point. The app does not turn it over; the player may."""
+    room_id, ids = table(client, 3, actionSeconds=0, levelMinutes=0)
+    room = showdown_between(
+        client, room_id, ids, {0: ["2c", "3d"], 1: ["As", "Ks"], 2: ["4h", "5h"]}
+    )
+    quiet = room["handPlayerIds"][2]
+    assert show(client, room_id, quiet, [0, 1]).status_code == 200
+    watcher = ids[0]
+    seen = next(p for p in state(client, room_id, watcher)["players"] if p["id"] == quiet)
+    assert seen["cards"] == ["4h", "5h"]
+
+
+def test_a_chop_shows_both_hands(client, clock):
+    """Tying is not being beaten. Both have to be face up or the pot is a claim."""
+    room_id, ids = table(client, 3, actionSeconds=0, levelMinutes=0)
+    room = showdown_between(
+        client, room_id, ids, {0: ["As", "Kd"], 1: ["Ah", "Kc"], 2: ["2c", "3d"]}
+    )
+    shown = set(room["showSeats"])
+    assert 0 in shown and 1 in shown
+
+
+def test_a_seat_that_collected_a_pot_shows_it(client, clock):
+    """"Beats what is showing" is not the whole rule. Collecting is the rest.
+
+    A hand can win without being the best one at the table. The short stack is
+    all in for the main pot with the best hand of the three; the two behind
+    keep betting, and the side pot goes to the better of *those two* — whose
+    hand loses to what is already face up and would therefore be mucked. It
+    was: a player collected a pot with cards nobody at the table ever saw, and
+    with 7-2 running they collected that too.
+
+    Asked of the function directly, with the pushes handed to it, because
+    which seat wins which pot is the engine's arithmetic and this is a claim
+    about the rule that reads it.
+    """
+    room_id, ids = table(client, 3, actionSeconds=0, levelMinutes=0)
+    room = showdown_between(
+        client, room_id, ids, {0: ["2c", "3d"], 1: ["As", "Ks"], 2: ["4h", "5h"]}
+    )
+    state_at_end = poker.loads(room["stateB64"])
+    board = poker.boards(state_at_end)[0]
+    ranks = [poker.hand_rank(room["handHoleCards"][i], board) for i in range(3)]
+    # The premise: seat 2 is the worst hand on the table, so nothing but a pot
+    # can oblige it to show.
+    assert ranks[1] > ranks[0] > ranks[2], f"the deal changed under this test: {board}"
+
+    # Nothing pushed to seat 2: mucked, which is the behaviour that was right.
+    assert 2 not in main._seats_that_must_show(room, state_at_end, [0, 270, 0])
+    # The side pot pushed to seat 2: face up, because that is how a pot is
+    # claimed.
+    must = main._seats_that_must_show(room, state_at_end, [0, 270, 20])
+    assert 2 in must
+    # And the walk is still a walk — showing to collect does not reorder it.
+    assert must == sorted(must, key=lambda s: (s - must[0]) % 3)
+
+
+def test_the_bonus_needs_cards_the_table_has_seen_not_a_showdown(client, clock):
+    """Reaching the showdown is not the same as having been shown.
+
+    `_cards_are_public` used to answer "there was a showdown and this seat did
+    not fold", which was the rule before the muck existed. Most hands at a
+    showdown are thrown away face down, and calling those public pays the one
+    prize in the game that exists to be shown for a hand nobody saw.
+    """
+    room_id, ids = table(client, 3, sevenDeuce=2, actionSeconds=0, levelMinutes=0)
+    start(client, room_id, ids[0])
+    room = client.portal.call(main.load_room, room_id)
+    room["foldedSeats"] = []
+    room["showSeats"] = [0]
+    room["shownSeats"] = {}
+    assert main._cards_are_public(room, 0) is True
+    # Live at the showdown, and still nobody's business but its owner's.
+    assert main._cards_are_public(room, 1) is False
+    # One card turned over is not a hand.
+    room["shownSeats"] = {"1": [0]}
+    assert main._cards_are_public(room, 1) is False
+    room["shownSeats"] = {"1": [0, 1]}
+    assert main._cards_are_public(room, 1) is True
+
+
+def test_a_new_deal_forgets_who_had_to_show(client, clock):
+    room_id, ids = table(client, 3, actionSeconds=0, levelMinutes=0)
+    showdown_between(client, room_id, ids, {0: ["As", "Ks"]})
+    start(client, room_id, ids[0])
+    assert client.portal.call(main.load_room, room_id)["showSeats"] == []

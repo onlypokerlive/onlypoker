@@ -20,6 +20,10 @@ const ENTRIES: { title: string; body: string }[] = [
     body: "Press and hold for a private peek, then let go to hide your hand. A quick tap keeps the cards up briefly when you need a second look.",
   },
   {
+    title: "Double-tap to check",
+    body: "Anywhere on the felt, on your turn, when checking is free — the same knuckles on the table you would use in person. The buttons still work; this is just faster than finding one.",
+  },
+  {
     title: "Bet sizes",
     body: "The row above the buttons is the sizes you actually use. Preflop they are multiples of the big blind; after the flop they are fractions of the pot. Use + and − to nudge by one big blind.",
   },
@@ -32,8 +36,8 @@ const ENTRIES: { title: string; body: string }[] = [
     body: "The center total is the chips already swept into the pot. Current-street bets stay beside each player until that betting round ends, so both amounts are still in play.",
   },
   {
-    title: "Sitting out",
-    body: "You keep your seat and your chips, and the blinds stop reaching you. Not available heads-up — there would be nobody left to play.",
+    title: "Stepping away",
+    body: "You keep your seat and nobody waits for you — your hand is checked or folded the moment it comes round. The blinds still reach you, the same as at a real table, so a long break costs chips.",
   },
   {
     title: "After the hand",
