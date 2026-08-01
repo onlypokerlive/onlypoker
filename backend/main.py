@@ -963,6 +963,78 @@ def _save_state(room: dict[str, Any], state) -> None:
     room["turnId"] = int(room.get("turnId", 0)) + 1
 
 
+# How many decisions the table remembers. Long enough that a client polling at
+# 1.2 seconds cannot miss one — a street round a nine-handed table is nine
+# actions, and pre-actions can fire several of them between two polls — and
+# short enough to stay a footnote on every response.
+ACTION_LOG_MAX = 24
+
+
+def _action_mark(state) -> dict[str, Any]:
+    """Everything about the moment *before* an action that naming it needs.
+
+    Taken as one object so the four places that apply an action cannot each
+    forget a different half of it.
+    """
+    seat = state.actor_index
+    return {
+        "mark": poker.action_mark(state),
+        "seat": seat,
+        "bets": [int(b) for b in state.bets],
+        "stack": int(state.stacks[seat]) if seat is not None else 0,
+        "street": poker.street_name(state),
+    }
+
+
+def _record_action(
+    room: dict[str, Any],
+    before: dict[str, Any],
+    state,
+    *,
+    auto: bool = False,
+) -> None:
+    """Write down what just happened, because the view cannot be asked.
+
+    Every other moment at this table can be recovered by comparing two polled
+    views: chips appear in front of somebody, a hand goes grey, the board grows
+    a card. **Checking cannot.** Nothing about the table changes except whose
+    turn it is, and "the turn moved and nothing else did" is the same picture
+    as a street closing, a hand being dealt, or somebody's clock running out.
+    So the one action a poker table is most recognisable for is the one a
+    polled client is blind to, and that is what this list exists for.
+
+    Kept per hand and bounded, not a full history: the point is that a client
+    can catch up on what it missed between two polls, and ``seq`` — which never
+    restarts — is how it knows which of these it has already played.
+    """
+    seat = before.get("seat")
+    hand_ids = room.get("handPlayerIds") or []
+    if seat is None or seat >= len(hand_ids):
+        return
+    described = poker.describe_action(
+        state, before["mark"], seat, before["bets"], before["stack"]
+    )
+    if described is None:
+        return
+    seq = int(room.get("actionSeq", 0)) + 1
+    room["actionSeq"] = seq
+    log = room.setdefault("actionLog", [])
+    log.append(
+        {
+            "seq": seq,
+            "handNumber": int(room.get("handNumber", 0)),
+            "playerId": hand_ids[seat],
+            "street": before["street"],
+            # Nobody decided this: the clock did, or somebody who had already
+            # left. A fold that was chosen and a fold that ran out of time are
+            # the same chips and a completely different moment.
+            "auto": bool(auto),
+            **described,
+        }
+    )
+    del log[:-ACTION_LOG_MAX]
+
+
 def _set_action_deadline(room: dict[str, Any], state, now: float) -> None:
     """Arm the shot clock for whoever is to act (or disarm it).
 
@@ -1144,6 +1216,11 @@ def _start_hand(room: dict[str, Any]) -> None:
     room["foldedSeats"] = []
     # Seats whose shot clock expired at least once this hand (shown in the UI).
     room["timedOutSeats"] = []
+    # What everybody did, this hand only. ``actionSeq`` is deliberately *not*
+    # reset with it: it is how a client knows whether it has already played a
+    # given moment, and a counter that restarts every hand would have it
+    # replaying the first action of every deal.
+    room["actionLog"] = []
     # Hole cards are fixed for the whole hand in Hold'em, so snapshot them at
     # deal time. pokerkit mucks the losing hand at showdown (clearing its
     # cards), but we still want to reveal every non-folded hand.
@@ -1554,7 +1631,9 @@ def _apply_timeouts(room: dict[str, Any]) -> dict[str, Any] | None:
         action = "fold"
     else:
         action = "call"
+    before = _action_mark(state)
     poker.apply_action(state, action)
+    _record_action(room, before, state, auto=True)
 
     if action == "fold":
         folded = room.setdefault("foldedSeats", [])
@@ -1681,7 +1760,11 @@ def _run_leaver(room: dict[str, Any]) -> bool:
     action = "call" if legal["canCheckOrCall"] and not legal["callAmount"] else "fold"
     if action == "fold" and not legal["canFold"]:
         action = "call"
+    before = _action_mark(state)
     poker.apply_action(state, action)
+    # Nobody is sitting there: this is the table playing out a hand for
+    # somebody who said goodbye, which is not the same moment as a decision.
+    _record_action(room, before, state, auto=True)
     if action == "fold":
         folded = room.setdefault("foldedSeats", [])
         if seat not in folded:
@@ -1739,7 +1822,11 @@ def _run_preaction(room: dict[str, Any]) -> bool:
         changed = room["players"][player_id].pop("preAction", None) is not None
         if action is None:
             break
+        before = _action_mark(state)
         poker.apply_action(state, action, None)
+        # Chosen, just chosen early — so it is somebody's decision and not the
+        # table acting for them.
+        _record_action(room, before, state)
         if action == "fold":
             folded = room.setdefault("foldedSeats", [])
             if seat not in folded:
@@ -1934,6 +2021,7 @@ def _build_view(room: dict[str, Any], viewer_id: str | None) -> dict[str, Any]:
     players_out: list[dict[str, Any]] = []
     board: list[str] = []
     pot = 0
+    pots: list[dict[str, Any]] = []
     actor_id: str | None = None
     legal: dict[str, Any] | None = None
     street = "lobby"
@@ -1949,6 +2037,9 @@ def _build_view(room: dict[str, Any], viewer_id: str | None) -> dict[str, Any]:
         # table that never runs it twice sees exactly what it always saw.
         board = dealt_boards[0]
         pot = poker.pot_total(state, room["handStartStacks"])
+        # Named by seat here and turned into player ids below, once the ids for
+        # this hand are in hand.
+        pots = poker.side_pots(state)
         street = poker.street_name(state)
         pos = room.get("positions") or poker.initial_positions(state)
         sb_i, bb_i, button_i = pos["sb"], pos["bb"], pos["button"]
@@ -2109,9 +2200,27 @@ def _build_view(room: dict[str, Any], viewer_id: str | None) -> dict[str, Any]:
         # What each board came to, once the hand is over.
         "boardResults": room.get("boardResults") or [],
         "pot": pot,
+        # The pot broken out, main first. A single number is a lie the moment
+        # somebody is all in for less than the bet: the short stack is playing
+        # for the main pot and everybody else for that plus a side pot they
+        # cannot win, and told only the total a player cannot work out what
+        # their call is chasing. Sums to ``pot`` by construction.
+        "pots": [
+            {
+                "amount": p["amount"],
+                "playerIds": [hand_ids[s] for s in p["seats"] if s < len(hand_ids)],
+            }
+            for p in pots
+        ],
         "street": street,
         "actorId": actor_id,
         "legal": legal,
+        # What everybody did, this hand, newest last. The one moment a polled
+        # client cannot recover by comparing two pictures is a check — nothing
+        # changes but whose turn it is — so it is written down instead of
+        # inferred. ``seq`` never restarts, so a client knows what it has
+        # already seen even across a deal.
+        "actions": room.get("actionLog", []),
         "lastResults": room.get("lastResults", []),
         "standings": room.get("standings", []),
         # Whether this hand was actually shown down. The table can't infer it
@@ -2885,10 +2994,12 @@ async def take_action(
         # deadline the answer is read from.
         _charge_the_time_bank(room, body.playerId, time.time())
 
+        before = _action_mark(state)
         try:
             poker.apply_action(state, body.action, body.amount)
         except poker.ActionError as exc:
             raise fastapi.HTTPException(400, str(exc))
+        _record_action(room, before, state)
 
         if body.action == "fold":
             folded = room.setdefault("foldedSeats", [])

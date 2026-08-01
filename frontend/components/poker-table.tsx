@@ -4,6 +4,8 @@ import { useLayoutEffect, useRef, useState } from "react"
 
 import { PlayingCard } from "@/components/playing-card"
 import { PlayerSeat } from "@/components/player-seat"
+import { PotDisplay } from "@/components/pot-display"
+import { latestLine } from "@/lib/action-line"
 import type { GameView, PlayerView } from "@/lib/poker-api"
 
 // Seats ride an ellipse with "you" at the bottom. Computing the ring beats
@@ -326,6 +328,13 @@ export function PokerTable({
   // cards face up for whoever is sitting next to them.
   const showdown = view.wentToShowdown
 
+  // The table's own voice. During a hand it is the last decision — the thing a
+  // real table says out loud and the app used to swallow, which is why nobody
+  // who was looking at their own cards knew where the action was. Once the
+  // hand is settled the only thing worth saying is who won it.
+  const said =
+    view.phase === "hand" ? latestLine(view.actions, view.players) : view.message
+
   return (
     // Taller than a 3:4 box on phones: nine seats need the vertical room, or
     // the pairs flanking the top corners run into each other.
@@ -343,10 +352,7 @@ export function PokerTable({
         {/* Measured as the reserved middle of the table, so it hugs its
             contents rather than spanning the full width. */}
         <div ref={centreRef} className="flex w-fit flex-col items-center gap-2">
-          <div className="rounded-full bg-background/70 px-4 py-1 text-center backdrop-blur">
-            <span className="text-[10px] uppercase tracking-widest text-muted-foreground">Pot</span>
-            <div className="font-mono text-lg font-bold text-accent">{view.pot.toLocaleString()}</div>
-          </div>
+          <PotDisplay pots={view.pots} total={view.pot} youId={view.you?.id} />
           <div
             data-testid="board"
             data-cards={view.board.length}
@@ -370,11 +376,24 @@ export function PokerTable({
           )}
           </div>
         </div>
-        {view.message && (
-          <div className="max-w-[16rem] text-balance rounded-lg bg-background/80 px-3 py-1 text-center text-xs text-foreground backdrop-blur">
-            {view.message}
-          </div>
-        )}
+        {/* What the table would have said out loud. While a hand is live that
+            is the last decision; once it is over it is who won, which is the
+            only thing anybody wants said then.
+
+            One region, announced politely, and never two: a screen reader
+            given two live regions in the middle of the table reads them in
+            whichever order it feels like. */}
+        <div
+          role="status"
+          aria-live="polite"
+          className="flex min-h-6 items-center justify-center empty:hidden"
+        >
+          {said && (
+            <span className="max-w-[16rem] text-balance rounded-lg bg-background/80 px-3 py-1 text-center text-xs text-foreground backdrop-blur">
+              {said}
+            </span>
+          )}
+        </div>
       </div>
 
       {/* Chips wagered this street, out on the felt in front of each player.

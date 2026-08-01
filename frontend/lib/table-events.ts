@@ -9,7 +9,7 @@
 // mid-hand must not fire every sound at once, and a poll that changes nothing
 // must not fire anything.
 
-import type { GameView } from '@/lib/poker-api'
+import type { GameView, TableAction } from '@/lib/poker-api'
 
 export type TableEvent =
   | 'deal'
@@ -20,6 +20,31 @@ export type TableEvent =
   | 'levelUp'
   | 'elimination'
   | 'tournamentEnd'
+  // Everything below is read off the server's action log rather than inferred
+  // from a diff. `check` is the reason the log exists at all — see TableAction.
+  | 'check'
+  | 'fold'
+  | 'raise'
+  | 'allIn'
+  /** The street closed and the bets were swept into the middle. */
+  | 'potCollect'
+
+/**
+ * The decisions in `current` that `previous` had not seen yet.
+ *
+ * Keyed on `seq`, not on length or on identity: polling means the same action
+ * comes back on every response until something else happens, and two quick
+ * decisions between two polls arrive together. Both have to work, and only a
+ * high-water mark does both.
+ */
+export function newActions(
+  previous: GameView | null,
+  current: GameView,
+): TableAction[] {
+  if (!previous) return []
+  const seen = previous.actions.reduce((max, a) => Math.max(max, a.seq), 0)
+  return current.actions.filter((a) => a.seq > seen)
+}
 
 /**
  * What happened between two views.
@@ -45,11 +70,45 @@ export function diffViews(previous: GameView | null, current: GameView): TableEv
     events.push('yourTurn')
   }
 
+  // What everybody actually did, in the order they did it.
+  const fresh = newActions(previous, current)
+  for (const action of fresh) {
+    // All-in stops the table, so it is the moment worth naming even when the
+    // decision that got there was a call.
+    if (action.allIn) {
+      events.push('allIn')
+      continue
+    }
+    if (action.kind === 'check') events.push('check')
+    else if (action.kind === 'fold') events.push('fold')
+    else if (action.kind === 'raise') events.push('raise')
+    else events.push('chips') // a call or an opening bet
+  }
+
   // Somebody put chips in. The pot only moves between streets, so the live
   // signal is what is sitting out on the felt.
+  //
+  // Only consulted when the server said nothing, which is the case on a table
+  // that has not been redeployed yet. Running both would play a call twice.
   const onFelt = (v: GameView) => v.players.reduce((sum, p) => sum + p.bet, 0)
-  if (current.handNumber === previous.handNumber && onFelt(current) > onFelt(previous)) {
+  if (
+    !fresh.length &&
+    current.handNumber === previous.handNumber &&
+    onFelt(current) > onFelt(previous)
+  ) {
     events.push('chips')
+  }
+
+  // The street closed: the bets in front of everybody were swept into the
+  // middle. Told apart from a deal, which also clears the felt, by the hand
+  // holding — and from a fold, by the pot having grown.
+  if (
+    current.handNumber === previous.handNumber &&
+    onFelt(previous) > 0 &&
+    onFelt(current) === 0 &&
+    current.pot > previous.pot
+  ) {
+    events.push('potCollect')
   }
 
   if (current.phase === 'handover' && previous.phase === 'hand') {
@@ -82,6 +141,9 @@ export function diffViews(previous: GameView | null, current: GameView): TableEv
 export const HAPTICS: Partial<Record<TableEvent, number | number[]>> = {
   yourTurn: [18, 60, 18],
   chips: 10,
+  // The table stops for this one. Deliberately louder than chips going in and
+  // quieter than somebody going out.
+  allIn: [30, 60, 30],
   potWon: 24,
   elimination: [40, 80, 40, 80, 120],
   tournamentEnd: [60, 100, 60, 100, 200],

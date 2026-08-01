@@ -89,6 +89,50 @@ export interface LegalActions {
   maxRaise: number
 }
 
+/**
+ * One decision, as the table would call it out.
+ *
+ * Written down by the server rather than worked out from two polled views,
+ * because one of these cannot be worked out at all: a check moves no chips,
+ * folds nobody and grows no board, so the picture before it and the picture
+ * after it differ only in whose turn it is — which is also what a street
+ * closing, a deal and an expired clock look like.
+ */
+export interface TableAction {
+  /**
+   * Never restarts, not even on a new deal. It is how a client knows which of
+   * these it has already played, which matters because polling means the same
+   * action arrives several times and two fast actions arrive together.
+   */
+  seq: number
+  handNumber: number
+  playerId: string
+  /**
+   * Five, where the engine has three. Checking and calling are one move to the
+   * engine and opposite moves to everyone watching, and opening a street is
+   * not raising somebody.
+   */
+  kind: 'check' | 'call' | 'bet' | 'raise' | 'fold'
+  /** What the decision cost them. */
+  amount: number
+  /** Where it left their bet for the street — the number a raise is named by. */
+  to: number
+  /**
+   * Their whole stack went in. Deliberately a flag and not a kind: somebody
+   * can be all in *and* calling, and collapsing the two loses which it was.
+   */
+  allIn: boolean
+  street: string
+  /** Nobody chose it — the clock did, or somebody who had already left. */
+  auto: boolean
+}
+
+/** One pot, and who is playing for it. */
+export interface PotView {
+  amount: number
+  playerIds: string[]
+}
+
 export interface HandResult {
   playerId: string
   name: string
@@ -149,9 +193,16 @@ export interface RoomView {
   /** What each board came to, once the hand is over. */
   boardResults: { cards: string[]; winners: string[] }[]
   pot: number
+  /**
+   * The pot broken out, main first, and who can win each. Sums to `pot`.
+   * Empty between hands.
+   */
+  pots: PotView[]
   street: string
   actorId: string | null
   legal: LegalActions | null
+  /** What everybody did this hand, oldest first. */
+  actions: TableAction[]
   lastResults: HandResult[]
   standings: Standing[]
   /** The finished hand was actually shown down (not won by everyone folding). */
@@ -241,6 +292,10 @@ export interface GameView {
   /** You are one of them. */
   askedAboutRunout: boolean
   pot: number
+  /** The pot broken out, main first. One entry is the ordinary case. */
+  pots: PotView[]
+  /** What everybody did this hand, oldest first. */
+  actions: TableAction[]
   street: string
   actorId: string | null
   isHost: boolean
@@ -343,6 +398,11 @@ export function toGameView(v: RoomView, playerId: string | null): GameView {
     players,
     board: v.board,
     pot: v.pot,
+    // A table that runs no all-ins never sees more than one, so the fallback
+    // is the whole pot as a single unnamed one rather than an empty list —
+    // otherwise every renderer has to special-case an older server.
+    pots: v.pots?.length ? v.pots : v.pot > 0 ? [{ amount: v.pot, playerIds: [] }] : [],
+    actions: v.actions ?? [],
     street: v.street,
     actorId: v.actorId,
     isHost: !!you?.isHost,

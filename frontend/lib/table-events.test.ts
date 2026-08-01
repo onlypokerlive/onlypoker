@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 
 import { diffViews, type TableEvent } from '@/lib/table-events'
-import type { GameView, PlayerView } from '@/lib/poker-api'
+import type { GameView, PlayerView, TableAction } from '@/lib/poker-api'
 
 function player(overrides: Partial<PlayerView> = {}): PlayerView {
   return {
@@ -68,6 +68,8 @@ function view(overrides: Partial<GameView> = {}): GameView {
     runoutSeats: [],
     askedAboutRunout: false,
     pot: 0,
+    pots: [],
+    actions: [],
     street: 'preflop',
     actorId: 'p1',
     isHost: false,
@@ -168,5 +170,95 @@ describe('diffViews', () => {
     expect(diff(view({ phase: 'handover' }), view({ phase: 'finished' }))).toContain(
       'tournamentEnd',
     )
+  })
+})
+
+function action(overrides: Partial<TableAction> = {}): TableAction {
+  return {
+    seq: 1,
+    handNumber: 1,
+    playerId: 'p1',
+    kind: 'check',
+    amount: 0,
+    to: 0,
+    allIn: false,
+    street: 'flop',
+    auto: false,
+    ...overrides,
+  }
+}
+
+describe('what the server wrote down', () => {
+  it('reports a check, which no diff of two views could ever find', () => {
+    // The whole reason the log exists. Identical tables either side of it.
+    const before = view()
+    const after = view({ actions: [action({ seq: 4, kind: 'check' })] })
+    expect(diff(before, after)).toContain('check')
+  })
+
+  it('does not report the same action twice however often it is polled', () => {
+    const first = view({ actions: [action({ seq: 4, kind: 'check' })] })
+    const again = view({ actions: [action({ seq: 4, kind: 'check' })] })
+    expect(diff(first, again)).not.toContain('check')
+  })
+
+  it('reports both of two decisions taken between two polls', () => {
+    // At 1.2 seconds a round of pre-actions resolves several before anybody
+    // asks again. Counting on "one new action per poll" drops all but the last.
+    const before = view({ actions: [action({ seq: 4, kind: 'check' })] })
+    const after = view({
+      actions: [
+        action({ seq: 4, kind: 'check' }),
+        action({ seq: 5, kind: 'check', playerId: 'p2' }),
+        action({ seq: 6, kind: 'fold', playerId: 'p3' }),
+      ],
+    })
+    expect(diff(before, after)).toEqual(expect.arrayContaining(['check', 'fold']))
+  })
+
+  it('keeps counting across a deal, which clears the list but not the count', () => {
+    const before = view({ handNumber: 1, actions: [action({ seq: 9 })] })
+    const after = view({
+      handNumber: 2,
+      actions: [action({ seq: 10, handNumber: 2, kind: 'check' })],
+    })
+    expect(diff(before, after)).toContain('check')
+  })
+
+  it('tells a raise from a call', () => {
+    const before = view()
+    expect(
+      diff(before, view({ actions: [action({ seq: 2, kind: 'raise', to: 900 })] })),
+    ).toContain('raise')
+    expect(
+      diff(before, view({ actions: [action({ seq: 2, kind: 'call', to: 300 })] })),
+    ).toContain('chips')
+  })
+
+  it('calls an all-in an all-in whichever decision got there', () => {
+    const before = view()
+    const after = view({ actions: [action({ seq: 2, kind: 'call', allIn: true })] })
+    expect(diff(before, after)).toContain('allIn')
+    expect(diff(before, after)).not.toContain('chips')
+  })
+
+  it('does not also fire the old guess when the server has spoken', () => {
+    // Both paths running would play a call twice: once off the log and once
+    // off the chips appearing on the felt.
+    const before = view()
+    const after = withPlayer(
+      view({ actions: [action({ seq: 2, kind: 'call', to: 30 })] }),
+      'p1',
+      { bet: 30 },
+    )
+    expect(diff(before, after).filter((e) => e === 'chips')).toHaveLength(1)
+  })
+
+  it('reports the street being swept up, and does not mistake a deal for it', () => {
+    const betting = withPlayer(view({ pot: 0 }), 'p1', { bet: 30 })
+    const swept = view({ pot: 60, board: ['As', 'Kd', '7h'] })
+    expect(diff(betting, swept)).toContain('potCollect')
+    // A deal also clears the felt, and is not a street closing.
+    expect(diff(betting, view({ handNumber: 2, pot: 15 }))).not.toContain('potCollect')
   })
 })

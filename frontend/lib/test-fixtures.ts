@@ -72,6 +72,8 @@ export function gameView(overrides: Partial<GameView> = {}): GameView {
     runoutSeats: [],
     askedAboutRunout: false,
     pot: 0,
+    pots: [],
+    actions: [],
     street: 'preflop',
     actorId: 'p1',
     isHost: false,

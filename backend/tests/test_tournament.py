@@ -3971,3 +3971,229 @@ def fold_until_hand_over(client, room_id, ids):
         if res.status_code != 200:
             act(client, room_id, actor, "call")
     raise AssertionError("hand did not finish")
+
+
+# --------------------------------------------------------------------------- #
+# What just happened (X1) and what it is being played for (X2)
+# --------------------------------------------------------------------------- #
+def actions(client, room_id, player_id):
+    return state(client, room_id, player_id)["actions"]
+
+
+def test_a_check_leaves_a_trace_when_nothing_else_would(client, clock):
+    """The whole point of the log.
+
+    A check moves no chips, folds nobody and grows no board — two polled views
+    either side of it are identical apart from whose turn it is, which is the
+    same picture as a street closing or a clock expiring. Without this the
+    table cannot tell anyone that anything happened.
+    """
+    room_id, ids = table(client, 3)
+    start(client, room_id, ids[0])
+    # Get to a flop with everyone still in: call, call, check.
+    for _ in range(3):
+        view = state(client, room_id, ids[0])
+        if view["street"] != "preflop":
+            break
+        act(client, room_id, view["actorId"], "call")
+
+    view = state(client, room_id, ids[0])
+    assert view["street"] == "flop"
+    before = state(client, room_id, ids[0])["players"]
+    checker = view["actorId"]
+    act(client, room_id, checker, "call")  # free — a check
+    after = state(client, room_id, ids[0])
+
+    # Nothing a diff could have caught.
+    assert [p["chips"] for p in after["players"]] == [p["chips"] for p in before]
+    assert [p["bet"] for p in after["players"]] == [p["bet"] for p in before]
+    assert after["pot"] == view["pot"]
+    # But the table knows.
+    last = after["actions"][-1]
+    assert last["kind"] == "check"
+    assert last["playerId"] == checker
+    assert last["amount"] == 0
+    assert last["auto"] is False
+
+
+def test_opening_a_street_is_a_bet_and_answering_one_is_a_raise(client, clock):
+    room_id, ids = table(client, 3)
+    start(client, room_id, ids[0])
+    view = state(client, room_id, ids[0])
+    # Preflop there are blinds up, so the first aggressive action is a raise.
+    opener = view["actorId"]
+    act(client, room_id, opener, "raise", 40)
+    assert actions(client, room_id, ids[0])[-1]["kind"] == "raise"
+    assert actions(client, room_id, ids[0])[-1]["to"] == 40
+
+    # Everybody calls to see a flop, where nobody has bet yet.
+    for _ in range(4):
+        view = state(client, room_id, ids[0])
+        if view["street"] != "preflop":
+            break
+        act(client, room_id, view["actorId"], "call")
+
+    view = state(client, room_id, ids[0])
+    assert view["street"] == "flop"
+    act(client, room_id, view["actorId"], "raise", 60)
+    opened = actions(client, room_id, ids[0])[-1]
+    assert opened["kind"] == "bet"
+    assert opened["to"] == 60
+    assert opened["amount"] == 60
+
+    answered = state(client, room_id, ids[0])
+    act(client, room_id, answered["actorId"], "raise", 180)
+    assert actions(client, room_id, ids[0])[-1]["kind"] == "raise"
+
+
+def test_a_call_says_what_it_cost_and_where_it_left_them(client, clock):
+    room_id, ids = table(client, 3)
+    start(client, room_id, ids[0])
+    view = state(client, room_id, ids[0])
+    act(client, room_id, view["actorId"], "raise", 40)
+    view = state(client, room_id, ids[0])
+    caller = view["actorId"]
+    posted = next(p["bet"] for p in view["players"] if p["id"] == caller)
+    act(client, room_id, caller, "call")
+    last = actions(client, room_id, ids[0])[-1]
+    assert last["kind"] == "call"
+    assert last["to"] == 40
+    # What it actually cost them, which is not the same as the level they
+    # called to whenever they already had a blind out there.
+    assert last["amount"] == 40 - posted
+
+
+def test_the_last_action_of_a_hand_is_still_described_correctly(client, clock):
+    """The pot is pushed before this runs, and the stacks have already moved.
+
+    Reading the answer off the state afterwards reports a fold by a player
+    whose stack went *up*, so the description has to come from the engine's
+    own record of what it did.
+    """
+    room_id, ids = table(client, 2)
+    start(client, room_id, ids[0])
+    view = state(client, room_id, ids[0])
+    folder = view["actorId"]
+    act(client, room_id, folder, "fold")
+    last = actions(client, room_id, ids[0])[-1]
+    assert last["kind"] == "fold"
+    assert last["playerId"] == folder
+    assert last["allIn"] is False
+
+
+def test_going_all_in_is_marked_without_losing_what_it_was(client, clock):
+    room_id, ids = table(client, 2, startingChips=100, smallBlind=5, bigBlind=10)
+    start(client, room_id, ids[0])
+    view = state(client, room_id, ids[0])
+    shover = view["actorId"]
+    act(client, room_id, shover, "raise", 100)
+    last = actions(client, room_id, ids[0])[-1]
+    assert last["allIn"] is True
+    # Still a raise. Collapsing it to "all-in" would lose whether they were
+    # calling somebody or putting the table to a decision.
+    assert last["kind"] == "raise"
+
+    view = state(client, room_id, ids[0])
+    caller = view["actorId"]
+    act(client, room_id, caller, "call")
+    called = actions(client, room_id, ids[0])[-1]
+    assert called["kind"] == "call"
+    assert called["allIn"] is True
+
+
+def test_a_fold_by_the_clock_is_marked_apart_from_one_that_was_chosen(client, clock):
+    room_id, ids = table(client, 3)
+    start(client, room_id, ids[0])
+    view = state(client, room_id, ids[0])
+    act(client, room_id, view["actorId"], "raise", 60)
+    clock.advance(40)
+    view = state(client, room_id, ids[0])
+    timed_out = [a for a in view["actions"] if a["auto"]]
+    assert timed_out, "the clock's own fold was not written down"
+    assert timed_out[-1]["kind"] == "fold"
+    chosen = [a for a in view["actions"] if not a["auto"]]
+    assert chosen[-1]["kind"] == "raise"
+
+
+def test_the_sequence_never_restarts_so_a_client_can_tell_what_it_has_seen(
+    client, clock
+):
+    room_id, ids = table(client, 2)
+    start(client, room_id, ids[0])
+    fold_until_hand_over(client, room_id, ids)
+    first = state(client, room_id, ids[0])["actions"]
+    assert first
+    highest = first[-1]["seq"]
+
+    start(client, room_id, ids[0])
+    view = state(client, room_id, ids[0])
+    # A new deal clears the hand's actions...
+    assert all(a["handNumber"] == view["room"]["handNumber"] for a in view["actions"])
+    act(client, room_id, view["actorId"], "call")
+    # ...but not the counter, or every deal would replay its first action.
+    assert state(client, room_id, ids[0])["actions"][-1]["seq"] > highest
+
+
+def test_the_log_stays_short_enough_to_ride_on_every_response(client, clock):
+    room_id, ids = table(client, 2)
+    start(client, room_id, ids[0])
+    for _ in range(80):
+        view = state(client, room_id, ids[0])
+        if view["room"]["phase"] != "hand" or view["actorId"] is None:
+            break
+        act(client, room_id, view["actorId"], "call")
+    assert len(state(client, room_id, ids[0])["actions"]) <= main.ACTION_LOG_MAX
+
+
+def test_one_pot_is_served_as_one_pot(client, clock):
+    room_id, ids = table(client, 3)
+    start(client, room_id, ids[0])
+    view = state(client, room_id, ids[0])
+    act(client, room_id, view["actorId"], "call")
+    view = state(client, room_id, ids[0])
+    assert len(view["pots"]) <= 1
+    assert sum(p["amount"] for p in view["pots"]) == view["pot"]
+
+
+def test_a_short_all_in_splits_the_pot_and_names_who_can_win_each(client, clock):
+    """Today the view says one number, and it is not true for anybody.
+
+    A player all in for 100 into two stacks of 1000 is playing for the main
+    pot only; the other two are playing for that and a side pot the short
+    stack cannot touch. Told a single total, nobody can work out what their
+    call is chasing.
+    """
+    room_id, ids = table(client, 3, startingChips=1000, smallBlind=5, bigBlind=10)
+    # Give the first player a short stack by taking chips off them directly:
+    # what is being tested is the shape of the pot, not how they got there.
+    room = client.portal.call(main.load_room, room_id)
+    short = room["order"][0]
+    room["players"][short]["chips"] = 100
+    client.portal.call(main.save_room, room)
+
+    start(client, room_id, ids[0])
+    # The short stack only ever calls, so their whole stack goes in behind a
+    # bet bigger than it — the only way a side pot forms. The other two stop
+    # at 300 rather than shoving, so both still have chips behind and the hand
+    # is still being played when the pots are read.
+    for _ in range(8):
+        view = state(client, room_id, ids[0])
+        if view["street"] != "preflop" or view["actorId"] is None:
+            break
+        actor = view["actorId"]
+        legal = state(client, room_id, actor)["legal"]
+        highest = max(p["bet"] for p in view["players"])
+        if actor != short and legal and legal["canRaise"] and highest < 300:
+            act(client, room_id, actor, "raise", 300)
+        else:
+            act(client, room_id, actor, "call")
+
+    view = state(client, room_id, ids[0])
+    assert view["room"]["phase"] == "hand", "the hand should still be live"
+    assert len(view["pots"]) > 1, "a short all-in did not produce a side pot"
+    # Every pot names who is playing for it, and the short stack is only in
+    # the first one.
+    assert short in view["pots"][0]["playerIds"]
+    assert short not in view["pots"][1]["playerIds"]
+    # And the parts still add up to the whole, so a client can render either.
+    assert sum(p["amount"] for p in view["pots"]) == view["pot"]

@@ -15,7 +15,10 @@ from typing import Any
 
 from pokerkit import (
     Automation,
+    CheckingOrCalling,
     ChipsPushing,
+    CompletionBettingOrRaisingTo,
+    Folding,
     Mode,
     NoLimitTexasHoldem,
     StandardHighHand,
@@ -329,6 +332,103 @@ def pot_total(state, hand_start_stacks: list[int]) -> int:
     committed = sum(hand_start_stacks) - sum(int(s) for s in state.stacks)
     front = sum(int(b) for b in state.bets)
     return max(0, committed - front)
+
+
+def side_pots(state) -> list[dict[str, Any]]:
+    """The pots as they actually stand, main first, with who can win each.
+
+    A single number is a lie as soon as somebody is all in for less than the
+    bet: the short stack is playing for the main pot and everybody else is
+    playing for that *plus* a side pot they cannot win. Told only the total, a
+    player cannot work out what their call is actually chasing.
+
+    Sums to :func:`pot_total` by construction — pokerkit's pots exclude what is
+    still out on the felt this street, which is the same line that function
+    draws. Empty between hands and once the chips have been pushed.
+    """
+    out: list[dict[str, Any]] = []
+    for pot in state.pots:
+        amount = int(pot.amount)
+        if amount <= 0:
+            continue
+        out.append({"amount": amount, "seats": [int(i) for i in pot.player_indices]})
+    return out
+
+
+def action_mark(state) -> int:
+    """A bookmark in the engine's own log, taken before an action is applied.
+
+    Paired with :func:`describe_action`, which reads back everything the
+    engine recorded past this point.
+    """
+    return len(state.operations)
+
+
+def describe_action(
+    state,
+    mark: int,
+    seat: int,
+    bets_before: list[int],
+    stack_before: int,
+) -> dict[str, Any] | None:
+    """Name what a player just did, from the table's point of view.
+
+    pokerkit has three verbs; a table has five. Checking and calling are the
+    same move to the engine and the opposite move to everyone watching, and
+    opening a street is not the same thing as raising somebody — "raises to
+    900" when nobody had bet describes a hand that never happened.
+
+    Read off the operations the engine wrote rather than off the state
+    afterwards, because by the time this runs the state has moved on twice
+    over: pokerkit collects the bets the moment a street closes, so the last
+    call of a street reports a table where nobody had bet anything, and it
+    pushes the pot the moment a hand ends, so the last fold of a hand reports
+    a player whose stack went *up*.
+    """
+    verb = None
+    amount = 0
+    for op in state.operations[mark:]:
+        if getattr(op, "player_index", None) != seat:
+            continue
+        if isinstance(op, Folding):
+            verb, amount = "fold", 0
+            break
+        if isinstance(op, CheckingOrCalling):
+            verb, amount = "call", int(op.amount)
+            break
+        if isinstance(op, CompletionBettingOrRaisingTo):
+            verb, amount = "raise", int(op.amount)
+            break
+    if verb is None:
+        return None
+
+    mine = int(bets_before[seat]) if seat < len(bets_before) else 0
+    others = [b for i, b in enumerate(bets_before) if i != seat]
+    highest = max(others) if others else 0
+
+    if verb == "fold":
+        kind, put_in, to = "fold", 0, mine
+    elif verb == "call":
+        # The engine's amount is what leaves the stack, so a free card is a
+        # zero and that is exactly the check the table would call out.
+        kind = "call" if amount > 0 else "check"
+        put_in, to = amount, mine + amount
+    else:
+        # A raise names the level it raises *to*, not what it costs.
+        kind = "raise" if highest > 0 else "bet"
+        put_in, to = amount - mine, amount
+
+    return {
+        "kind": kind,
+        # What this decision cost them, and where it left their bet. Both,
+        # because "calls 300" and "raises to 900" are the two numbers a table
+        # says out loud and neither can be worked out from the other.
+        "amount": put_in,
+        "to": to,
+        # Their whole stack went in. Not a kind of its own: somebody can be
+        # all in *and* calling, and collapsing the two loses which it was.
+        "allIn": kind != "fold" and stack_before - put_in <= 0,
+    }
 
 
 # --------------------------------------------------------------------------- #

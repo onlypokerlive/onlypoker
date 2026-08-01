@@ -3,7 +3,7 @@
 import { useCallback, useEffect, useRef, useState } from "react"
 import { useRouter } from "next/navigation"
 import { toast } from "sonner"
-import { Pause, Play, Volume2, VolumeX } from "lucide-react"
+import { Pause, Play, Volume1, Volume2, VolumeX } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { Spinner } from "@/components/ui/spinner"
 import { PokerTable } from "@/components/poker-table"
@@ -22,7 +22,7 @@ import { PreActions } from "@/components/pre-actions"
 import { RunoutOffer } from "@/components/runout-offer"
 import { TournamentResults } from "@/components/tournament-results"
 import { useSecondsLeft } from "@/lib/use-countdown"
-import { useTableEvents } from "@/lib/use-table-events"
+import { useTableEvents, type SoundMode } from "@/lib/use-table-events"
 import { useRunout } from "@/lib/use-runout"
 import {
   ApiError,
@@ -36,6 +36,15 @@ import {
 } from "@/lib/poker-api"
 
 const POLL_MS = 1200
+
+// The order the switch walks, and what each stop is called out loud. Everything
+// → only my turn → nothing, which is the order somebody turns it down in.
+const SOUND_NEXT: Record<SoundMode, SoundMode> = { all: "turn", turn: "off", off: "all" }
+const SOUND_LABEL: Record<SoundMode, string> = {
+  all: "everything",
+  turn: "only my turn",
+  off: "off",
+}
 
 export function RoomClient({ roomId }: { roomId: string }) {
   const router = useRouter()
@@ -111,7 +120,7 @@ export function RoomClient({ roomId }: { roomId: string }) {
 
   const secondsLeft = useSecondsLeft(view?.actionDeadlineMs ?? null)
   const autoDealIn = useSecondsLeft(view?.autoDealAtMs ?? null)
-  const { soundOn, setSoundOn } = useTableEvents(view)
+  const { soundMode, setSoundMode } = useTableEvents(view)
   // An all-in arrives as a finished board in one response. Deal it out.
   const { board: shownBoard, revealing } = useRunout(view)
 
@@ -219,15 +228,21 @@ export function RoomClient({ roomId }: { roomId: string }) {
           <HelpSheet />
           {/* On the table, not buried in settings: this gets used with other
               people in the room, and the person who needs it needs it now. */}
+          {/* Three states, cycled by tapping. A label rather than three
+              buttons, because the middle one is the whole point and it needs
+              saying — "only my turn" is not a thing anybody guesses from an
+              icon. */}
           <Button
             variant="ghost"
-            size="icon"
-            onClick={() => setSoundOn(!soundOn)}
-            aria-pressed={soundOn}
-            aria-label={soundOn ? "Mute the table" : "Unmute the table"}
-            className="text-muted-foreground"
+            size="sm"
+            onClick={() => setSoundMode(SOUND_NEXT[soundMode])}
+            aria-label={`Table sound: ${SOUND_LABEL[soundMode]}. Tap for ${SOUND_LABEL[SOUND_NEXT[soundMode]]}.`}
+            className="gap-1 px-2 text-muted-foreground"
           >
-            {soundOn ? <Volume2 /> : <VolumeX />}
+            {soundMode === "off" ? <VolumeX /> : soundMode === "turn" ? <Volume1 /> : <Volume2 />}
+            {soundMode === "turn" && (
+              <span className="text-[10px] font-semibold uppercase">Turn</span>
+            )}
           </Button>
           {!finished && <BlindClock view={view} />}
         </div>
