@@ -22,17 +22,42 @@ configuración de mesa y entrada/salida de jugadores. **Fuera por decisión expl
 | Tanda | Hecho | Pendiente |
 |---|---|---|
 | **0** defectos | 0.1 ✅ · 0.2 ✅ · 0.3 ✅ | — |
-| **0.5** concurrencia | — | 0.5.a · 0.5.b · 0.5.c · 0.5.d |
+| **0.5** concurrencia | 0.5.a ✅ · 0.5.b ✅ · 0.5.c ✅ | 0.5.d (aplazado a propósito, ver abajo) |
 | **A** frontend | A0-A7 ✅ (todo) | — |
-| **B** mesa y jugadores | B1 ✅ · B2 ✅ · B6 ✅ | B3 · B4 · B5 · B7 |
-| **C** reglas de la casa | C0 ✅ · C1 ✅ · C2 ✅ · C3 ✅ · C4 ✅ | C5 · C6 |
+| **B** mesa y jugadores | B1-B7 ✅ (todo) | — |
+| **C** reglas de la casa | C0-C6 ✅ (todo) | — |
 | **D** plataforma | — | todo (fuera del alcance acordado) |
 
-**19 de 29 items hasta el final de C.** Lo que queda son casi todos **L**: la tanda 0.5 entera, las cuatro
-features de mesa que cambian el torneo en marcha (B3, B4, B5, B7) y las dos caras de C (C5 pre-acciones,
-C6 run it twice). Cinco de esas seis dependen de 0.5.c.
+**28 de 29 items hasta el final de C.** El que falta es **0.5.d (atomicidad al sacar datos del blob)**, y
+falta por una razón concreta: **no tiene todavía nada que hacer atómico.** Su único consumidor es D1, y la
+tanda D está fuera del alcance acordado. Escribir ahora un outbox que no guarda nada sería código sin
+usuarios y sin forma de probarlo — lo que hay que hacer es no escribir la primera feature de la sección F
+sin él, que es exactamente lo que dice D1. Queda anotado como condición de entrada a la tanda D, no como
+deuda de esta.
+
+Limitación conocida y aceptada: **el revelado carta a carta (A4) sigue siendo uno solo** cuando la mano se
+reparte dos veces. El segundo board aparece completo en el panel de resultados. El plan ya avisaba de que
+C6 "interactúa con A4"; hacer dos revelados encadenados es trabajo de la fase de animaciones, que es la que
+viene después de la geometría de `poker-table.tsx`.
 
 Cada item está en su propio commit, con sus tests, en `feat/plan-tandas-a-b-c`.
+
+### Lo que cambió respecto a lo que decía el plan
+
+Tres cosas se decidieron distinto al implementarlas, y conviene que estén escritas donde se leen:
+
+1. **C5 no ofrece "call 100".** El plan lo daba por supuesto y ponía toda la dificultad en invalidarlo. La
+   decisión fue quitarlo: las tres pre-acciones que quedan (`check`, `check/fold`, `call any`) están
+   definidas *contra la situación*, no contra una cifra, así que no hay nada que invalidar. Es el único
+   sitio del sistema donde un bug le cuesta fichas reales a alguien, y la forma más barata de no tener ese
+   bug es no tener esa opción.
+2. **B3 no necesita un auto-fold propio.** El plan se corregía a sí mismo diciendo que sí. Resulta que
+   pokerkit **no deja foldear** una mano que puedes ver gratis, así que el que se va checkea cuando es
+   gratis y foldea de cara a una apuesta — exactamente lo que hace el shot clock. La diferencia real es
+   otra: se ejecuta **al instante**, no cuando vence el reloj.
+3. **C6 exige modo cash en el motor.** `Mode.TOURNAMENT` prohíbe por principio repartir dos veces. El
+   efecto colateral (en cash se puede foldear gratis) se neutraliza en `poker.py`, así que la mesa se juega
+   igual con la regla puesta o quitada.
 
 ---
 
@@ -106,7 +131,7 @@ proyecto se atasque.
 El plan anterior situaba el riesgo en pokerkit. Estaba mal: **el motor casi no da problemas; la concurrencia
 sí.** El lock protege la escritura, pero no protege la vigencia ni la unicidad de la intención del jugador.
 
-### 0.5.a · Versión de turno (`turnId`)  `🚩🚩`
+### 0.5.a · Versión de turno (`turnId`) — ✅ HECHO  `🚩🚩`
 
 `/action` valida el actor y el `handNumber` ([`main.py:969`](../backend/main.py:969)). Eso impide que una
 orden vieja caiga en **otra** mano — que era el agujero que cerramos en la auditoría anterior. **No** impide
@@ -120,7 +145,7 @@ un lease caducado, no contra aplicar una orden repetida sobre un estado recién 
 servidor exige que coincida. **C5 (pre-acciones) lo necesita sí o sí** — guardar "Call 100" no basta, hay que
 guardar *en qué turno* se marcó.
 
-### 0.5.b · Claves de idempotencia  `🚩🚩`
+### 0.5.b · Claves de idempotencia — ✅ HECHO  `🚩🚩`
 
 El lock serializa dos `join_room` simultáneos, pero **los dos crean jugador y asiento**
 ([`main.py:879`](../backend/main.py:879)). Un reintento tras perder la respuesta te duplica en la mesa. El
@@ -131,7 +156,7 @@ mismo agujero llegará con recompras (te cobra dos) y con el consumo manual del 
 entrar Marcos" de "entra un jugador nuevo llamado Marcos". Esa decisión **no puede posponerse hasta la tanda
 D**.
 
-### 0.5.c · Un único planificador *lazy*  `🚩🚩`
+### 0.5.c · Un único planificador *lazy* — ✅ HECHO  `🚩🚩`
 
 Aquí había un error de modelo mío. Escribí que con 6 jugadores hay ~5 lecturas por segundo *que hacen
 avanzar la sala*. **Falso:** `GET /state` solo entra al lock si caduca el heartbeat (5 s), vence el shot clock
@@ -149,7 +174,7 @@ la sala se congestiona sola.
 salida pendiente, banco de tiempo, auto-deal), con su predicado exterior a juego. Cuatro features colgando de
 cuatro ramas ad-hoc es la receta para que la quinta rompa las otras cuatro.
 
-### 0.5.d · Atomicidad al sacar datos del blob  `🚩` → afina D1
+### 0.5.d · Atomicidad al sacar datos del blob — ⏸ SIN CONSUMIDOR TODAVÍA  `🚩` → afina D1
 
 D1 acertaba en el diagnóstico (los datos que crecen tienen que salir del blob de la sala) y se quedaba corto
 en la solución: **"fuera del lock" no basta.** Guardar la sala y añadir la mano al historial en dos
@@ -307,7 +332,7 @@ que quien se va se quedaría pasando manos en vez de saliendo. La salida diferid
   crash pero no da la respuesta correcta.
 - **Bonus:** es el 80% del "modo TV / tablet central" del §3.E.
 
-#### B3 · Entrar y salir del torneo empezado  `⭐⭐⭐ · L · 🚩🚩`
+#### B3 · Entrar y salir del torneo empezado — ✅ HECHO  `⭐⭐⭐ · L · 🚩🚩`
 - **Toca:** `backend/main.py` (`join_room`, `_start_hand`, `_finish_tournament`), `create-room-form.tsx`,
   `CreateRoomBody`, test `test_table_locks_once_the_tournament_starts` (cambia de significado).
 - **Es configuración del host, no una regla nuestra.** §7 ya fijó el principio —*todo lo que sea regla de la
@@ -348,7 +373,7 @@ que quien se va se quedaría pasando manos en vez de saliendo. La salida diferid
   con la invariante nueva tras entradas y salidas, (c) fuera de la ventana se rechaza con mensaje legible,
   (d) salir a media mano no rompe la mano, (e) salir el penúltimo cierra el torneo correctamente.
 
-#### B4 · Recompras + add-on  `⭐⭐⭐ · L · 🚩🚩`
+#### B4 · Recompras + add-on — ✅ HECHO  `⭐⭐⭐ · L · 🚩🚩`
 - **Toca:** `backend/main.py` (`_record_busts`, `_finish_tournament`, `_eligible_player_ids`, endpoint nuevo).
 - Sumar fichas es la parte fácil. El torneo tiene hoy un ciclo de vida **cerrado** y una recompra lo abre:
   - `_record_busts` acumula `bustOrder` **en cuanto** alguien llega a 0, y ese orden produce los puestos
@@ -365,7 +390,7 @@ que quien se va se quedaría pasando manos en vez de saliendo. La salida diferid
 - **Check:** (a) recomprar borra el bust, (b) el torneo no se cierra con recompras abiertas, (c) cerrar la
   ventana con alguien a 0 lo elimina en ese momento, (d) el total de fichas cuadra.
 
-#### B5 · Pausa, break y "última mano"  `⭐⭐⭐ · L · 🚩`
+#### B5 · Pausa, break y "última mano" — ✅ HECHO  `⭐⭐⭐ · L · 🚩`
 - **Toca:** `backend/main.py` (`_projected_level`, `_apply_level`, `_arm_auto_deal`).
 - **La trampa está en que los relojes son *lazy*:** no hay worker en serverless, el nivel se **proyecta** desde
   `levelStartedAt` en cada request. **Pausar no es parar un contador**: es guardar el tiempo consumido y
@@ -378,7 +403,7 @@ que quien se va se quedaría pasando manos en vez de saliendo. La salida diferid
 - Backend sencillo; el cuidado es social: confirmación, stack devuelto, y §4.3 ya decidió que va **sin juice**
   — un toast neutro, nunca un espectáculo.
 
-#### B7 · Time bank  `⭐⭐ · L · 🚩`
+#### B7 · Time bank — ✅ HECHO  `⭐⭐ · L · 🚩`
 - Misma trampa que B5: no se descuenta con un tick, se **calcula** al comprobar el vencimiento. Y
   `TIMEOUT_GRACE` ya existe: hay que decidir si el banco se apila encima o lo sustituye.
 
@@ -459,7 +484,7 @@ correcto). Todo el coste es C0.
   final de un torneo, que es cuando los antes importan. Antes de tocarlo: un test que cuadre el total de
   fichas con un jugador que no llega al ante.
 
-#### C5 · Pre-acciones — el coste está en la concurrencia  `⭐⭐⭐ · L · 🚩🚩`
+#### C5 · Pre-acciones — ✅ HECHO  `⭐⭐⭐ · L · 🚩🚩`
 El doc las llama "la mayor mejora de ritmo posible" y tiene razón. Los checkboxes son media hora. Lo caro:
 - Una pre-acción se ejecuta **en el poll de otra persona**, igual que hace hoy el shot clock. Ese patrón ya
   existe (`_apply_timeouts`): reusarlo, no inventar otro.
@@ -471,7 +496,7 @@ El doc las llama "la mayor mejora de ritmo posible" y tiene razón. Los checkbox
   y el lock se queda corto.
 - Orden respecto al shot clock: si tengo pre-acción y se me acaba el tiempo, manda la pre-acción.
 
-#### C6 · Run It Twice  `⭐⭐⭐ · L · 🚩`
+#### C6 · Run It Twice — ✅ HECHO  `⭐⭐⭐ · L · 🚩`
 El motor lo regala: existen `Automation.RUNOUT_COUNT_SELECTION`, `can_select_runout_count`,
 `select_runout_count` y `starting_board_count` (que además da el doble board del §3.D). Lo caro es el resto:
 - **Pedir el acuerdo** de los all-in dentro de una arquitectura de polling con lock — es un estado nuevo de la
