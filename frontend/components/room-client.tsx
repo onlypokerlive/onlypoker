@@ -53,7 +53,7 @@ export function RoomClient({ roomId }: { roomId: string }) {
   const refresh = useCallback(async () => {
     if (!session || pausePollRef.current) return
     try {
-      const raw = await pokerApi.getState(roomId, session.playerId)
+      const raw = await pokerApi.getState(roomId, session.playerId, session.token)
       setView(toGameView(raw, session.playerId))
       setError(null)
     } catch (e) {
@@ -117,7 +117,7 @@ export function RoomClient({ roomId }: { roomId: string }) {
   const handleStart = () =>
     withBusy(async () => {
       if (!session) return
-      const raw = await pokerApi.startHand(roomId, session.playerId)
+      const raw = await pokerApi.startHand(roomId, session.playerId, session.token)
       setView(toGameView(raw, session.playerId))
     })
 
@@ -132,6 +132,7 @@ export function RoomClient({ roomId }: { roomId: string }) {
         backendAction,
         amount,
         view.handNumber,
+        session.token,
       )
       setView(toGameView(raw, session.playerId))
     })
@@ -139,7 +140,7 @@ export function RoomClient({ roomId }: { roomId: string }) {
   const handleSitToggle = () =>
     withBusy(async () => {
       if (!session) return
-      const raw = await pokerApi.toggleSitOut(roomId, session.playerId)
+      const raw = await pokerApi.toggleSitOut(roomId, session.playerId, session.token)
       setView(toGameView(raw, session.playerId))
     })
 
@@ -150,6 +151,7 @@ export function RoomClient({ roomId }: { roomId: string }) {
         roomId,
         session.playerId,
         !view.autoDealPaused,
+        session.token,
       )
       setView(toGameView(raw, session.playerId))
     })
@@ -207,7 +209,12 @@ export function RoomClient({ roomId }: { roomId: string }) {
 
       {view.phase === "lobby" ? (
         <div className="flex flex-1 items-center justify-center">
-          <RoomLobby view={view} onStart={handleStart} busy={busy} />
+          <div className="flex w-full max-w-md flex-col gap-3">
+            <RoomLobby view={view} onStart={handleStart} busy={busy} />
+            {/* The moment you actually need this is before the cards come out:
+                somebody joined the wrong table, or took the last seat. */}
+            <HostPanel view={view} roomId={roomId} onDone={refresh} session={session} />
+          </div>
         </div>
       ) : finished ? (
         // The hand that ends a tournament is the one everybody talks about, and
@@ -231,8 +238,8 @@ export function RoomClient({ roomId }: { roomId: string }) {
           {view.phase === "handover" && !revealing && (
             <div className="flex flex-col gap-2">
               <HandResults view={view} />
-              <ShowCards view={view} roomId={roomId} onShown={refresh} />
-              <HostPanel view={view} roomId={roomId} onDone={refresh} />
+              <ShowCards view={view} roomId={roomId} onShown={refresh} session={session} />
+              <HostPanel view={view} roomId={roomId} onDone={refresh} session={session} />
               <RabbitHunt
                 roomId={roomId}
                 handNumber={view.handNumber}

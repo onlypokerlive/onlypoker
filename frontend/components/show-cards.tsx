@@ -4,7 +4,7 @@ import { useState } from "react"
 import { Eye } from "lucide-react"
 
 import { Button } from "@/components/ui/button"
-import { pokerApi, type GameView } from "@/lib/poker-api"
+import { pokerApi, type GameView, type Session } from "@/lib/poker-api"
 
 /**
  * Turning your own cards face up after the hand.
@@ -20,10 +20,12 @@ export function ShowCards({
   view,
   roomId,
   onShown,
+  session,
 }: {
   view: GameView
   roomId: string
   onShown: () => void
+  session: Session | null
 }) {
   const [busy, setBusy] = useState(false)
   const you = view.you
@@ -37,7 +39,9 @@ export function ShowCards({
   async function reveal(indices: number[]) {
     setBusy(true)
     try {
-      await pokerApi.showCards(roomId, you!.id, indices)
+      // Stamped with the hand it was meant for: a request that arrives late
+      // is about the hand the player was looking at, not the next one.
+      await pokerApi.showCards(roomId, you!.id, indices, view.handNumber, session?.token)
       onShown()
     } finally {
       setBusy(false)

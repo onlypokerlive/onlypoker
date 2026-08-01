@@ -148,6 +148,12 @@ export interface RoomView {
 export interface Session {
   roomId: string
   playerId: string
+  /**
+   * Proof that this seat is yours. Every id at the table is public — clients
+   * need them to say whose seat is whose — so the id alone authorises nothing.
+   * Never leaves this device except as a request header.
+   */
+  token?: string
   isHost: boolean
   /** Watching rather than playing: no seat, no chips, no cards. */
   spectator?: boolean
@@ -277,6 +283,9 @@ export function toGameView(v: RoomView, playerId: string | null): GameView {
   }
 }
 
+/** The header the backend reads a player's credential from. */
+const TOKEN_HEADER = 'X-Player-Token'
+
 async function req<T>(url: string, options?: RequestInit): Promise<T> {
   const res = await fetch(url, {
     ...options,
@@ -323,6 +332,10 @@ export const BLIND_STRUCTURES = [
   { id: 'slow', label: 'Slow', minutes: 25, blurb: 'Room to actually play' },
 ] as const
 
+function auth(token?: string): Record<string, string> {
+  return token ? { [TOKEN_HEADER]: token } : {}
+}
+
 export const pokerApi = {
   createRoom: (input: CreateRoomInput) =>
     req<Session>('/api/rooms', { method: 'POST', body: JSON.stringify(input) }),
@@ -340,14 +353,16 @@ export const pokerApi = {
       body: JSON.stringify({ password }),
     }),
 
-  getState: (roomId: string, playerId?: string) =>
+  getState: (roomId: string, playerId?: string, token?: string) =>
     req<RoomView>(
       `/api/rooms/${roomId}/state${playerId ? `?playerId=${encodeURIComponent(playerId)}` : ''}`,
+      { headers: auth(token) },
     ),
 
-  startHand: (roomId: string, playerId: string) =>
+  startHand: (roomId: string, playerId: string, token?: string) =>
     req<RoomView>(`/api/rooms/${roomId}/start`, {
       method: 'POST',
+      headers: auth(token),
       body: JSON.stringify({ playerId, action: 'start' }),
     }),
 
@@ -359,24 +374,34 @@ export const pokerApi = {
     // Stamps the decision with the hand it was made for, so a slow or retried
     // request can't be applied to whatever hand is running when it lands.
     handNumber?: number,
+    token?: string,
   ) =>
     req<RoomView>(`/api/rooms/${roomId}/action`, {
       method: 'POST',
+      headers: auth(token),
       body: JSON.stringify({ playerId, action, amount, handNumber }),
     }),
 
   /** Host only: show a player the door. Between hands. */
-  kickPlayer: (roomId: string, playerId: string, targetId: string) =>
+  kickPlayer: (roomId: string, playerId: string, targetId: string, token?: string) =>
     req<RoomView>(`/api/rooms/${roomId}/kick`, {
       method: 'POST',
+      headers: auth(token),
       body: JSON.stringify({ playerId, targetId }),
     }),
 
   /** Turn your own cards face up after the hand. There is no way back. */
-  showCards: (roomId: string, playerId: string, indices: number[]) =>
+  showCards: (
+    roomId: string,
+    playerId: string,
+    indices: number[],
+    handNumber: number,
+    token?: string,
+  ) =>
     req<RoomView>(`/api/rooms/${roomId}/show`, {
       method: 'POST',
-      body: JSON.stringify({ playerId, indices }),
+      headers: auth(token),
+      body: JSON.stringify({ playerId, indices, handNumber }),
     }),
 
   /** The board that would have come, once the hand is safely over. */
@@ -385,15 +410,17 @@ export const pokerApi = {
       `/api/rooms/${roomId}/rabbit`,
     ),
 
-  toggleSitOut: (roomId: string, playerId: string) =>
+  toggleSitOut: (roomId: string, playerId: string, token?: string) =>
     req<RoomView>(`/api/rooms/${roomId}/sit`, {
       method: 'POST',
+      headers: auth(token),
       body: JSON.stringify({ playerId, action: 'sit' }),
     }),
 
-  setAutoDeal: (roomId: string, playerId: string, paused: boolean) =>
+  setAutoDeal: (roomId: string, playerId: string, paused: boolean, token?: string) =>
     req<RoomView>(`/api/rooms/${roomId}/autodeal`, {
       method: 'POST',
+      headers: auth(token),
       body: JSON.stringify({ playerId, action: paused ? 'pause' : 'resume' }),
     }),
 }

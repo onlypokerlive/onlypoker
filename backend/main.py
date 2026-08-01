@@ -262,6 +262,60 @@ def _verify_password(password: str, stored: str) -> bool:
     return hmac.compare_digest(check, digest)
 
 
+# --------------------------------------------------------------------------- #
+# Who is who
+# --------------------------------------------------------------------------- #
+# A player's id and a player's credential have to be two different things.
+#
+# They were the same thing, and the table publishes every id — it has to, so
+# clients can say whose seat is whose. Which meant anybody holding the room code
+# could read the seating off an anonymous request, put somebody else's id on a
+# request, and be handed their hole cards. Or fold their hand for them. The room
+# password bought nothing, because nothing behind it ever checked who was
+# asking.
+#
+# So the id stays public and useless on its own, and every request that reads
+# private state or changes anything carries a secret handed out once, when the
+# player sits down.
+PLAYER_TOKEN_HEADER = "X-Player-Token"
+
+
+def _new_token() -> str:
+    return secrets.token_urlsafe(24)
+
+
+def _authenticate(room: dict[str, Any], player_id: str, token: str | None) -> None:
+    """Confirm the caller really is the player they claim to be."""
+    player = room["players"].get(player_id)
+    if player is None:
+        raise fastapi.HTTPException(404, "That player is not at this table.")
+    stored = player.get("token")
+    if not stored:
+        # A room that predates this check has no secret to compare against, and
+        # trusting the id alone is exactly the hole being closed. Rooms expire
+        # within the day, so this is a message rather than a migration.
+        raise fastapi.HTTPException(
+            401, "This table was created before the app started checking who is "
+            "who. Start a new one — it only takes a moment."
+        )
+    if not token or not hmac.compare_digest(stored, token):
+        raise fastapi.HTTPException(403, "That is not your seat.")
+
+
+def _is_player(room: dict[str, Any], player_id: str | None, token: str | None) -> bool:
+    """Whether the caller is a seated player, for reads that also serve guests.
+
+    Wrong or missing credentials do not fail here — they simply make you a
+    spectator, which is what an onlooker is anyway.
+    """
+    if not player_id:
+        return False
+    player = room["players"].get(player_id)
+    if not player or not player.get("token") or not token:
+        return False
+    return hmac.compare_digest(player["token"], token)
+
+
 def _new_id(n: int = 6) -> str:
     alphabet = "ABCDEFGHJKMNPQRSTUVWXYZ23456789"
     return "".join(secrets.choice(alphabet) for _ in range(n))
@@ -488,6 +542,24 @@ def _next_button(room: dict[str, Any], eligible: list[str]) -> str:
     return eligible[-1]  # unreachable: eligible is a subset of order
 
 
+def _previous_seat(room: dict[str, Any], player_id: str) -> str | None:
+    """The seat before this one, going the way the button travels.
+
+    Used when the player holding the button leaves: parking it behind them
+    means the next deal advances onto the seat that was next anyway, instead of
+    the button jumping somewhere arbitrary.
+    """
+    order = room["order"]
+    if player_id not in order:
+        return room.get("buttonId")
+    start = order.index(player_id)
+    for step in range(1, len(order)):
+        candidate = order[(start - step) % len(order)]
+        if candidate != player_id:
+            return candidate
+    return None
+
+
 def _seat_order(button_id: str, eligible: list[str]) -> list[str]:
     """Players in posting order, small blind first, as pokerkit expects.
 
@@ -622,6 +694,24 @@ def _settle_hand(room: dict[str, Any], state) -> None:
         _arm_auto_deal(room)
 
 
+def _hand_winners(room: dict[str, Any]) -> set[str]:
+    """Who took chips out of the pot.
+
+    Not simply "came out ahead": an exact chop hands each side back what they
+    put in, so both finish level and neither would count as having won — which
+    is how a chopped pot silently skips the 7-2 entirely. A player who stayed
+    in and did not lose chips was pushed some of it.
+    """
+    hand_ids = room.get("handPlayerIds") or []
+    folded = set(room.get("foldedSeats", []))
+    deltas = {r["playerId"]: r["delta"] for r in room.get("lastResults", [])}
+    return {
+        pid
+        for seat, pid in enumerate(hand_ids)
+        if seat not in folded and deltas.get(pid, -1) >= 0
+    }
+
+
 def _is_seven_deuce(hole: list[str]) -> bool:
     """Seven-deuce offsuit — the worst hand in hold'em, hence the prize."""
     if len(hole) != 2:
@@ -659,31 +749,46 @@ def _pay_seven_deuce(room: dict[str, Any]) -> None:
         return
     hand_ids = room.get("handPlayerIds") or []
     holes = room.get("handHoleCards") or []
-    winners = {r["playerId"] for r in room.get("lastResults", []) if r["delta"] > 0}
+    winners = _hand_winners(room)
 
-    for seat, pid in enumerate(hand_ids):
-        if pid not in winners or seat >= len(holes):
-            continue
-        if not _is_seven_deuce(holes[seat]) or not _cards_are_public(room, seat):
-            continue
-        collected = 0
-        for other in hand_ids:
-            if other == pid:
-                continue
-            # Nobody can be made to pay more than they have. Losing the last
-            # of your chips to the 7-2 is a fine way to go out; owing them is
-            # not a state this game has.
-            pay = min(bonus, room["players"][other]["chips"])
-            room["players"][other]["chips"] -= pay
-            collected += pay
-        room["players"][pid]["chips"] += collected
-        room["sevenDeucePaid"] = True
-        room["sevenDeuceWin"] = {
-            "playerId": pid,
-            "name": room["players"][pid]["name"],
-            "amount": collected,
-        }
+    # Usually one, but a chopped pot has two, and both could be holding it.
+    # Paying the first and then charging the second is the sort of arithmetic
+    # nobody checks until it happens at the table.
+    claimants = [
+        (seat, pid)
+        for seat, pid in enumerate(hand_ids)
+        if pid in winners
+        and seat < len(holes)
+        and _is_seven_deuce(holes[seat])
+        and _cards_are_public(room, seat)
+    ]
+    if not claimants:
         return
+
+    claiming = [pid for _, pid in claimants]  # ordered: the split remainder depends on it
+    payouts: dict[str, int] = {pid: 0 for pid in claiming}
+    for other in hand_ids:
+        if other in claiming:
+            continue
+        # Nobody can be made to pay more than they have. Losing the last of
+        # your chips to the 7-2 is a fine way to go out; owing them is not a
+        # state this game has. With more than one claimant the payer's stack is
+        # shared out rather than charged twice.
+        owed = bonus * len(claiming)
+        pay = min(owed, room["players"][other]["chips"])
+        room["players"][other]["chips"] -= pay
+        for i, pid in enumerate(claiming):
+            share = pay // len(claiming) + (1 if i < pay % len(claiming) else 0)
+            payouts[pid] += share
+    for pid, amount in payouts.items():
+        room["players"][pid]["chips"] += amount
+
+    room["sevenDeucePaid"] = True
+    room["sevenDeuceWin"] = {
+        "playerId": claimants[0][1],
+        "name": ", ".join(room["players"][pid]["name"] for pid in claiming),
+        "amount": sum(payouts.values()),
+    }
 
 
 def _seven_deuce_pending(room: dict[str, Any], viewer_id: str | None) -> bool:
@@ -707,8 +812,7 @@ def _seven_deuce_pending(room: dict[str, Any], viewer_id: str | None) -> bool:
     seat = hand_ids.index(viewer_id)
     if seat >= len(holes) or not _is_seven_deuce(holes[seat]):
         return False
-    winners = {r["playerId"] for r in room.get("lastResults", []) if r["delta"] > 0}
-    return viewer_id in winners
+    return viewer_id in _hand_winners(room)
 
 
 def _record_busts(room: dict[str, Any]) -> None:
@@ -1081,6 +1185,7 @@ async def create_room(body: CreateRoomBody) -> dict[str, Any]:
 
     room_id = _new_id()
     host_id = secrets.token_urlsafe(12)
+    host_token = _new_token()
     now = time.time()
     room = {
         "id": room_id,
@@ -1099,6 +1204,7 @@ async def create_room(body: CreateRoomBody) -> dict[str, Any]:
                 "name": body.hostName,
                 "seat": 0,
                 "chips": body.startingChips,
+                "token": host_token,
                 "sittingOut": False,
                 "lastSeen": now,
             }
@@ -1130,7 +1236,12 @@ async def create_room(body: CreateRoomBody) -> dict[str, Any]:
         "buttonId": None,
     }
     await save_room(room)
-    return {"roomId": room_id, "playerId": host_id, "isHost": True}
+    return {
+        "roomId": room_id,
+        "playerId": host_id,
+        "token": host_token,
+        "isHost": True,
+    }
 
 
 @app.post("/rooms/{room_id}/join")
@@ -1149,18 +1260,28 @@ async def join_room(room_id: str, body: JoinBody) -> dict[str, Any]:
             raise fastapi.HTTPException(400, "This room is full.")
 
         player_id = secrets.token_urlsafe(12)
-        seat = len(room["order"])
+        token = _new_token()
+        # Seats are handed out from the highest one used, not from the size of
+        # the table: removing somebody leaves a gap, and counting seats would
+        # hand the next arrival a number that is already taken.
+        seat = max((p["seat"] for p in room["players"].values()), default=-1) + 1
         room["players"][player_id] = {
             "id": player_id,
             "name": body.name,
             "seat": seat,
             "chips": room["startingChips"],
+            "token": token,
             "sittingOut": False,
             "lastSeen": time.time(),
         }
         room["order"].append(player_id)
         await save_room(room)
-    return {"roomId": room_id, "playerId": player_id, "isHost": False}
+    return {
+        "roomId": room_id,
+        "playerId": player_id,
+        "token": token,
+        "isHost": False,
+    }
 
 
 class KickBody(BaseModel):
@@ -1169,7 +1290,11 @@ class KickBody(BaseModel):
 
 
 @app.post("/rooms/{room_id}/kick")
-async def kick_player(room_id: str, body: KickBody) -> dict[str, Any]:
+async def kick_player(
+    room_id: str,
+    body: KickBody,
+    x_player_token: str | None = fastapi.Header(default=None),
+) -> dict[str, Any]:
     """Remove somebody from the table, at the host's word.
 
     Only between hands. Pulling a seat out from under a live hand means
@@ -1184,6 +1309,7 @@ async def kick_player(room_id: str, body: KickBody) -> dict[str, Any]:
         room = await load_room(room_id)
         if not room:
             raise fastapi.HTTPException(404, "Room not found.")
+        _authenticate(room, body.playerId, x_player_token)
         if body.playerId != room["hostId"]:
             raise fastapi.HTTPException(403, "Only the host can remove a player.")
         if body.targetId == room["hostId"]:
@@ -1194,21 +1320,37 @@ async def kick_player(room_id: str, body: KickBody) -> dict[str, Any]:
             raise fastapi.HTTPException(
                 400, "Wait for the hand to finish before removing anyone."
             )
+        if room["phase"] == "finished":
+            # The placings are already written. Removing somebody now would
+            # recompute them with a zeroed stack and rewrite the podium — the
+            # winner of the night quietly demoted after the fact.
+            raise fastapi.HTTPException(400, "This tournament is already over.")
 
-        # Recorded before they are gone: bust order is what produces the final
-        # placings, and somebody removed at the end still finished where they
-        # finished.
-        busted = room.setdefault("bustOrder", [])
-        if body.targetId not in busted:
-            busted.append(body.targetId)
-        # Out of the seating, but the record stays: the final standings are
-        # built by looking players up by id, and deleting them outright turns
-        # the podium into a KeyError. Their chips leave the table with them.
-        room["order"] = [pid for pid in room["order"] if pid != body.targetId]
-        room["players"][body.targetId]["chips"] = 0
-        room["players"][body.targetId]["removed"] = True
+        # The button moves to the *seat* after the one holding it, so losing
+        # that player must not reset it: hand it back to the seat before, and
+        # the next deal advances onto the right one. Clearing it instead sends
+        # the button to an arbitrary place and the blinds stop going round
+        # evenly — the very defect this file already fixed once.
         if room.get("buttonId") == body.targetId:
-            room["buttonId"] = None  # the next deal picks a fresh seat
+            room["buttonId"] = _previous_seat(room, body.targetId)
+
+        if room["phase"] == "lobby":
+            # Nobody has played a hand, so there is nothing to place them in.
+            # They simply were not here.
+            room["players"].pop(body.targetId, None)
+        else:
+            # Recorded before they are gone: bust order is what produces the
+            # final placings, and somebody removed at the end still finished
+            # where they finished. The record stays even though the seat goes —
+            # standings look players up by id, and deleting them outright turns
+            # the podium into a KeyError. Their chips leave with them.
+            busted = room.setdefault("bustOrder", [])
+            if body.targetId not in busted:
+                busted.append(body.targetId)
+            room["players"][body.targetId]["chips"] = 0
+            room["players"][body.targetId]["removed"] = True
+        room["order"] = [pid for pid in room["order"] if pid != body.targetId]
+
         if room["phase"] != "lobby" and len(_eligible_player_ids(room)) < 2:
             _finish_tournament(room)
         await save_room(room)
@@ -1248,10 +1390,19 @@ class ShowBody(BaseModel):
     playerId: str
     # Which of your two cards to turn over: [0], [1] or both.
     indices: list[int] = Field(min_length=1, max_length=2)
+    # Which hand you meant to show. Same reasoning as on /action: a request
+    # delayed in the network is an intention about the hand it was made for,
+    # and applying it to whatever is on the table when it lands turns "show my
+    # bluff" into "turn over the hand I am about to play".
+    handNumber: int | None = None
 
 
 @app.post("/rooms/{room_id}/show")
-async def show_cards(room_id: str, body: ShowBody) -> dict[str, Any]:
+async def show_cards(
+    room_id: str,
+    body: ShowBody,
+    x_player_token: str | None = fastapi.Header(default=None),
+) -> dict[str, Any]:
     """Turn your own cards face up after the hand.
 
     Half of what makes a home game a home game: the bluff nobody would believe
@@ -1265,11 +1416,23 @@ async def show_cards(room_id: str, body: ShowBody) -> dict[str, Any]:
         room = await load_room(room_id)
         if not room:
             raise fastapi.HTTPException(404, "Room not found.")
+        _authenticate(room, body.playerId, x_player_token)
+        if body.handNumber is None:
+            raise fastapi.HTTPException(
+                400, "This did not say which hand it was for. Reload the table."
+            )
+        if body.handNumber != room["handNumber"]:
+            raise fastapi.HTTPException(409, "That hand is already over.")
         if room["phase"] != "handover":
             raise fastapi.HTTPException(400, "There is no hand to show right now.")
         hand_ids = room.get("handPlayerIds") or []
         if body.playerId not in hand_ids:
             raise fastapi.HTTPException(403, "You were not in that hand.")
+        if body.playerId not in room["order"]:
+            # Removed from the table since the hand ended. Their seat is gone,
+            # so there is nothing to show it to and no stack to pay a bonus
+            # into — collecting one would move chips to somebody who has left.
+            raise fastapi.HTTPException(403, "You are no longer at this table.")
         seat = hand_ids.index(body.playerId)
         held = len((room.get("handHoleCards") or [[]])[seat])
         if any(i < 0 or i >= held for i in body.indices):
@@ -1311,12 +1474,26 @@ async def rabbit_hunt(room_id: str) -> dict[str, Any]:
 
 
 @app.get("/rooms/{room_id}/state")
-async def get_state(room_id: str, playerId: str | None = None) -> dict[str, Any]:
+async def get_state(
+    room_id: str,
+    playerId: str | None = None,
+    x_player_token: str | None = fastapi.Header(default=None),
+) -> dict[str, Any]:
+    """The table as this caller is allowed to see it.
+
+    Naming a seat is not the same as sitting in one. Every id at the table is
+    public — clients need them to say whose seat is whose — so asking for a
+    player's view has to be backed by that player's secret. Without it the
+    caller is treated as an onlooker and sees exactly what an onlooker sees:
+    the felt, the chips, and nobody's cards.
+    """
     room = await load_room(room_id)
     if not room:
         raise fastapi.HTTPException(404, "Room not found.")
 
     now = time.time()
+    if not _is_player(room, playerId, x_player_token):
+        playerId = None
     player = room["players"].get(playerId) if playerId else None
     # Heartbeat so other players can see who is connected. Throttled because
     # every seated client polls this route continuously.
@@ -1358,11 +1535,16 @@ async def _tick_under_lock(room_id: str, playerId: str | None) -> None:
 
 
 @app.post("/rooms/{room_id}/start")
-async def start_hand(room_id: str, body: ActionBody) -> dict[str, Any]:
+async def start_hand(
+    room_id: str,
+    body: ActionBody,
+    x_player_token: str | None = fastapi.Header(default=None),
+) -> dict[str, Any]:
     async with _RoomLock(room_id):
         room = await load_room(room_id)
         if not room:
             raise fastapi.HTTPException(404, "Room not found.")
+        _authenticate(room, body.playerId, x_player_token)
         if body.playerId != room["hostId"]:
             raise fastapi.HTTPException(403, "Only the host can start a hand.")
         if room["phase"] == "hand":
@@ -1380,7 +1562,11 @@ async def start_hand(room_id: str, body: ActionBody) -> dict[str, Any]:
 
 
 @app.post("/rooms/{room_id}/action")
-async def take_action(room_id: str, body: ActionBody) -> dict[str, Any]:
+async def take_action(
+    room_id: str,
+    body: ActionBody,
+    x_player_token: str | None = fastapi.Header(default=None),
+) -> dict[str, Any]:
     # An action belongs to the hand it was decided in, and an action that does
     # not name its hand cannot be shown to belong to the one in progress. It is
     # rejected before anything is read or written, so a client on an old bundle
@@ -1395,6 +1581,7 @@ async def take_action(room_id: str, body: ActionBody) -> dict[str, Any]:
         room = await load_room(room_id)
         if not room:
             raise fastapi.HTTPException(404, "Room not found.")
+        _authenticate(room, body.playerId, x_player_token)
         # Settle any expired shot clock first, so a late action can't jump the
         # queue ahead of the fold it already earned.
         timeout = _apply_timeouts(room)
@@ -1452,12 +1639,17 @@ async def take_action(room_id: str, body: ActionBody) -> dict[str, Any]:
 
 
 @app.post("/rooms/{room_id}/sit")
-async def toggle_sit_out(room_id: str, body: ActionBody) -> dict[str, Any]:
+async def toggle_sit_out(
+    room_id: str,
+    body: ActionBody,
+    x_player_token: str | None = fastapi.Header(default=None),
+) -> dict[str, Any]:
     """Toggle a player's sitting-out status (applies from the next hand)."""
     async with _RoomLock(room_id):
         room = await load_room(room_id)
         if not room:
             raise fastapi.HTTPException(404, "Room not found.")
+        _authenticate(room, body.playerId, x_player_token)
         p = room["players"].get(body.playerId)
         if not p:
             raise fastapi.HTTPException(404, "Player not found.")
@@ -1492,7 +1684,11 @@ async def toggle_sit_out(room_id: str, body: ActionBody) -> dict[str, Any]:
 
 
 @app.post("/rooms/{room_id}/autodeal")
-async def set_auto_deal(room_id: str, body: ActionBody) -> dict[str, Any]:
+async def set_auto_deal(
+    room_id: str,
+    body: ActionBody,
+    x_player_token: str | None = fastapi.Header(default=None),
+) -> dict[str, Any]:
     """Host control for the pause between hands.
 
     ``action`` is "pause" to stop dealing automatically, anything else to
@@ -1502,6 +1698,7 @@ async def set_auto_deal(room_id: str, body: ActionBody) -> dict[str, Any]:
         room = await load_room(room_id)
         if not room:
             raise fastapi.HTTPException(404, "Room not found.")
+        _authenticate(room, body.playerId, x_player_token)
         if body.playerId != room["hostId"]:
             raise fastapi.HTTPException(403, "Only the host can change this.")
         room["autoDealPaused"] = body.action == "pause"

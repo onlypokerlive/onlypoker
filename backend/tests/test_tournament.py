@@ -51,6 +51,15 @@ def client():
 # --------------------------------------------------------------------------- #
 # Helpers
 # --------------------------------------------------------------------------- #
+# Tokens handed out at the door, kept per test so helpers can prove who they
+# are without every call site threading it through.
+TOKENS: dict[str, str] = {}
+
+
+def auth(player_id):
+    return {main.PLAYER_TOKEN_HEADER: TOKENS.get(player_id, "")}
+
+
 def create_room(client, **overrides):
     body = {
         "name": "Test table",
@@ -65,7 +74,9 @@ def create_room(client, **overrides):
     body.update(overrides)
     res = client.post("/api/rooms", json=body)
     assert res.status_code == 200, res.text
-    return res.json()
+    out = res.json()
+    TOKENS[out["playerId"]] = out["token"]
+    return out
 
 
 def join(client, room_id, name, password="secret"):
@@ -73,17 +84,27 @@ def join(client, room_id, name, password="secret"):
         f"/api/rooms/{room_id}/join", json={"name": name, "password": password}
     )
     assert res.status_code == 200, res.text
-    return res.json()
+    out = res.json()
+    TOKENS[out["playerId"]] = out["token"]
+    return out
 
 
 def state(client, room_id, player_id):
-    res = client.get(f"/api/rooms/{room_id}/state", params={"playerId": player_id})
+    res = client.get(
+        f"/api/rooms/{room_id}/state",
+        params={"playerId": player_id},
+        headers=auth(player_id),
+    )
     assert res.status_code == 200, res.text
     return res.json()
 
 
 def start(client, room_id, host_id):
-    return client.post(f"/api/rooms/{room_id}/start", json={"playerId": host_id, "action": "start"})
+    return client.post(
+        f"/api/rooms/{room_id}/start",
+        headers=auth(host_id),
+        json={"playerId": host_id, "action": "start"},
+    )
 
 
 def hand_number(client, room_id):
@@ -98,6 +119,7 @@ def hand_number(client, room_id):
 def act(client, room_id, player_id, action, amount=None, hand=None):
     return client.post(
         f"/api/rooms/{room_id}/action",
+        headers=auth(player_id),
         json={
             "playerId": player_id,
             "action": action,
@@ -296,6 +318,7 @@ def test_an_action_cannot_land_on_a_later_hand(client, clock):
     actor = view["actorId"]
     res = client.post(
         f"/api/rooms/{room_id}/action",
+        headers=auth(actor),
         json={"playerId": actor, "action": "call", "handNumber": stale_hand},
     )
     assert res.status_code == 409
@@ -472,7 +495,9 @@ def test_host_can_pause_and_resume_dealing(client, clock):
     fold_until_hand_over(client, room_id, ids)
 
     res = client.post(
-        f"/api/rooms/{room_id}/autodeal", json={"playerId": ids[0], "action": "pause"}
+        f"/api/rooms/{room_id}/autodeal",
+        headers=auth(ids[0]),
+        json={"playerId": ids[0], "action": "pause"}
     )
     assert res.status_code == 200
     assert res.json()["autoDealAt"] is None
@@ -483,7 +508,9 @@ def test_host_can_pause_and_resume_dealing(client, clock):
     assert view["room"]["autoDealPaused"] is True
 
     client.post(
-        f"/api/rooms/{room_id}/autodeal", json={"playerId": ids[0], "action": "resume"}
+        f"/api/rooms/{room_id}/autodeal",
+        headers=auth(ids[0]),
+        json={"playerId": ids[0], "action": "resume"}
     )
     clock.advance(main.AUTO_DEAL_SECONDS + 1)
     assert state(client, room_id, ids[0])["room"]["phase"] == "hand"
@@ -492,7 +519,9 @@ def test_host_can_pause_and_resume_dealing(client, clock):
 def test_only_the_host_can_pause_dealing(client, clock):
     room_id, ids = table(client, 2)
     res = client.post(
-        f"/api/rooms/{room_id}/autodeal", json={"playerId": ids[1], "action": "pause"}
+        f"/api/rooms/{room_id}/autodeal",
+        headers=auth(ids[1]),
+        json={"playerId": ids[1], "action": "pause"}
     )
     assert res.status_code == 403
 
@@ -604,7 +633,9 @@ def test_choosing_to_sit_out_cannot_strand_a_heads_up_table(client, clock):
     start(client, room_id, ids[0])
 
     res = client.post(
-        f"/api/rooms/{room_id}/sit", json={"playerId": ids[1], "action": "sit"}
+        f"/api/rooms/{room_id}/sit",
+        headers=auth(ids[1]),
+        json={"playerId": ids[1], "action": "sit"}
     )
     assert res.status_code == 400
     assert "without enough" in res.json()["detail"]
@@ -626,7 +657,9 @@ def test_sitting_out_stays_available_once_a_third_player_is_seated(client, clock
     view = state(client, room_id, ids[1])
     assert view["you"]["canSitOut"] is True
     res = client.post(
-        f"/api/rooms/{room_id}/sit", json={"playerId": ids[1], "action": "sit"}
+        f"/api/rooms/{room_id}/sit",
+        headers=auth(ids[1]),
+        json={"playerId": ids[1], "action": "sit"}
     )
     assert res.status_code == 200
     assert res.json()["you"]["sittingOut"] is True
@@ -644,7 +677,9 @@ def test_an_action_must_say_which_hand_it_is_for(client, clock):
     actor = state(client, room_id, ids[0])["actorId"]
 
     res = client.post(
-        f"/api/rooms/{room_id}/action", json={"playerId": actor, "action": "call"}
+        f"/api/rooms/{room_id}/action",
+        headers=auth(actor),
+        json={"playerId": actor, "action": "call"}
     )
     assert res.status_code == 400
     assert "which hand" in res.json()["detail"]
@@ -757,7 +792,9 @@ def test_sitting_back_in_restarts_the_deal_countdown(client, clock):
     assert state(client, room_id, ids[0])["room"]["phase"] == "handover"
 
     res = client.post(
-        f"/api/rooms/{room_id}/sit", json={"playerId": ids[1], "action": "sit"}
+        f"/api/rooms/{room_id}/sit",
+        headers=auth(ids[1]),
+        json={"playerId": ids[1], "action": "sit"}
     )
     assert res.status_code == 200
     assert res.json()["autoDealAt"] is not None, "returning did not restart dealing"
@@ -778,7 +815,10 @@ def test_sitting_back_in_clears_the_auto_sit_out(client, clock):
     assert benched
     pid = benched[0]["id"]
 
-    res = client.post(f"/api/rooms/{room_id}/sit", json={"playerId": pid, "action": "sit"})
+    res = client.post(
+        f"/api/rooms/{room_id}/sit",
+        headers=auth(pid),
+        json={"playerId": pid, "action": "sit"})
     assert res.status_code == 200
     me = next(p for p in res.json()["players"] if p["id"] == pid)
     assert me["sittingOut"] is False
@@ -902,11 +942,16 @@ def rig_hand(client, room_id, seat, hole):
     return room
 
 
-def test_seven_deuce_pays_out_at_showdown(client, clock):
+def test_seven_deuce_pays_out_at_showdown_without_anyone_asking(client, clock):
+    """Shown down, the cards are already public, so the bonus needs no claim.
+
+    The first version of this test dealt whatever came and asserted that the
+    payout matched the cards — which, on a random deal, almost always meant
+    asserting that nothing happened. It now fixes the winning hand.
+    """
     room_id, ids = table(client, 3, sevenDeuce=2, actionSeconds=0, levelMinutes=0)
     start(client, room_id, ids[0])
     room = client.portal.call(main.load_room, room_id)
-    # Everyone checks it down, so the hand reaches a showdown.
     for _ in range(30):
         view = state(client, room_id, ids[0])
         if view["room"]["phase"] != "hand" or not view["actorId"]:
@@ -915,12 +960,24 @@ def test_seven_deuce_pays_out_at_showdown(client, clock):
 
     view = state(client, room_id, ids[0])
     if not view["wentToShowdown"]:
-        pytest.skip("hand did not reach a showdown")
+        pytest.skip("checked-down hand did not reach a showdown")
     winner = next(r for r in view["lastResults"] if r["delta"] > 0)
     seat = room["handPlayerIds"].index(winner["playerId"])
-    # Nothing was rigged, so the bonus only pays if the cards happened to fit.
-    holes = client.portal.call(main.load_room, room_id)["handHoleCards"][seat]
-    assert bool(view["sevenDeuceWin"]) == main._is_seven_deuce(holes)
+
+    # Replay the settlement with the winner holding seven-deuce.
+    settled = client.portal.call(main.load_room, room_id)
+    settled["handHoleCards"][seat] = ["7h", "2c"]
+    settled["sevenDeucePaid"] = False
+    settled["sevenDeuceWin"] = None
+    before = dict((pid, p["chips"]) for pid, p in settled["players"].items())
+    main._pay_seven_deuce(settled)
+
+    assert settled["sevenDeuceWin"]["playerId"] == winner["playerId"]
+    for pid, was in before.items():
+        if pid == winner["playerId"]:
+            assert settled["players"][pid]["chips"] == was + 40
+        else:
+            assert settled["players"][pid]["chips"] == was - 20
 
 
 def test_seven_deuce_is_claimed_by_showing_a_pot_won_by_folding(client, clock):
@@ -969,6 +1026,59 @@ def test_keeping_the_seven_deuce_face_down_collects_nothing(client, clock):
     # Showing only one card is not proof of anything.
     show(client, room_id, winner, [0])
     assert state(client, room_id, winner)["sevenDeuceWin"] is None
+
+
+def test_a_chopped_pot_still_counts_as_winning_with_seven_deuce(client, clock):
+    """An exact chop hands each side back what they put in.
+
+    Measured on the delta alone, nobody "won" — so the rule quietly skipped
+    every split pot, which is not a rare enough case to leave undefined.
+    """
+    room_id, ids = table(client, 3, sevenDeuce=2, actionSeconds=0, levelMinutes=0)
+    start(client, room_id, ids[0])
+    room = client.portal.call(main.load_room, room_id)
+    # Two players chop; the third folded.
+    room["foldedSeats"] = [2]
+    room["handHoleCards"][0] = ["7h", "2c"]
+    room["lastResults"] = [
+        {"playerId": room["handPlayerIds"][0], "name": "a", "delta": 0},
+        {"playerId": room["handPlayerIds"][1], "name": "b", "delta": 0},
+        {"playerId": room["handPlayerIds"][2], "name": "c", "delta": -10},
+    ]
+    room["sevenDeucePaid"] = False
+    before = {pid: p["chips"] for pid, p in room["players"].items()}
+    main._pay_seven_deuce(room)
+
+    winner = room["handPlayerIds"][0]
+    assert room["sevenDeuceWin"]["playerId"] == winner
+    assert room["players"][winner]["chips"] == before[winner] + 40
+    assert sum(p["chips"] for p in room["players"].values()) == sum(before.values())
+
+
+def test_two_seven_deuces_chopping_do_not_charge_each_other(client, clock):
+    """Rare, but the arithmetic has to close: they split what the rest pay."""
+    room_id, ids = table(client, 3, sevenDeuce=2, actionSeconds=0, levelMinutes=0)
+    start(client, room_id, ids[0])
+    room = client.portal.call(main.load_room, room_id)
+    room["foldedSeats"] = []
+    room["handHoleCards"][0] = ["7h", "2c"]
+    room["handHoleCards"][1] = ["7d", "2s"]
+    room["lastResults"] = [
+        {"playerId": room["handPlayerIds"][0], "name": "a", "delta": 0},
+        {"playerId": room["handPlayerIds"][1], "name": "b", "delta": 0},
+        {"playerId": room["handPlayerIds"][2], "name": "c", "delta": -20},
+    ]
+    room["sevenDeucePaid"] = False
+    before = {pid: p["chips"] for pid, p in room["players"].items()}
+    main._pay_seven_deuce(room)
+
+    a, b, c = room["handPlayerIds"]
+    # The single payer owes each of them, and neither claimant pays anything.
+    assert room["players"][c]["chips"] == before[c] - 40
+    assert room["players"][a]["chips"] + room["players"][b]["chips"] == (
+        before[a] + before[b] + 40
+    )
+    assert sum(p["chips"] for p in room["players"].values()) == sum(before.values())
 
 
 def test_the_seven_deuce_bonus_is_only_paid_once(client, clock):
@@ -1278,7 +1388,9 @@ def test_a_stack_too_short_for_the_ante_posts_what_it_has(client, clock):
 # --------------------------------------------------------------------------- #
 def kick(client, room_id, host, target):
     return client.post(
-        f"/api/rooms/{room_id}/kick", json={"playerId": host, "targetId": target}
+        f"/api/rooms/{room_id}/kick",
+        headers=auth(host),
+        json={"playerId": host, "targetId": target},
     )
 
 
@@ -1312,23 +1424,55 @@ def test_the_host_cannot_remove_themselves(client, clock):
 
 
 def test_a_removed_player_still_has_a_finishing_place(client, clock):
-    """Leaving early is still a finish. Forgetting them rewrites the night."""
+    """Leaving early is still a finish. Forgetting them rewrites the night.
+
+    Checking bustOrder alone proves nothing a player would ever see — what
+    matters is the podium at the end, so this reads that instead.
+    """
     room_id, ids = table(client, 3, actionSeconds=0, levelMinutes=0)
     start(client, room_id, ids[0])
     fold_until_hand_over(client, room_id, ids)
     kick(client, room_id, ids[0], ids[2])
-    room = client.portal.call(main.load_room, room_id)
-    assert ids[2] in room["bustOrder"]
+    kick(client, room_id, ids[0], ids[1])
+
+    view = state(client, room_id, ids[0])
+    assert view["room"]["phase"] == "finished"
+    places = {s["playerId"]: s["place"] for s in view["standings"]}
+    assert set(places) == set(ids)
+    # Removed later is a better finish than removed earlier.
+    assert places[ids[1]] < places[ids[2]]
 
 
-def test_removing_the_button_does_not_strand_the_next_deal(client, clock):
-    room_id, ids = table(client, 3, actionSeconds=0, levelMinutes=0)
+def test_removing_the_button_keeps_the_blinds_going_round(client, clock):
+    """Not just "the next hand deals" — it has to deal to the *right* seat.
+
+    Clearing the button on the way out sends it to an arbitrary place and the
+    blinds stop rotating evenly, which is the exact defect this file already
+    fixed once.
+    """
+    room_id, ids = table(client, 4, actionSeconds=0, levelMinutes=0)
     start(client, room_id, ids[0])
     fold_until_hand_over(client, room_id, ids)
-    button = client.portal.call(main.load_room, room_id)["buttonId"]
-    target = button if button != ids[0] else ids[1]
-    assert kick(client, room_id, ids[0], target).status_code == 200
+    room = client.portal.call(main.load_room, room_id)
+    button = room["buttonId"]
+    if button == ids[0]:
+        pytest.skip("the host holds the button; they cannot remove themselves")
+
+    # Whoever sits after the button, skipping the seat that is leaving.
+    seating = list(room["order"])
+    at = seating.index(button)
+    expected = next(
+        seating[(at + step) % len(seating)]
+        for step in range(1, len(seating))
+        if seating[(at + step) % len(seating)] != button
+    )
+
+    assert kick(client, room_id, ids[0], button).status_code == 200
     assert start(client, room_id, ids[0]).status_code == 200
+    after = client.portal.call(main.load_room, room_id)
+    # The button carries on to the seat that was next, not to wherever the
+    # arithmetic happens to land.
+    assert after["buttonId"] == expected
 
 
 def test_removing_the_second_to_last_player_ends_the_tournament(client, clock):
@@ -1400,9 +1544,16 @@ def test_spectators_do_not_use_up_seats(client, clock):
 # --------------------------------------------------------------------------- #
 # Showing cards
 # --------------------------------------------------------------------------- #
-def show(client, room_id, player_id, indices):
+def show(client, room_id, player_id, indices, hand=None):
     return client.post(
-        f"/api/rooms/{room_id}/show", json={"playerId": player_id, "indices": indices}
+        f"/api/rooms/{room_id}/show",
+        headers=auth(player_id),
+        json={
+            "playerId": player_id,
+            "indices": indices,
+            # Every real client stamps the hand it meant; so does the helper.
+            "handNumber": hand_number(client, room_id) if hand is None else hand,
+        },
     )
 
 
@@ -1454,6 +1605,58 @@ def test_a_new_deal_takes_shown_cards_back_off_the_table(client, clock):
     assert seat_of(client, room_id, shower, watcher)["cards"] is None
 
 
+def test_showing_says_which_hand_it_meant(client, clock):
+    """A request delayed in the network is about the hand it was made for.
+
+    Without a stamp, "show my bluff" that arrives late becomes "turn over the
+    hand I am about to play" — the same failure /action already guards against.
+    """
+    room_id, ids = table(client, 3, actionSeconds=0, levelMinutes=0)
+    start(client, room_id, ids[0])
+    fold_until_hand_over(client, room_id, ids)
+    room = client.portal.call(main.load_room, room_id)
+    shower = room["handPlayerIds"][0]
+
+    unstamped = client.post(
+        f"/api/rooms/{room_id}/show",
+        headers=auth(shower),
+        json={"playerId": shower, "indices": [0]},
+    )
+    assert unstamped.status_code == 400
+    # A stamp from an earlier hand is refused rather than applied to this one.
+    assert show(client, room_id, shower, [0], hand=room["handNumber"] - 1).status_code == 409
+    assert seat_of(client, room_id, shower, ids[1])["cards"] is None
+
+
+def test_somebody_removed_from_the_table_cannot_still_collect(client, clock):
+    """The 7-2 pays into a stack. Somebody shown the door has not got one.
+
+    Their id stays in the hand that was played, so the seat check alone lets
+    them claim afterwards — and the bonus then moves chips off the table into
+    a player who has already left.
+    """
+    room_id, ids = table(client, 4, sevenDeuce=2, actionSeconds=0, levelMinutes=0)
+    start(client, room_id, ids[0])
+    room = client.portal.call(main.load_room, room_id)
+    seat = len(room["handPlayerIds"]) - 1
+    winner = room["handPlayerIds"][seat]
+    if winner == ids[0]:
+        pytest.skip("the host cannot remove themselves")
+    rig_hand(client, room_id, seat, ["7h", "2c"])
+    fold_everyone_but(client, room_id, winner)
+
+    total_before = sum(
+        p["chips"] for p in state(client, room_id, ids[0])["players"]
+    )
+    assert kick(client, room_id, ids[0], winner).status_code == 200
+    assert show(client, room_id, winner, [0, 1]).status_code == 403
+
+    view = state(client, room_id, ids[0])
+    assert view["sevenDeuceWin"] is None
+    # Only the chips the removal itself took with it.
+    assert sum(p["chips"] for p in view["players"]) < total_before
+
+
 def test_nothing_can_be_shown_while_the_hand_is_running(client, clock):
     room_id, ids = table(client, 3, actionSeconds=0, levelMinutes=0)
     start(client, room_id, ids[0])
@@ -1465,7 +1668,11 @@ def test_nothing_can_be_shown_while_the_hand_is_running(client, clock):
 def test_somebody_who_was_not_in_the_hand_cannot_show(client, clock):
     room_id, ids = table(client, 3, actionSeconds=0, levelMinutes=0)
     # Sit one player out so the hand is dealt without them.
-    client.post(f"/api/rooms/{room_id}/sit", json={"playerId": ids[2], "action": "sit"})
+    client.post(
+        f"/api/rooms/{room_id}/sit",
+        headers=auth(ids[2]),
+        json={"playerId": ids[2], "action": "sit"},
+    )
     start(client, room_id, ids[0])
     fold_until_hand_over(client, room_id, ids)
     assert show(client, room_id, ids[2], [0]).status_code == 403
@@ -1491,12 +1698,19 @@ def test_the_rabbit_hunt_deals_the_board_that_never_came(client, clock):
     predicted = main.poker.would_have_come(state)
     assert [s["street"] for s in predicted] == ["flop", "turn", "river"]
 
-    fold_until_hand_over(client, room_id, ids)
-    played = client.portal.call(main.load_room, room_id)
-    board = main.poker.board_cards(main.poker.loads(played["stateB64"]))
+    # Play the hand out on a copy of the very same state, so the engine deals
+    # the board it would have dealt. Comparing against a hand that ended
+    # preflop compares against an empty list, which passes however wrong the
+    # burn arithmetic is — that is what the first version of this test did.
+    replay = main.poker.loads(room["stateB64"])
+    guard = 0
+    while replay.status and replay.actor_index is not None and guard < 60:
+        replay.check_or_call()
+        guard += 1
+    board = main.poker.board_cards(replay)
+    assert len(board) == 5, "the replay has to reach the river to prove anything"
     dealt = [c for street in predicted for c in street["cards"]]
-    # Whatever of the board actually came out has to match the prediction.
-    assert dealt[: len(board)] == board
+    assert dealt == board
 
 
 def test_the_rabbit_hunt_only_covers_the_streets_still_missing(client, clock):
@@ -1619,8 +1833,9 @@ def test_the_button_survives_the_field_changing_size(client, clock):
         fold_until_hand_over(client, room_id, ids)
         if hand == 1:
             assert client.post(
-                f"/api/rooms/{room_id}/sit",
-                json={"playerId": ids[3], "action": "sit"},
+        f"/api/rooms/{room_id}/sit",
+        headers=auth(ids[3]),
+        json={"playerId": ids[3], "action": "sit"},
             ).status_code == 200
 
     assert all(a[0] != b[0] for a, b in zip(seen, seen[1:])), seen
@@ -1686,6 +1901,85 @@ def test_the_stack_settles_to_the_stored_total_once_the_hand_is_over(client, clo
     for player in view["players"]:
         assert player["chips"] == stored[player["id"]]["chips"]
     assert sum(p["chips"] for p in view["players"]) == 3000
+
+
+# --------------------------------------------------------------------------- #
+# Who is who
+# --------------------------------------------------------------------------- #
+def test_naming_a_seat_does_not_get_you_into_it(client, clock):
+    """The hole this closes: every id at the table is public, by necessity.
+
+    Clients need them to say whose seat is whose, so the table hands them out
+    to anyone who asks. When the id was also the credential, that meant the
+    room code alone was enough to read the seating off an anonymous request,
+    put somebody else's id on the next one, and be dealt their hand.
+    """
+    room_id, ids = table(client, 3)
+    start(client, room_id, ids[0])
+
+    # No password, no session — just the room code.
+    anon = client.get(f"/api/rooms/{room_id}/state").json()
+    stolen = [p["id"] for p in anon["players"]]
+    assert ids[1] in stolen, "ids are public; that is the premise"
+
+    impersonated = client.get(
+        f"/api/rooms/{room_id}/state", params={"playerId": ids[1]}
+    ).json()
+    assert impersonated["you"] is None
+    assert all(p["cards"] is None for p in impersonated["players"])
+
+
+def test_a_borrowed_id_cannot_act(client, clock):
+    room_id, ids = table(client, 3)
+    start(client, room_id, ids[0])
+    actor = state(client, room_id, ids[0])["actorId"]
+    hand = hand_number(client, room_id)
+
+    res = client.post(
+        f"/api/rooms/{room_id}/action",
+        json={"playerId": actor, "action": "fold", "amount": None, "handNumber": hand},
+    )
+    assert res.status_code == 403
+    # Somebody else's credential is no better than none at all.
+    other = next(p for p in ids if p != actor)
+    res = client.post(
+        f"/api/rooms/{room_id}/action",
+        headers=auth(other),
+        json={"playerId": actor, "action": "fold", "amount": None, "handNumber": hand},
+    )
+    assert res.status_code == 403
+    assert state(client, room_id, ids[0])["actorId"] == actor
+
+
+def test_a_borrowed_host_id_cannot_deal_or_remove_anyone(client, clock):
+    room_id, ids = table(client, 3, actionSeconds=0, levelMinutes=0)
+    bare = {"playerId": ids[0], "action": "start"}
+    assert client.post(f"/api/rooms/{room_id}/start", json=bare).status_code == 403
+    assert client.post(
+        f"/api/rooms/{room_id}/kick", json={"playerId": ids[0], "targetId": ids[1]}
+    ).status_code == 403
+
+
+def test_nobody_can_turn_over_somebody_elses_hand(client, clock):
+    room_id, ids = table(client, 3, actionSeconds=0, levelMinutes=0)
+    start(client, room_id, ids[0])
+    fold_until_hand_over(client, room_id, ids)
+    room = client.portal.call(main.load_room, room_id)
+    victim = room["handPlayerIds"][0]
+    res = client.post(
+        f"/api/rooms/{room_id}/show", json={"playerId": victim, "indices": [0, 1]}
+    )
+    assert res.status_code == 403
+
+
+def test_a_credential_is_never_sent_to_the_table(client, clock):
+    room_id, ids = table(client, 3)
+    start(client, room_id, ids[0])
+    body = client.get(
+        f"/api/rooms/{room_id}/state", params={"playerId": ids[0]}, headers=auth(ids[0])
+    ).text
+    for pid in ids:
+        assert TOKENS[pid] not in body
 
 
 # --------------------------------------------------------------------------- #

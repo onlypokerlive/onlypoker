@@ -4,7 +4,7 @@ import { useState } from "react"
 import { UserMinus } from "lucide-react"
 
 import { Button } from "@/components/ui/button"
-import { pokerApi, type GameView } from "@/lib/poker-api"
+import { pokerApi, type GameView, type Session } from "@/lib/poker-api"
 
 /**
  * The host's one destructive control.
@@ -18,24 +18,27 @@ export function HostPanel({
   view,
   roomId,
   onDone,
+  session,
 }: {
   view: GameView
   roomId: string
   onDone: () => void
+  session: Session | null
 }) {
   const [confirming, setConfirming] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)
 
-  // Only the host, and only between hands — the server refuses mid-hand, so
-  // offering it there would be a button that exists to fail.
-  if (!view.isHost || view.phase === "hand") return null
+  // Only the host, and only where the server will accept it: never mid-hand,
+  // and never once the placings are written. A button that exists to fail is
+  // worse than no button.
+  if (!view.isHost || view.phase === "hand" || view.phase === "finished") return null
   const others = view.players.filter((p) => !p.isYou)
   if (!others.length) return null
 
   async function remove(targetId: string) {
     setBusy(true)
     try {
-      await pokerApi.kickPlayer(roomId, view.you!.id, targetId)
+      await pokerApi.kickPlayer(roomId, view.you!.id, targetId, session?.token)
       setConfirming(null)
       onDone()
     } finally {
