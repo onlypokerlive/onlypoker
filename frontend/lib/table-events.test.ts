@@ -29,6 +29,9 @@ function player(overrides: Partial<PlayerView> = {}): PlayerView {
     out: false,
     autoSatOut: false,
     canSitOut: true,
+    leaving: false,
+    rebuys: 0,
+    addOnTaken: false,
     ...overrides,
   }
 }
@@ -50,6 +53,9 @@ function view(overrides: Partial<GameView> = {}): GameView {
     autoDealSeconds: 8,
     paused: false,
     lastHand: false,
+    allowLeaving: true,
+    rebuyOpen: false,
+    addOn: false,
     ante: 0,
     bombPot: false,
     players: [you, player()],

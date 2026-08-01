@@ -28,6 +28,13 @@ const BOMB_POT_CHOICES = [0, 10, 20] as const
 /** How often the table stops, in blind levels. */
 const BREAK_CHOICES = [0, 3, 5] as const
 
+/** How long the doors stay open, in blind levels. 99 is "all night". */
+const WINDOW_CHOICES = [
+  { levels: 0, label: 'No' },
+  { levels: 4, label: 'First 4 levels' },
+  { levels: 99, label: 'Any time' },
+] as const
+
 export function CreateRoomForm() {
   const router = useRouter()
   const [roomName, setRoomName] = useState('Friday Night Poker')
@@ -42,6 +49,8 @@ export function CreateRoomForm() {
   const [bombPotEvery, setBombPotEvery] = useState(0)
   const [sevenDeuce, setSevenDeuce] = useState(0)
   const [breakEveryLevels, setBreakEveryLevels] = useState(0)
+  const [lateEntryLevels, setLateEntryLevels] = useState(4)
+  const [rebuyLevels, setRebuyLevels] = useState(0)
   const [password, setPassword] = useState('')
   const [error, setError] = useState<string | null>(null)
   const [loading, setLoading] = useState(false)
@@ -81,6 +90,12 @@ export function CreateRoomForm() {
         sevenDeuce,
         breakEveryLevels,
         breakMinutes: 5,
+        lateEntryLevels,
+        lateEntryChips: 'start',
+        allowLeaving: true,
+        rebuyLevels,
+        rebuysPerPlayer: 2,
+        addOn: rebuyLevels > 0,
       })
       saveSession(session)
       router.push(`/room/${session.roomId}`)
@@ -306,6 +321,52 @@ export function CreateRoomForm() {
             {bombPotEvery
               ? `Every ${bombPotEvery} hands nobody gets a preflop: everyone antes and the flop comes straight out.`
               : 'Bomb pots are off.'}
+          </FieldDescription>
+        </Field>
+
+        <Field>
+          <FieldLabel>Turning up late</FieldLabel>
+          {/* Coming and going is the host's call, decided here rather than
+              argued about at midnight when somebody's flatmate walks in. */}
+          <div className="flex items-center gap-2">
+            {WINDOW_CHOICES.map((c) => (
+              <Button
+                key={c.levels}
+                type="button"
+                variant={lateEntryLevels === c.levels ? 'secondary' : 'outline'}
+                onClick={() => setLateEntryLevels(c.levels)}
+                className="flex-1"
+              >
+                {c.label}
+              </Button>
+            ))}
+          </div>
+          <FieldDescription>
+            {lateEntryLevels
+              ? 'Someone arriving takes an empty chair and plays from the next deal.'
+              : 'The table locks when the first hand is dealt.'}
+          </FieldDescription>
+        </Field>
+
+        <Field>
+          <FieldLabel>Buying back in</FieldLabel>
+          <div className="flex items-center gap-2">
+            {WINDOW_CHOICES.map((c) => (
+              <Button
+                key={c.levels}
+                type="button"
+                variant={rebuyLevels === c.levels ? 'secondary' : 'outline'}
+                onClick={() => setRebuyLevels(c.levels)}
+                className="flex-1"
+              >
+                {c.label}
+              </Button>
+            ))}
+          </div>
+          <FieldDescription>
+            {rebuyLevels
+              ? 'Two rebuys each after busting, plus one top-up for anybody still in. Nobody is knocked out for good while the window is open.'
+              : 'Bust once and you are out. The classic.'}
           </FieldDescription>
         </Field>
 

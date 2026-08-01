@@ -366,14 +366,20 @@ def test_each_player_gets_a_full_window_after_a_timeout(client, clock):
 # --------------------------------------------------------------------------- #
 # Tournament lifecycle
 # --------------------------------------------------------------------------- #
-def test_table_locks_once_the_tournament_starts(client, clock):
-    room_id, ids = table(client, 2)
+def test_the_door_closes_when_the_host_said_it_would(client, clock):
+    """It used to close on the first deal. Now the host decides — see B3.
+
+    Late entry off means exactly the old behaviour, which is why that is what
+    this asserts: it is the setting a host picks when they want the table
+    locked, and it has to still work.
+    """
+    room_id, ids = table(client, 2, lateEntryLevels=0)
     start(client, room_id, ids[0])
     res = client.post(
         f"/api/rooms/{room_id}/join", json={"name": "Latecomer", "password": "secret"}
     )
     assert res.status_code == 400
-    assert "already started" in res.json()["detail"]
+    assert "past the point" in res.json()["detail"]
 
 
 def test_last_player_standing_wins_the_tournament(client, clock):
@@ -2194,6 +2200,341 @@ def test_a_table_from_before_the_credential_split_closes_every_door(client, cloc
     assert all("Start a new one" in d.json()["detail"] for d in doors)
     # And the refused join really did not seat anybody.
     assert len(client.portal.call(main.load_room, room_id)["order"]) == 2
+
+
+# --------------------------------------------------------------------------- #
+# Coming and going
+# --------------------------------------------------------------------------- #
+def leave(client, room_id, player_id):
+    return client.post(
+        f"/api/rooms/{room_id}/leave",
+        headers=auth(player_id),
+        json={"playerId": player_id, "action": "leave"},
+    )
+
+
+def buy(client, room_id, player_id, what="rebuy"):
+    return client.post(
+        f"/api/rooms/{room_id}/rebuy",
+        headers=auth(player_id),
+        json={"playerId": player_id, "action": what},
+    )
+
+
+def bust(client, room_id, victim):
+    """Take a player to zero the way the game would: somebody else wins it.
+
+    Never by deleting the chips. The ledger below is the whole point of these
+    tests, and a stack that evaporates out of band would break it for a reason
+    that has nothing to do with the code under test.
+    """
+    room = client.portal.call(main.load_room, room_id)
+    winner = next(pid for pid in room["order"] if pid != victim)
+    room["players"][winner]["chips"] += room["players"][victim]["chips"]
+    room["players"][victim]["chips"] = 0
+    client.portal.call(main.save_room, room)
+
+
+def books_balance(client, room_id):
+    """The invariant that replaces "starting stack times players".
+
+    Every chip on the table — stacks, the pot, and what is out on the felt —
+    against every chip ever issued to it less every chip taken off. Arriving,
+    leaving and buying back in all break the old check; this one has to survive
+    every one of them, or a bug that moves chips wrongly stops being visible.
+    """
+    room = client.portal.call(main.load_room, room_id)
+    view = state(client, room_id, room["hostId"])
+    on_table = (
+        sum(p["chips"] for p in view["players"])
+        + view["pot"]
+        + sum(p["bet"] for p in view["players"])
+    )
+    return on_table == main._chips_balance(room)
+
+
+def test_a_latecomer_plays_from_the_next_deal_not_this_one(client, clock):
+    room_id, ids = table(client, 3, lateEntryLevels=4, actionSeconds=0, levelMinutes=10)
+    start(client, room_id, ids[0])
+    seated = client.portal.call(main.load_room, room_id)["handPlayerIds"]
+
+    late = join(client, room_id, "Late")["playerId"]
+    room = client.portal.call(main.load_room, room_id)
+    assert room["handPlayerIds"] == seated, "never into a hand already running"
+    assert late in room["order"]
+    assert books_balance(client, room_id)
+
+    fold_until_hand_over(client, room_id, ids)
+    clock.advance(main.AUTO_DEAL_SECONDS + 1)
+    state(client, room_id, ids[0])
+    assert late in client.portal.call(main.load_room, room_id)["handPlayerIds"]
+    assert books_balance(client, room_id)
+
+
+def test_the_door_shuts_at_the_level_the_host_chose(client, clock):
+    room_id, ids = table(client, 2, lateEntryLevels=2, levelMinutes=1, actionSeconds=0)
+    start(client, room_id, ids[0])
+    assert (
+        client.post(
+            f"/api/rooms/{room_id}/join", json={"name": "In time", "password": "secret"}
+        ).status_code
+        == 200
+    )
+
+    clock.advance(60 * 2 + 1)  # into level three
+    res = client.post(
+        f"/api/rooms/{room_id}/join", json={"name": "Too late", "password": "secret"}
+    )
+    assert res.status_code == 400
+    assert "past the point" in res.json()["detail"]
+
+
+def test_a_latecomer_can_sit_down_behind_what_the_table_is_playing(client, clock):
+    """A starting stack at level nine is a handful of blinds, not a seat."""
+    room_id, ids = table(
+        client, 3, lateEntryLevels=99, lateEntryChips="average", actionSeconds=0
+    )
+    start(client, room_id, ids[0])
+    room = client.portal.call(main.load_room, room_id)
+    for pid, chips in zip(room["order"], (4000, 3000, 2000)):
+        room["players"][pid]["chips"] = chips
+    client.portal.call(main.save_room, room)
+
+    late = join(client, room_id, "Late")["playerId"]
+    room = client.portal.call(main.load_room, room_id)
+    assert room["players"][late]["chips"] == 3000
+    assert books_balance(client, room_id)
+
+
+def test_a_latecomer_never_sits_down_behind_less_than_the_buy_in(client, clock):
+    """Averaging a table that is down to crumbs must not punish the newcomer."""
+    room_id, ids = table(
+        client, 3, lateEntryLevels=99, lateEntryChips="average", actionSeconds=0
+    )
+    start(client, room_id, ids[0])
+    room = client.portal.call(main.load_room, room_id)
+    for pid, chips in zip(room["order"], (100, 100, 100)):
+        room["players"][pid]["chips"] = chips
+    client.portal.call(main.save_room, room)
+
+    late = join(client, room_id, "Late")["playerId"]
+    room = client.portal.call(main.load_room, room_id)
+    assert room["players"][late]["chips"] == room["startingChips"]
+
+
+def test_leaving_between_hands_takes_the_stack_home(client, clock):
+    room_id, ids = table(client, 3, actionSeconds=0, levelMinutes=0)
+    start(client, room_id, ids[0])
+    fold_until_hand_over(client, room_id, ids)
+
+    going = ids[2]
+    had = client.portal.call(main.load_room, room_id)["players"][going]["chips"]
+    assert leave(client, room_id, going).status_code == 200
+
+    room = client.portal.call(main.load_room, room_id)
+    assert going not in room["order"]
+    assert room["chipsWithdrawn"] == had
+    assert books_balance(client, room_id)
+    # Leaving early is still a finish: they place below whoever is left.
+    assert going in room["bustOrder"]
+
+
+def test_leaving_mid_hand_waits_for_the_pot_to_be_settled(client, clock):
+    """A seat cannot be pulled out from under a hand everybody else is in.
+
+    And nobody should be kept waiting on somebody who has gone: their remaining
+    decisions are played out at once rather than on the shot clock, because the
+    clock would make the table sit through twenty seconds per street for a
+    player who has closed the tab.
+    """
+    room_id, ids = table(client, 3, actionSeconds=30, levelMinutes=0)
+    start(client, room_id, ids[0])
+    room = client.portal.call(main.load_room, room_id)
+    going = room["actorId"]
+    assert going is not None
+
+    assert leave(client, room_id, going).status_code == 200
+    room = client.portal.call(main.load_room, room_id)
+    assert going in room["order"], "still in the hand"
+    assert room["players"][going]["leaving"] is True
+
+    # No clock has to expire: somebody else's poll plays it out for them.
+    view = state(client, room_id, ids[0])
+    assert view["actorId"] != going
+    assert books_balance(client, room_id)
+
+    fold_until_hand_over(client, room_id, ids)
+    room = client.portal.call(main.load_room, room_id)
+    assert going not in room["order"]
+    assert books_balance(client, room_id)
+
+
+def test_the_last_two_players_leaving_still_produces_a_podium(client, clock):
+    room_id, ids = table(client, 3, actionSeconds=0, levelMinutes=0)
+    start(client, room_id, ids[0])
+    fold_until_hand_over(client, room_id, ids)
+    leave(client, room_id, ids[2])
+    leave(client, room_id, ids[1])
+
+    view = state(client, room_id, ids[0])
+    assert view["room"]["phase"] == "finished"
+    places = {s["playerId"]: s["place"] for s in view["standings"]}
+    assert set(places) == set(ids)
+    assert places[ids[1]] < places[ids[2]], "leaving later is a better finish"
+
+
+def test_a_table_played_to_the_end_has_no_way_out(client, clock):
+    room_id, ids = table(client, 3, allowLeaving=False)
+    res = leave(client, room_id, ids[1])
+    assert res.status_code == 400
+    assert "to the end" in res.json()["detail"]
+
+
+def test_buying_back_in_undoes_the_bust(client, clock):
+    room_id, ids = table(
+        client, 3, rebuyLevels=4, rebuysPerPlayer=2, actionSeconds=0, levelMinutes=10
+    )
+    start(client, room_id, ids[0])
+    fold_until_hand_over(client, room_id, ids)
+    bust(client, room_id, ids[2])
+    state(client, room_id, ids[0])
+    main._record_busts(room := client.portal.call(main.load_room, room_id))
+    client.portal.call(main.save_room, room)
+    assert ids[2] in client.portal.call(main.load_room, room_id)["bustOrder"]
+
+    assert buy(client, room_id, ids[2]).status_code == 200
+    room = client.portal.call(main.load_room, room_id)
+    assert room["players"][ids[2]]["chips"] == room["startingChips"]
+    assert ids[2] not in room["bustOrder"], "not out any more"
+    assert room["players"][ids[2]]["rebuys"] == 1
+    assert books_balance(client, room_id)
+
+
+def test_rebuys_run_out(client, clock):
+    room_id, ids = table(client, 3, rebuyLevels=4, rebuysPerPlayer=1, levelMinutes=10)
+    start(client, room_id, ids[0])
+    fold_until_hand_over(client, room_id, ids)
+    for _ in range(2):
+        bust(client, room_id, ids[2])
+        last = buy(client, room_id, ids[2])
+    assert last.status_code == 400
+    assert "all your rebuys" in last.json()["detail"]
+
+
+def test_a_player_with_chips_cannot_buy_back_in(client, clock):
+    room_id, ids = table(client, 3, rebuyLevels=4, levelMinutes=10)
+    res = buy(client, room_id, ids[1])
+    assert res.status_code == 400
+    assert "still have chips" in res.json()["detail"]
+
+
+def test_the_add_on_is_once_and_only_with_chips_in_front_of_you(client, clock):
+    room_id, ids = table(
+        client, 3, rebuyLevels=4, addOn=True, levelMinutes=10, actionSeconds=0
+    )
+    start(client, room_id, ids[0])
+    fold_until_hand_over(client, room_id, ids)
+    had = client.portal.call(main.load_room, room_id)["players"][ids[1]]["chips"]
+    assert buy(client, room_id, ids[1], "add-on").status_code == 200
+    room = client.portal.call(main.load_room, room_id)
+    assert room["players"][ids[1]]["chips"] == had + room["startingChips"]
+    assert books_balance(client, room_id)
+
+    again = buy(client, room_id, ids[1], "add-on")
+    assert again.status_code == 400
+    assert "already taken" in again.json()["detail"]
+
+
+def test_the_table_does_not_crown_a_winner_while_somebody_can_still_return(
+    client, clock
+):
+    """Ending here would hand the night to whoever was left standing at the
+    moment, while somebody else was still entitled to sit back down."""
+    room_id, ids = table(
+        client, 2, rebuyLevels=2, rebuysPerPlayer=1, levelMinutes=1, actionSeconds=0
+    )
+    start(client, room_id, ids[0])
+    fold_until_hand_over(client, room_id, ids)
+    bust(client, room_id, ids[1])
+    # The next deal is what discovers there is nobody to deal to.
+    clock.advance(main.AUTO_DEAL_SECONDS + 1)
+
+    view = state(client, room_id, ids[0])
+    assert view["room"]["phase"] == "handover"
+    assert view["standings"] == []
+
+    buy(client, room_id, ids[1])
+    clock.advance(main.AUTO_DEAL_SECONDS + 1)
+    assert state(client, room_id, ids[0])["room"]["phase"] == "hand"
+    assert books_balance(client, room_id)
+
+
+def test_a_table_waiting_on_a_rebuy_closes_when_the_window_does(client, clock):
+    """And it has to close by itself. Nobody is going to press anything."""
+    room_id, ids = table(
+        client, 2, rebuyLevels=2, rebuysPerPlayer=1, levelMinutes=1, actionSeconds=0
+    )
+    start(client, room_id, ids[0])
+    fold_until_hand_over(client, room_id, ids)
+    bust(client, room_id, ids[1])
+    clock.advance(main.AUTO_DEAL_SECONDS + 1)
+    assert state(client, room_id, ids[0])["room"]["phase"] == "handover"
+
+    clock.advance(60 * 2 + 1)  # the window shuts
+    view = state(client, room_id, ids[0])
+    assert view["room"]["phase"] == "finished"
+    assert [s["playerId"] for s in view["standings"]] == ids
+
+
+def test_the_books_balance_through_a_whole_messy_night(client, clock):
+    """Arrivals, departures, rebuys and hands, with the ledger checked at every
+    step. This is the check that replaces "starting stack times players", so it
+    is worth walking rather than sampling."""
+    room_id, ids = table(
+        client,
+        3,
+        lateEntryLevels=99,
+        rebuyLevels=99,
+        rebuysPerPlayer=2,
+        addOn=True,
+        actionSeconds=0,
+        levelMinutes=0,
+    )
+    start(client, room_id, ids[0])
+    assert books_balance(client, room_id)
+
+    fold_until_hand_over(client, room_id, ids)
+    assert books_balance(client, room_id)
+
+    late = join(client, room_id, "Late")["playerId"]
+    assert books_balance(client, room_id)
+
+    buy(client, room_id, ids[1], "add-on")
+    assert books_balance(client, room_id)
+
+    leave(client, room_id, ids[2])
+    assert books_balance(client, room_id)
+
+    bust(client, room_id, late)
+    buy(client, room_id, late)
+    assert books_balance(client, room_id)
+
+    clock.advance(main.AUTO_DEAL_SECONDS + 1)
+    state(client, room_id, ids[0])
+    assert books_balance(client, room_id)
+
+
+def test_the_button_walks_the_seating_not_the_arrival_order(client, clock):
+    """``order`` is what the button goes round, so it has to be where people
+    are sitting. That was the same list while seats were only ever handed out
+    in order; a chair freed and refilled is exactly when it stops being."""
+    room_id, ids = table(client, 4)
+    kick(client, room_id, ids[0], ids[1])
+    join(client, room_id, "Refill")
+
+    room = client.portal.call(main.load_room, room_id)
+    seats = [room["players"][pid]["seat"] for pid in room["order"]]
+    assert seats == sorted(seats)
 
 
 # --------------------------------------------------------------------------- #

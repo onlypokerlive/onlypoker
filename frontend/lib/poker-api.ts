@@ -46,6 +46,10 @@ export interface PlayerView {
    * heads-up, where sitting out would strand the tournament.
    */
   canSitOut: boolean
+  /** Said goodbye, and goes as soon as this hand is settled. */
+  leaving: boolean
+  rebuys: number
+  addOnTaken: boolean
   allIn?: boolean
 }
 
@@ -116,6 +120,14 @@ export interface RoomView {
     breakMinutes: number
     /** No hand after this one. Everybody is told, not just the host. */
     lastHand: boolean
+    /** Whether anybody can take their chips and go home early. */
+    allowLeaving: boolean
+    /** Whether the door is still open to somebody turning up now. */
+    lateEntryOpen: boolean
+    /** Whether a busted player can still buy back in. */
+    rebuyOpen: boolean
+    /** Whether this table offers the one-per-player top-up. */
+    addOn: boolean
     /** Dead money each hand, already scaled to this level. */
     ante: number
     anteMode: 'off' | 'bb' | 'all'
@@ -191,6 +203,9 @@ export interface GameView {
   autoDealSeconds: number
   paused: boolean
   lastHand: boolean
+  allowLeaving: boolean
+  rebuyOpen: boolean
+  addOn: boolean
   ante: number
   bombPot: boolean
   players: PlayerView[]
@@ -281,6 +296,9 @@ export function toGameView(v: RoomView, playerId: string | null): GameView {
     autoDealSeconds: v.room.autoDealSeconds,
     paused: v.room.paused,
     lastHand: v.room.lastHand,
+    allowLeaving: v.room.allowLeaving,
+    rebuyOpen: v.room.rebuyOpen,
+    addOn: v.room.addOn,
     ante: v.room.ante,
     bombPot: v.room.bombPot,
     players,
@@ -374,6 +392,17 @@ export interface CreateRoomInput {
   /** Stop the table every N blind levels. 0 turns scheduled breaks off. */
   breakEveryLevels: number
   breakMinutes: number
+  /** Join a running tournament while the blinds are on this level or below. */
+  lateEntryLevels: number
+  /** What a latecomer sits down behind. */
+  lateEntryChips: 'start' | 'average'
+  /** Whether anybody can take their chips and go home early. */
+  allowLeaving: boolean
+  /** Buy back in while the blinds are on this level or below. 0 is off. */
+  rebuyLevels: number
+  rebuysPerPlayer: number
+  /** One extra top-up per player, inside the same window. */
+  addOn: boolean
 }
 
 /** What the host can do to the table itself, as opposed to to a hand. */
@@ -495,6 +524,42 @@ export const pokerApi = {
         handNumber,
         turnId,
         requestId: `a:${handNumber}:${turnId}:${action}:${amount ?? ''}`,
+      }),
+    }),
+
+  /**
+   * Go home, taking your chips with you. During a hand it is a goodbye: the
+   * seat stays until the pot is settled, and the remaining decisions are
+   * played out so nobody is kept waiting.
+   */
+  leaveTable: (roomId: string, playerId: string, handNumber: number, token?: string) =>
+    req<RoomView>(`/api/rooms/${roomId}/leave`, {
+      method: 'POST',
+      headers: auth(token),
+      body: JSON.stringify({
+        playerId,
+        action: 'leave',
+        requestId: `l:${playerId}:${handNumber}`,
+      }),
+    }),
+
+  /** Buy back in after busting, or take the one add-on. */
+  buyChips: (
+    roomId: string,
+    playerId: string,
+    what: 'rebuy' | 'add-on',
+    handNumber: number,
+    token?: string,
+  ) =>
+    req<RoomView>(`/api/rooms/${roomId}/rebuy`, {
+      method: 'POST',
+      headers: auth(token),
+      body: JSON.stringify({
+        playerId,
+        action: what,
+        // Named after the purchase and the hand it was made at: tapping twice
+        // because nothing seemed to happen must not buy two.
+        requestId: `b:${playerId}:${handNumber}:${what}`,
       }),
     }),
 

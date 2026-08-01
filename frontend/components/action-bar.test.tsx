@@ -3,80 +3,8 @@ import { render, screen } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 
 import { ActionBar, waitingMessage } from '@/components/action-bar'
-import type { GameView, PlayerView } from '@/lib/poker-api'
-
-function player(overrides: Partial<PlayerView> = {}): PlayerView {
-  return {
-    id: 'p1',
-    name: 'Marcos',
-    seat: 0,
-    chips: 1000,
-    isHost: false,
-    sittingOut: false,
-    isYou: false,
-    connected: true,
-    index: 0,
-    inHand: true,
-    folded: false,
-    bet: 0,
-    isActor: false,
-    isButton: false,
-    isSmallBlind: false,
-    isBigBlind: false,
-    isStraddle: false,
-    cardsCount: 2,
-    cards: null,
-    timedOut: false,
-    shownIndices: [],
-    out: false,
-    autoSatOut: false,
-    canSitOut: true,
-    ...overrides,
-  }
-}
-
-function gameView(overrides: Partial<GameView> = {}): GameView {
-  const you = player({ id: 'me', name: 'You', isYou: true })
-  return {
-    roomId: 'ABC123',
-    roomName: 'Test table',
-    phase: 'hand',
-    smallBlind: 5,
-    bigBlind: 10,
-    startingChips: 1000,
-    handNumber: 1,
-    turnId: 1,
-    maxSeats: 9,
-    actionSeconds: 20,
-    levelMinutes: 10,
-    autoDealSeconds: 8,
-    paused: false,
-    lastHand: false,
-    ante: 0,
-    bombPot: false,
-    players: [you, player()],
-    board: [],
-    pot: 0,
-    street: 'preflop',
-    actorId: 'p1',
-    isHost: false,
-    isYourTurn: false,
-    you,
-    lastResults: [],
-    standings: [],
-    wentToShowdown: false,
-    sevenDeuceWin: null,
-    sevenDeucePending: false,
-    level: null,
-    actionDeadlineMs: null,
-    levelEndsAtMs: null,
-    autoDealAtMs: null,
-    breakEndsAtMs: null,
-    message: null,
-    legal: null,
-    ...overrides,
-  }
-}
+import type { GameView } from '@/lib/poker-api'
+import { gameView, player } from '@/lib/test-fixtures'
 
 const YOUR_TURN = {
   isYourTurn: true,

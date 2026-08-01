@@ -484,6 +484,22 @@ class CreateRoomBody(BaseModel):
     # host can still stop it by hand whenever they like.
     breakEveryLevels: int = Field(default=0, ge=0, le=20)
     breakMinutes: int = Field(default=5, ge=1, le=60)
+    # Turning up after it started. Allowed while the blinds are still on this
+    # level or below; 0 shuts the door when the first hand is dealt.
+    lateEntryLevels: int = Field(default=4, ge=0, le=99)
+    # What a latecomer sits down with: the same as everybody started with, or
+    # what the table is averaging now. The first is simpler; the second stops a
+    # deep-stacked arrival at level nine walking in with nothing to play.
+    lateEntryChips: str = Field(default="start", pattern="^(start|average)$")
+    # Whether somebody can take their chips and go home early.
+    allowLeaving: bool = True
+    # Buying back in after busting, while the blinds are still on this level or
+    # below. 0 turns rebuys off.
+    rebuyLevels: int = Field(default=0, ge=0, le=99)
+    rebuysPerPlayer: int = Field(default=1, ge=1, le=10)
+    # One extra top-up per player inside the same window, for anyone who still
+    # has chips. Off unless the host asks for it.
+    addOn: bool = False
 
 
 class JoinBody(BaseModel):
@@ -677,6 +693,131 @@ def _no_more_hands(room: dict[str, Any]) -> bool:
     return last is not None and room["handNumber"] >= last
 
 
+# --------------------------------------------------------------------------- #
+# Chips on and off the table
+# --------------------------------------------------------------------------- #
+# A tournament where nobody arrives, leaves or buys back in has one arithmetic
+# check worth everything: the chips in play equal the starting stack times the
+# number of players, always, and any bug that moves chips wrongly shows up as a
+# total that no longer adds up.
+#
+# Late entry, leaving and rebuys all break that check — which is fine, as long
+# as it is *replaced* rather than quietly dropped. So the table keeps a ledger:
+# every chip ever issued to it, and every chip taken off it. The invariant
+# becomes ``sum(stacks) + pot == issued - withdrawn``, it still holds on every
+# hand, and it is still the thing that catches a bug that moves chips wrongly.
+#
+# Arriving, leaving, busting and buying back in are one mechanism with four
+# doors, deliberately. They are the same question — who is at this table and
+# what are they sitting behind — and writing them separately is how two of them
+# end up disagreeing about the answer.
+def _level_number(room: dict[str, Any], now: float) -> int:
+    """Which blind level the clock is on, counting from 1."""
+    index, _ = _projected_level(room, _clock_now(room, now))
+    return index + 1
+
+
+def _window_closes_at(room: dict[str, Any], until_level: int) -> float | None:
+    """When the blinds pass ``until_level``, or None if they never will."""
+    duration = _level_duration(room)
+    index, started = _projected_level(room, _clock_now(room, time.time()))
+    if not duration or started is None or index + 1 > until_level:
+        return None
+    return started + (until_level - index) * duration
+
+
+def _late_entry_open(room: dict[str, Any], now: float) -> bool:
+    if room["phase"] == "finished" or not int(room.get("lateEntryLevels") or 0):
+        return False
+    return _level_number(room, now) <= int(room["lateEntryLevels"])
+
+
+def _rebuy_open(room: dict[str, Any], now: float) -> bool:
+    if room["phase"] == "finished" or not int(room.get("rebuyLevels") or 0):
+        return False
+    return _level_number(room, now) <= int(room["rebuyLevels"])
+
+
+def _chips_balance(room: dict[str, Any]) -> int:
+    """What every stack at this table should add up to."""
+    return int(room.get("chipsIssued", 0)) - int(room.get("chipsWithdrawn", 0))
+
+
+def _issue_chips(room: dict[str, Any], player_id: str, amount: int) -> None:
+    room["players"][player_id]["chips"] += amount
+    room["chipsIssued"] = int(room.get("chipsIssued", 0)) + amount
+
+
+def _entry_stack(room: dict[str, Any]) -> int:
+    """What somebody turning up mid-tournament sits down behind.
+
+    The average is not sentiment: by level nine a starting stack is a handful
+    of big blinds, so somebody arriving on it is not really playing. It is
+    taken over the players still in, because averaging in the busted would hand
+    the latecomer less than anybody actually has.
+    """
+    start = int(room["startingChips"])
+    if room.get("lateEntryChips") != "average":
+        return start
+    live = [room["players"][pid]["chips"] for pid in _eligible_player_ids(room)]
+    return max(start, round(sum(live) / len(live))) if live else start
+
+
+def _rebuys_left(room: dict[str, Any], player: dict[str, Any]) -> int:
+    return max(0, int(room.get("rebuysPerPlayer") or 0) - int(player.get("rebuys", 0)))
+
+
+def _anyone_can_still_rebuy(room: dict[str, Any]) -> bool:
+    """Whether the table is waiting on somebody who could still come back."""
+    if not _rebuy_open(room, time.time()):
+        return False
+    return any(
+        room["players"][pid]["chips"] <= 0 and _rebuys_left(room, room["players"][pid])
+        for pid in room["order"]
+    )
+
+
+def _remove_from_table(room: dict[str, Any], player_id: str, withdraw: bool) -> None:
+    """Take somebody out of the game, keeping the books straight.
+
+    Their record stays — the final standings look players up by id, and
+    deleting them outright turns the podium into a KeyError — but the seat, the
+    chips and the credential all go. ``withdraw`` says whether the stack leaves
+    the table with them, which is the difference between going home and being
+    knocked out.
+    """
+    player = room["players"][player_id]
+    if withdraw:
+        room["chipsWithdrawn"] = int(room.get("chipsWithdrawn", 0)) + int(
+            player["chips"]
+        )
+    busted = room.setdefault("bustOrder", [])
+    if player_id not in busted:
+        busted.append(player_id)
+    player["chips"] = 0
+    player["removed"] = True
+    player["leaving"] = False
+    if room.get("buttonId") == player_id:
+        # The button moves to the *seat* after the one holding it, so losing
+        # that player must not reset it: hand it back to the seat before, and
+        # the next deal advances onto the right one.
+        room["buttonId"] = _previous_seat(room, player_id)
+    room["order"] = [pid for pid in room["order"] if pid != player_id]
+
+
+def _seat_in_order(room: dict[str, Any], player_id: str) -> None:
+    """Put a player into the rotation where they are physically sitting.
+
+    ``order`` is what the button walks round, so it has to be the seating and
+    not the arrival list. They coincided while seats were only ever handed out
+    in order; a chair freed and refilled — or somebody turning up at level
+    three — is exactly when they stop.
+    """
+    if player_id not in room["order"]:
+        room["order"].append(player_id)
+    room["order"].sort(key=lambda pid: room["players"][pid]["seat"])
+
+
 def _start_break(room: dict[str, Any], now: float) -> None:
     every = int(room["breakEveryLevels"])
     index, _ = _projected_level(room, _clock_now(room, now))
@@ -717,12 +858,23 @@ def _save_state(room: dict[str, Any], state) -> None:
 
 
 def _set_action_deadline(room: dict[str, Any], state, now: float) -> None:
-    """Arm the shot clock for whoever is to act (or disarm it)."""
+    """Arm the shot clock for whoever is to act (or disarm it).
+
+    Also writes down *who* is to act. Only the view needed that before, and it
+    unpickles the engine anyway; the schedule needs it on every poll, to ask
+    whether the player being waited on is one who has already left — and
+    unpickling a whole hand to answer that on every request from every client
+    is not a price worth paying for something the deal already knows.
+    """
     seconds = int(room.get("actionSeconds") or 0)
-    if seconds and state.status and state.actor_index is not None:
-        room["actionDeadline"] = now + seconds
-    else:
-        room["actionDeadline"] = None
+    live = bool(state.status) and state.actor_index is not None
+    room["actionDeadline"] = now + seconds if (seconds and live) else None
+    hand_ids = room.get("handPlayerIds") or []
+    room["actorId"] = (
+        hand_ids[state.actor_index]
+        if live and state.actor_index < len(hand_ids)
+        else None
+    )
 
 
 def _can_sit_out(room: dict[str, Any], player: dict[str, Any]) -> bool:
@@ -929,9 +1081,15 @@ def _settle_hand(room: dict[str, Any], state) -> None:
     room["lastResults"] = results
     room["phase"] = "handover"
     room["actionDeadline"] = None
+    room["actorId"] = None
     # Before the busts are recorded: the bonus is a transfer that can empty a
     # stack, and a player taken to zero by it is out like any other.
     _pay_seven_deuce(room)
+    # Anybody who said goodbye mid-hand goes now, with whatever the hand left
+    # them. Waiting until the hand was over is the whole point: a seat cannot
+    # be pulled out from under a pot that is half played.
+    for pid in [p for p in room["order"] if room["players"][p].get("leaving")]:
+        _remove_from_table(room, pid, withdraw=True)
     _record_busts(room)
     # One player holding every chip ends the tournament.
     if len(_eligible_player_ids(room)) < 2:
@@ -1108,6 +1266,16 @@ def _finish_tournament(room: dict[str, Any], by_chips: bool = False) -> None:
     survivors = [pid for pid in room["order"] if room["players"][pid]["chips"] > 0]
     if len(survivors) > 1 and not by_chips:
         return
+    if not by_chips and _anyone_can_still_rebuy(room):
+        # Ending now would crown a winner while somebody is still entitled to
+        # sit back down. Wait until the window shuts instead, and let the
+        # schedule close the room then — the appointment is written down so
+        # that the table is not left waiting on a poll that never comes.
+        room["closeAt"] = _window_closes_at(room, int(room["rebuyLevels"]))
+        room["actionDeadline"] = None
+        room["autoDealAt"] = None
+        return
+    room["closeAt"] = None
     survivors.sort(key=lambda pid: -room["players"][pid]["chips"])
     _record_busts(room)
     busted = list(room.get("bustOrder", []))
@@ -1222,8 +1390,65 @@ def _scheduled_break_end(room: dict[str, Any]) -> float | None:
     return room.get("breakUntil") or None
 
 
+def _scheduled_leaver(room: dict[str, Any]) -> float | None:
+    """Whether somebody who has already left is holding up the hand.
+
+    Due immediately, not on the shot clock: they said goodbye, so making the
+    table wait twenty seconds for a decision nobody is going to make is the
+    thing this exists to avoid.
+    """
+    if room.get("phase") != "hand" or not room.get("stateB64"):
+        return None
+    actor = room.get("actorId")
+    if actor is None:
+        return None
+    return 0.0 if room["players"].get(actor, {}).get("leaving") else None
+
+
+def _scheduled_close(room: dict[str, Any]) -> float | None:
+    """When a table that has run out of players finally gives up waiting."""
+    return room.get("closeAt") or None
+
+
 def _run_clock(room: dict[str, Any]) -> bool:
     return _apply_timeouts(room) is not None
+
+
+def _run_leaver(room: dict[str, Any]) -> bool:
+    """Play out the hand for somebody who has gone.
+
+    Checking when it is free and folding when it is not — the same rule the
+    shot clock uses, because it is the same situation and any other rule would
+    give away chips that are still theirs until the hand ends. pokerkit will
+    not let a player fold a hand they can see the next card of for nothing,
+    which is why this cannot simply fold every time. It runs at once rather
+    than on the clock, so the rest of the table is not kept waiting.
+    """
+    state = poker.loads(room["stateB64"])
+    if poker.is_hand_over(state) or state.actor_index is None:
+        return False
+    seat = state.actor_index
+    legal = poker.legal_actions(state)
+    action = "call" if legal["canCheckOrCall"] and not legal["callAmount"] else "fold"
+    if action == "fold" and not legal["canFold"]:
+        action = "call"
+    poker.apply_action(state, action)
+    if action == "fold":
+        folded = room.setdefault("foldedSeats", [])
+        if seat not in folded:
+            folded.append(seat)
+    _save_state(room, state)
+    if poker.is_hand_over(state):
+        _settle_hand(room, state)
+    else:
+        _set_action_deadline(room, state, time.time())
+    return True
+
+
+def _run_close(room: dict[str, Any]) -> bool:
+    room["closeAt"] = None
+    _finish_tournament(room)
+    return True
 
 
 def _run_break_end(room: dict[str, Any]) -> bool:
@@ -1256,11 +1481,15 @@ def _run_deal(room: dict[str, Any]) -> bool:
 
 # In the order they must happen: an expired decision is settled before the next
 # hand is dealt, or a late fold lands on a hand that has already started. A
-# break ending comes first of all, because it is what makes a deal due again.
+# break ending comes first of all, because it is what makes a deal due again;
+# a player who has left plays before the clock, because they are not waiting
+# for it.
 _SCHEDULE = (
     ("break", _scheduled_break_end, _run_break_end),
+    ("leaver", _scheduled_leaver, _run_leaver),
     ("clock", _scheduled_clock, _run_clock),
     ("deal", _scheduled_deal, _run_deal),
+    ("close", _scheduled_close, _run_close),
 )
 
 
@@ -1455,6 +1684,10 @@ def _build_view(room: dict[str, Any], viewer_id: str | None) -> dict[str, Any]:
             # Sat out by the shot clock rather than by choice, so the UI can
             # explain what happened and offer the way back in.
             "autoSatOut": bool(p.get("autoSatOut")),
+            # Said goodbye, and goes as soon as this hand is settled.
+            "leaving": bool(p.get("leaving")),
+            "rebuys": int(p.get("rebuys", 0)),
+            "addOnTaken": bool(p.get("addOnTaken")),
             # Whether benching them would still leave a playable table. The
             # button is disabled rather than left to fail, so nobody taps "sit
             # out" heads-up and gets an error for an answer.
@@ -1491,6 +1724,11 @@ def _build_view(room: dict[str, Any], viewer_id: str | None) -> dict[str, Any]:
             # No hand after this one. Shown to everybody, not just the host:
             # knowing it is the last hand changes how it is played.
             "lastHand": bool(room.get("lastHand")),
+            # Coming and going, and whether either door is still open.
+            "allowLeaving": bool(room.get("allowLeaving", True)),
+            "lateEntryOpen": _late_entry_open(room, now),
+            "rebuyOpen": _rebuy_open(room, now),
+            "addOn": bool(room.get("addOn")),
         },
         "players": players_out,
         "board": board,
@@ -1615,6 +1853,22 @@ async def create_room(body: CreateRoomBody) -> dict[str, Any]:
         "breaksTaken": 0,
         # The host has called it: no hand after the one being played.
         "lastHand": False,
+        "lastHandNumber": None,
+        # Coming and going. See "Chips on and off the table".
+        "lateEntryLevels": body.lateEntryLevels,
+        "lateEntryChips": body.lateEntryChips,
+        "allowLeaving": body.allowLeaving,
+        "rebuyLevels": body.rebuyLevels,
+        "rebuysPerPlayer": body.rebuysPerPlayer,
+        "addOn": body.addOn,
+        # Every chip ever put on this table, and every chip taken off it. What
+        # replaces "starting stack times players" once people can arrive, leave
+        # and buy back in — see ``_chips_balance``.
+        "chipsIssued": body.startingChips,
+        "chipsWithdrawn": 0,
+        # Set when the tournament would be over but somebody can still buy back
+        # in. See ``_scheduled_close``.
+        "closeAt": None,
         "bustOrder": [],
         "standings": [],
         # Seat holding the button. Advances one seat per hand; see _next_button.
@@ -1683,9 +1937,12 @@ async def join_room(
                 "isHost": False,
             }
 
-        if room["phase"] != "lobby":
+        now = time.time()
+        if room["phase"] != "lobby" and not _late_entry_open(room, now):
             raise fastapi.HTTPException(
-                400, "This tournament has already started. Ask the host for a new table."
+                400,
+                "This tournament is past the point where anyone can join. Ask the "
+                "host for a new table, or watch this one.",
             )
         if len(room["order"]) >= MAX_SEATS:
             raise fastapi.HTTPException(400, "This room is full.")
@@ -1693,16 +1950,27 @@ async def join_room(
         player_id = secrets.token_urlsafe(12)
         token = _new_token()
         seat = _free_seat(room)
+        stack = room["startingChips"] if room["phase"] == "lobby" else _entry_stack(room)
         room["players"][player_id] = {
             "id": player_id,
             "name": body.name,
             "seat": seat,
-            "chips": room["startingChips"],
+            "chips": 0,
             "token": token,
             "sittingOut": False,
-            "lastSeen": time.time(),
+            "lastSeen": now,
         }
-        room["order"].append(player_id)
+        _issue_chips(room, player_id, stack)
+        # Into the rotation where they are sitting, not at the end of the queue:
+        # ``order`` is what the button walks round.
+        _seat_in_order(room, player_id)
+        # A latecomer cannot be dealt into a hand already in progress —
+        # ``_eligible_player_ids`` is read at the deal — so nothing else is
+        # needed to keep them out of it. But a table that had run dry and was
+        # sitting on its hands now has somebody to play with again.
+        if room["phase"] == "handover" and not room.get("autoDealAt"):
+            if len(_eligible_player_ids(room)) >= 2:
+                _arm_auto_deal(room)
         _keep_receipt(room, body.requestId, {"playerId": player_id, "token": token})
         await save_room(room)
     return {
@@ -1755,33 +2023,152 @@ async def kick_player(
             # winner of the night quietly demoted after the fact.
             raise fastapi.HTTPException(400, "This tournament is already over.")
 
-        # The button moves to the *seat* after the one holding it, so losing
-        # that player must not reset it: hand it back to the seat before, and
-        # the next deal advances onto the right one. Clearing it instead sends
-        # the button to an arbitrary place and the blinds stop going round
-        # evenly — the very defect this file already fixed once.
-        if room.get("buttonId") == body.targetId:
-            room["buttonId"] = _previous_seat(room, body.targetId)
-
         if room["phase"] == "lobby":
             # Nobody has played a hand, so there is nothing to place them in.
             # They simply were not here.
+            room["chipsWithdrawn"] = int(room.get("chipsWithdrawn", 0)) + int(
+                room["players"][body.targetId]["chips"]
+            )
+            room["order"] = [pid for pid in room["order"] if pid != body.targetId]
             room["players"].pop(body.targetId, None)
         else:
-            # Recorded before they are gone: bust order is what produces the
-            # final placings, and somebody removed at the end still finished
-            # where they finished. The record stays even though the seat goes —
-            # standings look players up by id, and deleting them outright turns
-            # the podium into a KeyError. Their chips leave with them.
-            busted = room.setdefault("bustOrder", [])
-            if body.targetId not in busted:
-                busted.append(body.targetId)
-            room["players"][body.targetId]["chips"] = 0
-            room["players"][body.targetId]["removed"] = True
-        room["order"] = [pid for pid in room["order"] if pid != body.targetId]
+            # The same door somebody uses to leave of their own accord: the
+            # record stays for the podium, the seat and the chips go, and the
+            # button steps back rather than being cleared.
+            _remove_from_table(room, body.targetId, withdraw=True)
 
         if room["phase"] != "lobby" and len(_eligible_player_ids(room)) < 2:
             _finish_tournament(room)
+        await save_room(room)
+        return _build_view(room, body.playerId)
+
+
+@app.post("/rooms/{room_id}/leave")
+async def leave_table(
+    room_id: str,
+    body: ActionBody,
+    x_player_token: str | None = fastapi.Header(default=None),
+) -> dict[str, Any]:
+    """Go home, taking your chips with you.
+
+    Between friends this is what leaving means: the stack goes with the person,
+    rather than sitting there as a ghost paying blinds all night — which is
+    what the online rooms do, and which at a table of four is unmissable.
+
+    Called during a hand, it is a goodbye rather than a disappearance: the seat
+    stays until the pot is settled, because pulling it out from under a hand
+    that is half played rewrites a pot everybody else is still in. Their
+    remaining decisions are played out at once (checking when it is free,
+    folding when it is not) so nobody is kept waiting on somebody who has gone.
+    """
+    async with _RoomLock(room_id):
+        room = await load_room(room_id)
+        if not room:
+            raise fastapi.HTTPException(404, "Room not found.")
+        _authenticate(room, body.playerId, x_player_token)
+        if _receipt(room, body.requestId):
+            return _build_view(room, body.playerId)
+        if not room.get("allowLeaving", True):
+            raise fastapi.HTTPException(
+                400, "The host set this table up to be played to the end."
+            )
+        if room["phase"] == "finished":
+            raise fastapi.HTTPException(400, "This tournament is already over.")
+
+        player = room["players"][body.playerId]
+        in_the_hand = (
+            room["phase"] == "hand" and body.playerId in (room.get("handPlayerIds") or [])
+        )
+        if room["phase"] == "lobby":
+            # Nobody has played a hand, so there is nothing to place them in.
+            room["chipsWithdrawn"] = int(room.get("chipsWithdrawn", 0)) + int(
+                player["chips"]
+            )
+            room["order"] = [pid for pid in room["order"] if pid != body.playerId]
+            room["players"].pop(body.playerId, None)
+        elif in_the_hand:
+            player["leaving"] = True
+        else:
+            _remove_from_table(room, body.playerId, withdraw=True)
+            if len(_eligible_player_ids(room)) < 2:
+                _finish_tournament(room)
+        _keep_receipt(room, body.requestId, {})
+        await save_room(room)
+        # Built for the host rather than the leaver: the caller may no longer
+        # be anybody this table can show a view to.
+        return _build_view(room, room["hostId"])
+
+
+@app.post("/rooms/{room_id}/rebuy")
+async def rebuy(
+    room_id: str,
+    body: ActionBody,
+    x_player_token: str | None = fastapi.Header(default=None),
+) -> dict[str, Any]:
+    """Buy back in after busting, or take the one add-on.
+
+    ``action`` is ``rebuy`` (only with an empty stack) or ``add-on`` (only with
+    chips still in front of you). Both are bounded by the window the host set,
+    and both are counted, because "how many can I have" is the first question
+    anybody asks and an answer of "as many as you like" is not a tournament.
+    """
+    async with _RoomLock(room_id):
+        room = await load_room(room_id)
+        if not room:
+            raise fastapi.HTTPException(404, "Room not found.")
+        _authenticate(room, body.playerId, x_player_token)
+        if _receipt(room, body.requestId):
+            return _build_view(room, body.playerId)
+        now = time.time()
+        if not _rebuy_open(room, now):
+            raise fastapi.HTTPException(
+                400, "The rebuy window has closed." if room.get("rebuyLevels")
+                else "This table has no rebuys."
+            )
+        player = room["players"][body.playerId]
+        if room["phase"] == "hand" and body.playerId in (
+            room.get("handPlayerIds") or []
+        ):
+            # Chips bought while you are in a hand would vanish at the end of
+            # it: the engine holds the live stacks and the settlement writes
+            # them back over whatever is here. Which is also the honest rule —
+            # nobody tops up in the middle of a pot.
+            raise fastapi.HTTPException(
+                400, "Wait for the hand to finish before buying chips."
+            )
+
+        if body.action == "add-on":
+            if not room.get("addOn"):
+                raise fastapi.HTTPException(400, "This table has no add-on.")
+            if player.get("addOnTaken"):
+                raise fastapi.HTTPException(400, "You have already taken the add-on.")
+            if player["chips"] <= 0:
+                raise fastapi.HTTPException(
+                    400, "You are out of chips — buy back in rather than adding on."
+                )
+            player["addOnTaken"] = True
+        elif body.action == "rebuy":
+            if player["chips"] > 0:
+                raise fastapi.HTTPException(
+                    400, "You still have chips. There is nothing to buy back into."
+                )
+            if not _rebuys_left(room, player):
+                raise fastapi.HTTPException(400, "You have used all your rebuys.")
+            player["rebuys"] = int(player.get("rebuys", 0)) + 1
+            # Out of the bust list: they are not out any more, and that list is
+            # what the final placings are read from.
+            room["bustOrder"] = [
+                pid for pid in room.get("bustOrder", []) if pid != body.playerId
+            ]
+        else:
+            raise fastapi.HTTPException(400, f"Unknown purchase: {body.action}")
+
+        _issue_chips(room, body.playerId, int(room["startingChips"]))
+        # A table that had given up waiting has a game again.
+        room["closeAt"] = None
+        if room["phase"] == "handover" and len(_eligible_player_ids(room)) >= 2:
+            _arm_auto_deal(room)
+        _keep_receipt(room, body.requestId, {})
         await save_room(room)
         return _build_view(room, body.playerId)
 

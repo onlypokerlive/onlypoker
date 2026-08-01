@@ -17,6 +17,7 @@ import { ShowCards } from "@/components/show-cards"
 import { HelpSheet } from "@/components/help-sheet"
 import { HostPanel } from "@/components/host-panel"
 import { TableBreak } from "@/components/table-break"
+import { BuyChips } from "@/components/buy-chips"
 import { TournamentResults } from "@/components/tournament-results"
 import { useSecondsLeft } from "@/lib/use-countdown"
 import { useTableEvents } from "@/lib/use-table-events"
@@ -261,6 +262,9 @@ export function RoomClient({ roomId }: { roomId: string }) {
             <div className="flex flex-col gap-2">
               <HandResults view={view} />
               <ShowCards view={view} roomId={roomId} onShown={refresh} session={session} />
+              {/* Between hands is the only moment either of these is true, so
+                  they sit with everything else that belongs to the gap. */}
+              <BuyChips view={view} roomId={roomId} onDone={refresh} session={session} />
               <HostPanel view={view} roomId={roomId} onDone={refresh} session={session} />
               <RabbitHunt
                 roomId={roomId}
