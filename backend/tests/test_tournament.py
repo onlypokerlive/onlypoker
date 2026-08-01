@@ -2197,6 +2197,102 @@ def test_a_table_from_before_the_credential_split_closes_every_door(client, cloc
 
 
 # --------------------------------------------------------------------------- #
+# What the room owes the clock
+# --------------------------------------------------------------------------- #
+def settle_the_schedule(room, rounds=8):
+    """Tick until nothing is outstanding, and say how many rounds it took."""
+    for taken in range(rounds):
+        if not main._work_due(room, main.time.time()):
+            return taken
+        assert main._tick(room), "something was due and the tick did nothing"
+    raise AssertionError("the room never runs out of work to do")
+
+
+def test_work_that_is_due_is_either_done_or_stops_being_due(client, clock):
+    """The failure this guards against congests the room and never recovers.
+
+    ``GET /state`` decides whether to take the lock; the tick decides what to do
+    once it has it. If the first says "something is due" and the second leaves
+    the condition standing, then every poll from every client takes the lock,
+    for ever — six phones at 1.2 seconds each, queueing behind one another all
+    night, over work that is never done.
+
+    Walked through every state a room passes through: waiting, a live hand with
+    an expired decision, the pause between hands, and the end.
+    """
+    room_id, ids = table(client, 3, actionSeconds=10, levelMinutes=0)
+    room = client.portal.call(main.load_room, room_id)
+    assert settle_the_schedule(room) == 0, "a lobby owes the clock nothing"
+
+    start(client, room_id, ids[0])
+    room = client.portal.call(main.load_room, room_id)
+    assert settle_the_schedule(room) == 0, "a fresh decision is not late"
+
+    # Nobody answers, for long enough that every decision in the hand expires.
+    for _ in range(12):
+        clock.advance(60)
+        room = client.portal.call(main.load_room, room_id)
+        settle_the_schedule(room)
+        client.portal.call(main.save_room, room)
+        if room["phase"] == "finished":
+            break
+    # However far it got, the room is quiet again at that moment.
+    assert not main._work_due(room, clock.now)
+
+
+def test_a_paused_table_asks_nothing_of_the_clock(client, clock):
+    """Paused means paused: no appointment, so no reason to take the lock."""
+    room_id, ids = table(client, 3, actionSeconds=0, levelMinutes=0)
+    start(client, room_id, ids[0])
+    fold_until_hand_over(client, room_id, ids)
+    client.post(
+        f"/api/rooms/{room_id}/autodeal",
+        headers=auth(ids[0]),
+        json={"playerId": ids[0], "action": "pause"},
+    )
+    clock.advance(3600)
+    room = client.portal.call(main.load_room, room_id)
+    assert main._work_due(room, clock.now) == []
+    assert main._next_wakeup(room) is None
+
+
+def test_the_lock_is_not_taken_on_a_quiet_poll(client, clock):
+    """Most polls must not queue. Six phones at 1.2 seconds is the whole reason.
+
+    Counted through the lock itself rather than by reasoning about the
+    predicate, so this keeps meaning something when the predicate changes.
+    """
+    room_id, ids = table(client, 3, actionSeconds=30, levelMinutes=0)
+    start(client, room_id, ids[0])
+    state(client, room_id, ids[0])  # the first poll writes a heartbeat
+
+    taken = 0
+    original = main._RoomLock.__aenter__
+
+    async def counting(self):
+        nonlocal taken
+        taken += 1
+        return await original(self)
+
+    main._RoomLock.__aenter__ = counting
+    try:
+        for _ in range(5):
+            state(client, room_id, ids[0])
+    finally:
+        main._RoomLock.__aenter__ = original
+    assert taken == 0
+
+    # And when there *is* something due, it does take it.
+    clock.advance(60)
+    main._RoomLock.__aenter__ = counting
+    try:
+        state(client, room_id, ids[0])
+    finally:
+        main._RoomLock.__aenter__ = original
+    assert taken == 1
+
+
+# --------------------------------------------------------------------------- #
 # Doing a thing once
 # --------------------------------------------------------------------------- #
 def test_a_join_that_is_retried_takes_the_same_seat(client, clock):

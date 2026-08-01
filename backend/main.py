@@ -669,12 +669,7 @@ def _arm_auto_deal(room: dict[str, Any]) -> None:
 
 
 def _auto_deal_due(room: dict[str, Any]) -> bool:
-    return bool(
-        room.get("phase") == "handover"
-        and room.get("autoDealAt")
-        and not room.get("autoDealPaused")
-        and time.time() >= room["autoDealAt"]
-    )
+    return _scheduled_deal(room) is not None and time.time() >= _scheduled_deal(room)
 
 
 def _next_button(room: dict[str, Any], eligible: list[str]) -> str:
@@ -1097,21 +1092,90 @@ def _apply_timeouts(room: dict[str, Any]) -> dict[str, Any] | None:
     return {"seat": seat, "action": action}
 
 
-def _tick(room: dict[str, Any]) -> bool:
-    """Bring the room up to date with the wall clock. True if it changed.
+# --------------------------------------------------------------------------- #
+# What the room owes the clock
+# --------------------------------------------------------------------------- #
+# Serverless has nowhere to run a timer, so everything this room does on its
+# own is done by whichever request happens to arrive next. That works, and it
+# has one failure mode worth designing against.
+#
+# There are two decisions, not one. The *outer* one, in ``GET /state``, decides
+# whether to take the lock at all — most polls must not, or six phones at 1.2
+# seconds each would queue behind one another all night. The *inner* one
+# decides what to actually do once the lock is held. When those two disagree —
+# the outer says "something is due", the inner finds nothing to do and leaves
+# the condition standing — every poll from every client takes the lock, for
+# ever. The room congests itself, and the cause is two lists of conditions that
+# were meant to match and drifted.
+#
+# So there is one list. Each entry says when it comes due and what to do about
+# it; the outer predicate and the inner tick both read it, and neither can grow
+# a case the other does not have. Anything that schedules itself — the shot
+# clock, dealing the next hand, and later the time bank, a break, a player
+# leaving at the end of the hand, a pre-action — belongs here rather than in a
+# branch of its own.
+def _scheduled_clock(room: dict[str, Any]) -> float | None:
+    """When an unanswered decision becomes the clock's to make."""
+    if room.get("phase") != "hand" or not room.get("stateB64"):
+        return None
+    deadline = room.get("actionDeadline")
+    return deadline + TIMEOUT_GRACE if deadline else None
 
-    Nothing runs in the background on a serverless host, so both automatic
-    behaviours — folding an expired decision and dealing the next hand — happen
-    here, driven by whichever request happens to arrive next.
-    """
-    changed = _apply_timeouts(room) is not None
-    if _auto_deal_due(room):
-        try:
-            _start_hand(room)
-        except fastapi.HTTPException:
-            # Not enough players to continue: leave it to the host.
-            room["autoDealAt"] = None
-        changed = True
+
+def _scheduled_deal(room: dict[str, Any]) -> float | None:
+    """When the next hand deals itself."""
+    if room.get("phase") != "handover" or room.get("autoDealPaused"):
+        return None
+    return room.get("autoDealAt") or None
+
+
+def _run_clock(room: dict[str, Any]) -> bool:
+    return _apply_timeouts(room) is not None
+
+
+def _run_deal(room: dict[str, Any]) -> bool:
+    try:
+        _start_hand(room)
+    except fastapi.HTTPException:
+        # Not enough players to continue: leave it to the host. Clearing the
+        # appointment matters as much as the deal not happening — an unmet
+        # condition left standing is what makes every later poll take the lock.
+        room["autoDealAt"] = None
+    return True
+
+
+# In the order they must happen: an expired decision is settled before the next
+# hand is dealt, or a late fold lands on a hand that has already started.
+_SCHEDULE = (
+    ("clock", _scheduled_clock, _run_clock),
+    ("deal", _scheduled_deal, _run_deal),
+)
+
+
+def _work_due(room: dict[str, Any], now: float) -> list[str]:
+    """Everything this room should already have done by ``now``."""
+    due = []
+    for name, when, _ in _SCHEDULE:
+        at = when(room)
+        if at is not None and now >= at:
+            due.append(name)
+    return due
+
+
+def _next_wakeup(room: dict[str, Any]) -> float | None:
+    """The soonest this room has anything to do, for whoever wants to know."""
+    times = [at for _, when, _ in _SCHEDULE if (at := when(room)) is not None]
+    return min(times) if times else None
+
+
+def _tick(room: dict[str, Any]) -> bool:
+    """Bring the room up to date with the wall clock. True if it changed."""
+    now = time.time()
+    changed = False
+    for name, when, run in _SCHEDULE:
+        at = when(room)
+        if at is not None and now >= at:
+            changed = run(room) or changed
     return changed
 
 
@@ -1739,13 +1803,12 @@ async def get_state(
     stale_heartbeat = bool(
         player and now - player.get("lastSeen", 0) >= HEARTBEAT_MIN_INTERVAL
     )
-    clock_expired = bool(
-        room.get("phase") == "hand"
-        and room.get("actionDeadline")
-        and now >= room["actionDeadline"] + TIMEOUT_GRACE
-    )
 
-    if stale_heartbeat or clock_expired or _auto_deal_due(room):
+    # The only two reasons to take the lock on a read: this player's presence
+    # needs writing down, or the room owes the clock something. The second one
+    # is asked of the schedule rather than restated here — see ``_SCHEDULE``,
+    # and the failure mode of keeping two copies of the same conditions.
+    if stale_heartbeat or _work_due(room, now):
         try:
             await _tick_under_lock(room_id, playerId)
         except RoomBusy:
