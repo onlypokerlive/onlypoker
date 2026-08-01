@@ -215,29 +215,29 @@ export function ActionBar({
 
       <div className="grid grid-cols-3 gap-2">
         {legal.canFold && (
-          <Button variant="destructive" disabled={busy} onClick={() => onAction("fold")}>
+          <Button size="lg" variant="destructive" disabled={busy} onClick={() => onAction("fold")}>
             Fold
           </Button>
         )}
         {legal.canCheck ? (
-          <Button variant="secondary" disabled={busy} onClick={() => onAction("check")}>
+          <Button size="lg" variant="secondary" disabled={busy} onClick={() => onAction("check")}>
             Check
           </Button>
         ) : (
-          <Button variant="secondary" disabled={busy} onClick={() => onAction("call")}>
+          <Button size="lg" variant="secondary" disabled={busy} onClick={() => onAction("call")}>
             Call {callAmt.toLocaleString()}
           </Button>
         )}
         {canRaise ? (
-          <Button disabled={busy} onClick={() => sendRaise(raiseTo)}>
+          <Button size="lg" disabled={busy} onClick={() => sendRaise(raiseTo)}>
             {clamp(raiseTo) >= max ? "All-in" : "Raise"}
           </Button>
         ) : raiseIsAllInOnly ? (
-          <Button disabled={busy} onClick={() => sendRaise(max)}>
+          <Button size="lg" disabled={busy} onClick={() => sendRaise(max)}>
             All-in {max.toLocaleString()}
           </Button>
         ) : (
-          <Button disabled>Raise</Button>
+          <Button size="lg" disabled>Raise</Button>
         )}
       </div>
     </div>

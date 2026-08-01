@@ -2190,6 +2190,39 @@ def test_the_room_code_alone_does_not_open_the_table(client, clock):
     ).status_code == 403
 
 
+def test_invite_preview_is_public_but_reveals_no_people_or_secrets(client, clock):
+    host = create_room(
+        client,
+        name="The Thursday Game",
+        smallBlind=10,
+        bigBlind=20,
+    )
+    join(client, host["roomId"], "A Friend")
+
+    res = client.get(f"/api/rooms/{host['roomId']}/preview")
+
+    assert res.status_code == 200
+    assert res.json() == {
+        "roomId": host["roomId"],
+        "name": "The Thursday Game",
+        "phase": "lobby",
+        "playerCount": 2,
+        "maxSeats": main.MAX_SEATS,
+        "smallBlind": 10,
+        "bigBlind": 20,
+        "handNumber": 0,
+    }
+    exposed = res.text
+    assert "Host" not in exposed
+    assert "A Friend" not in exposed
+    assert "secret" not in exposed
+    assert host["token"] not in exposed
+
+
+def test_invite_preview_for_a_missing_room_is_not_found(client, clock):
+    assert client.get("/api/rooms/NOPE99/preview").status_code == 404
+
+
 def test_a_borrowed_id_cannot_act(client, clock):
     room_id, ids = table(client, 3)
     start(client, room_id, ids[0])

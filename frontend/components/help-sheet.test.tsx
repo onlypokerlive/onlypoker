@@ -14,7 +14,8 @@ describe('HelpSheet', () => {
     render(<HelpSheet />)
     await userEvent.click(screen.getByRole('button', { name: 'How to play' }))
     expect(screen.getByRole('dialog')).toBeInTheDocument()
-    expect(screen.getByText('Hold to see your cards')).toBeInTheDocument()
+    expect(screen.getByRole('dialog').parentElement).toBe(document.body)
+    expect(screen.getByText('Peek or tap to see your cards')).toBeInTheDocument()
 
     await userEvent.click(screen.getByRole('button', { name: 'Close' }))
     expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
@@ -32,7 +33,18 @@ describe('HelpSheet', () => {
   it('does not close when the sheet itself is tapped', async () => {
     render(<HelpSheet />)
     await userEvent.click(screen.getByRole('button', { name: 'How to play' }))
-    await userEvent.click(screen.getByText('Hold to see your cards'))
+    await userEvent.click(screen.getByText('Peek or tap to see your cards'))
     expect(screen.getByRole('dialog')).toBeInTheDocument()
+  })
+
+  it('moves focus into the sheet and restores it to the trigger', async () => {
+    render(<HelpSheet />)
+    const trigger = screen.getByRole('button', { name: 'How to play' })
+
+    await userEvent.click(trigger)
+    expect(await screen.findByRole('button', { name: 'Close' })).toHaveFocus()
+
+    await userEvent.keyboard('{Escape}')
+    expect(trigger).toHaveFocus()
   })
 })

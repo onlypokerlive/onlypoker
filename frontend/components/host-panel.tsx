@@ -1,7 +1,8 @@
 "use client"
 
 import { useState } from "react"
-import { Flag, UserMinus } from "lucide-react"
+import { ChevronDown, Flag, Settings2, UserMinus } from "lucide-react"
+import { toast } from "sonner"
 
 import { Button } from "@/components/ui/button"
 import { pokerApi, type GameView, type Session, type TableControl } from "@/lib/poker-api"
@@ -34,6 +35,7 @@ export function HostPanel({
   // worse than no button.
   if (!view.isHost || view.phase === "hand" || view.phase === "finished") return null
   const others = view.players.filter((p) => !p.isYou)
+  if (view.phase === "lobby" && others.length === 0) return null
 
   async function remove(targetId: string) {
     setBusy(true)
@@ -41,6 +43,8 @@ export function HostPanel({
       await pokerApi.kickPlayer(roomId, view.you!.id, targetId, session?.token)
       setConfirming(null)
       onDone()
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "Could not remove that player.")
     } finally {
       setBusy(false)
     }
@@ -56,14 +60,23 @@ export function HostPanel({
         session?.token,
       )
       onDone()
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "Could not update the table.")
     } finally {
       setBusy(false)
     }
   }
 
   return (
-    <details className="rounded-xl border border-border/50 bg-card/50 px-3 py-2">
-      <summary className="cursor-pointer text-xs text-muted-foreground">Host controls</summary>
+    <details className="group rounded-xl border border-border/50 bg-card/50 px-3">
+      <summary className="flex min-h-11 cursor-pointer list-none items-center justify-between gap-2 text-sm text-muted-foreground transition-colors hover:text-foreground [&::-webkit-details-marker]:hidden">
+        <span className="flex items-center gap-2">
+          <Settings2 className="size-4 text-primary/70" aria-hidden />
+          Host controls
+        </span>
+        <ChevronDown className="size-4 transition-transform group-open:rotate-180" aria-hidden />
+      </summary>
+      <div className="border-t border-border/40 pb-3 pt-1">
       {/* Only once there is a night to end. In the lobby it would just be a
           button that stops a tournament nobody has started. */}
       {view.phase === "handover" && (
@@ -110,6 +123,7 @@ export function HostPanel({
           </li>
         ))}
       </ul>
+      </div>
     </details>
   )
 }

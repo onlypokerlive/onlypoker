@@ -19,11 +19,20 @@ const playfair = Playfair_Display({
   variable: '--font-playfair',
 })
 
+const deploymentHost =
+  process.env.NEXT_PUBLIC_SITE_URL ??
+  process.env.VERCEL_PROJECT_PRODUCTION_URL ??
+  process.env.VERCEL_URL ??
+  'http://localhost:3000'
+const metadataBase = new URL(
+  deploymentHost.startsWith('http') ? deploymentHost : `https://${deploymentHost}`,
+)
+
 export const metadata: Metadata = {
+  metadataBase,
   title: 'Felt & Gold — Private Texas Hold’em',
   description:
-    'Spin up a private No-Limit Texas Hold’em table, set the blinds and stacks, and invite your friends with a single link.',
-  generator: 'v0.app',
+    'Set up a private No-Limit Texas Hold’em table and invite your friends with one link. No account or download needed.',
 }
 
 export const viewport: Viewport = {

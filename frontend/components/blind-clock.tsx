@@ -33,7 +33,7 @@ export function BlindClock({ view }: { view: GameView }) {
       : 0
 
   return (
-    <div className="relative flex items-center gap-3 overflow-hidden rounded-xl border border-border/60 bg-card/60 py-1.5 pl-3 pr-3">
+    <div className="relative flex min-h-11 w-full items-center justify-between gap-3 overflow-hidden rounded-xl border border-border/60 bg-background/35 px-3 py-1.5 sm:w-auto sm:justify-start">
       <div className="flex flex-col leading-none">
         <span className="text-[9px] font-bold uppercase tracking-widest text-muted-foreground">
           {frozen ? 'Blinds' : `Level ${level.number}`}

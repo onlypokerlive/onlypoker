@@ -2,7 +2,7 @@
 
 import { useState } from 'react'
 import { useRouter } from 'next/navigation'
-import { Spade, ArrowRight } from 'lucide-react'
+import { ArrowRight, ChevronDown, SlidersHorizontal, Spade } from 'lucide-react'
 
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
@@ -12,38 +12,65 @@ import {
   FieldGroup,
   FieldLabel,
 } from '@/components/ui/field'
+import { recordRoomCreated, type CreationSource } from '@/lib/growth'
 import { BLIND_STRUCTURES, pokerApi, saveSession } from '@/lib/poker-api'
 
-/** Dead money each hand. The amount follows the big blind, so it climbs on
- *  its own and the host has one fewer number to pick. */
 const ANTE_MODES = [
   { id: 'off', label: 'None', blurb: 'No ante. Blinds only.' },
-  { id: 'bb', label: 'Big blind', blurb: 'The big blind posts one extra blind for the whole table — the modern structure, and the quickest.' },
-  { id: 'all', label: 'Everyone', blurb: 'Every player chips in a small ante each hand. The classic version.' },
+  {
+    id: 'bb',
+    label: 'Big blind',
+    blurb: 'The big blind posts one extra blind for the whole table.',
+  },
+  {
+    id: 'all',
+    label: 'Everyone',
+    blurb: 'Every player chips in a small ante each hand.',
+  },
 ] as const
 
-/** How often to blow a hand up. Kept to a few sane choices. */
 const BOMB_POT_CHOICES = [0, 10, 20] as const
-
-/** How often the table stops, in blind levels. */
 const BREAK_CHOICES = [0, 3, 5] as const
-
-/** How long the doors stay open, in blind levels. 99 is "all night". */
 const WINDOW_CHOICES = [
   { levels: 0, label: 'No' },
   { levels: 4, label: 'First 4 levels' },
   { levels: 99, label: 'Any time' },
 ] as const
 
-export function CreateRoomForm() {
+export interface CreateRoomPreset {
+  roomName?: string
+  startingChips?: number
+  smallBlind?: number
+  bigBlind?: number
+  levelMinutes?: number
+  actionSeconds?: number
+}
+
+function SettingHeading({ children }: { children: React.ReactNode }) {
+  return (
+    <h3 className="font-mono text-[10px] font-semibold uppercase tracking-[0.18em] text-primary/80">
+      {children}
+    </h3>
+  )
+}
+
+export function CreateRoomForm({
+  source = 'home',
+  preset = {},
+}: {
+  source?: CreationSource
+  preset?: CreateRoomPreset
+}) {
   const router = useRouter()
-  const [roomName, setRoomName] = useState('Friday Night Poker')
+  const [roomName, setRoomName] = useState(
+    preset.roomName ?? (source === 'rematch' ? 'The Rematch' : 'Friday Night Poker'),
+  )
   const [hostName, setHostName] = useState('')
-  const [startingChips, setStartingChips] = useState('1000')
-  const [smallBlind, setSmallBlind] = useState('5')
-  const [bigBlind, setBigBlind] = useState('10')
-  const [levelMinutes, setLevelMinutes] = useState('10')
-  const [actionSeconds, setActionSeconds] = useState('20')
+  const [startingChips, setStartingChips] = useState(String(preset.startingChips ?? 1000))
+  const [smallBlind, setSmallBlind] = useState(String(preset.smallBlind ?? 5))
+  const [bigBlind, setBigBlind] = useState(String(preset.bigBlind ?? 10))
+  const [levelMinutes, setLevelMinutes] = useState(String(preset.levelMinutes ?? 10))
+  const [actionSeconds, setActionSeconds] = useState(String(preset.actionSeconds ?? 20))
   const [anteMode, setAnteMode] = useState<(typeof ANTE_MODES)[number]['id']>('off')
   const [straddle, setStraddle] = useState(false)
   const [bombPotEvery, setBombPotEvery] = useState(0)
@@ -53,11 +80,12 @@ export function CreateRoomForm() {
   const [rebuyLevels, setRebuyLevels] = useState(0)
   const [runItTwice, setRunItTwice] = useState(false)
   const [password, setPassword] = useState('')
+  const [customized, setCustomized] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [loading, setLoading] = useState(false)
 
-  async function handleSubmit(e: React.FormEvent) {
-    e.preventDefault()
+  async function handleSubmit(event: React.FormEvent) {
+    event.preventDefault()
     setError(null)
 
     const sb = Number(smallBlind)
@@ -66,10 +94,12 @@ export function CreateRoomForm() {
     const minutes = Number(levelMinutes)
     const seconds = Number(actionSeconds)
 
+    if (!roomName.trim()) return setError('Give the table a name.')
     if (!hostName.trim()) return setError('Enter your display name.')
     if (!password.trim()) return setError('Set a room password to share.')
-    if (bb <= sb) return setError('Big blind must be larger than the small blind.')
-    if (chips < bb * 2)
+    if (!sb || !bb || bb <= sb)
+      return setError('Big blind must be larger than the small blind.')
+    if (!chips || chips < bb * 2)
       return setError('Starting chips should be at least twice the big blind.')
     if (minutes > 120) return setError('Blind levels can last at most 120 minutes.')
     if (seconds > 120) return setError('A decision can take at most 120 seconds.')
@@ -97,328 +127,328 @@ export function CreateRoomForm() {
         rebuyLevels,
         rebuysPerPlayer: 2,
         addOn: rebuyLevels > 0,
-        timeBankSeconds: Number(actionSeconds) ? 60 : 0,
+        timeBankSeconds: seconds ? 60 : 0,
         runItTwice,
       })
       saveSession(session)
+      recordRoomCreated({ source, customized })
       router.push(`/room/${session.roomId}`)
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'Something went wrong.')
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : 'Something went wrong.')
       setLoading(false)
     }
   }
 
   return (
     <form onSubmit={handleSubmit}>
-      <FieldGroup>
+      <FieldGroup className="gap-3">
         <Field>
           <FieldLabel htmlFor="roomName">Table name</FieldLabel>
           <Input
             id="roomName"
             value={roomName}
-            onChange={(e) => setRoomName(e.target.value)}
+            onChange={(event) => setRoomName(event.target.value)}
             maxLength={40}
             placeholder="Friday Night Poker"
           />
         </Field>
 
-        <Field>
-          <FieldLabel htmlFor="hostName">Your name</FieldLabel>
-          <Input
-            id="hostName"
-            value={hostName}
-            onChange={(e) => setHostName(e.target.value)}
-            maxLength={20}
-            placeholder="e.g. Alex"
-            autoComplete="off"
-          />
-        </Field>
-
-        <div className="grid grid-cols-2 gap-4">
+        <div className="grid gap-3 sm:grid-cols-2">
           <Field>
-            <FieldLabel htmlFor="smallBlind">Small blind</FieldLabel>
+            <FieldLabel htmlFor="hostName">Your name</FieldLabel>
             <Input
-              id="smallBlind"
-              inputMode="numeric"
-              value={smallBlind}
-              onChange={(e) =>
-                setSmallBlind(e.target.value.replace(/[^0-9]/g, ''))
-              }
+              id="hostName"
+              value={hostName}
+              onChange={(event) => setHostName(event.target.value)}
+              maxLength={20}
+              placeholder="e.g. Alex"
+              autoComplete="nickname"
             />
           </Field>
           <Field>
-            <FieldLabel htmlFor="bigBlind">Big blind</FieldLabel>
+            <FieldLabel htmlFor="password">Room password</FieldLabel>
             <Input
-              id="bigBlind"
-              inputMode="numeric"
-              value={bigBlind}
-              onChange={(e) => setBigBlind(e.target.value.replace(/[^0-9]/g, ''))}
+              id="password"
+              type="password"
+              value={password}
+              onChange={(event) => setPassword(event.target.value)}
+              maxLength={64}
+              placeholder="For your friends"
+              autoComplete="new-password"
             />
           </Field>
         </div>
 
-        <Field>
-          <FieldLabel htmlFor="startingChips">Chips per player</FieldLabel>
-          <Input
-            id="startingChips"
-            inputMode="numeric"
-            value={startingChips}
-            onChange={(e) =>
-              setStartingChips(e.target.value.replace(/[^0-9]/g, ''))
-            }
-          />
-          <FieldDescription>
-            Everyone starts each session with this stack.
-          </FieldDescription>
-        </Field>
-
-        <Field>
-          <FieldLabel>Structure</FieldLabel>
-          {/* The host is choosing how long the night is, not a number of
-              minutes. The number stays underneath for anyone who wants it. */}
-          <div className="grid grid-cols-3 gap-2">
-            {BLIND_STRUCTURES.map((s) => (
-              <Button
-                key={s.id}
-                type="button"
-                variant={levelMinutes === String(s.minutes) ? 'secondary' : 'outline'}
-                onClick={() => setLevelMinutes(String(s.minutes))}
-                className="flex h-auto flex-col gap-0 py-2"
-              >
-                <span className="text-sm font-semibold">{s.label}</span>
-                <span className="text-[10px] font-normal opacity-70">{s.minutes} min</span>
-              </Button>
-            ))}
-          </div>
-          <FieldDescription>
-            {BLIND_STRUCTURES.find((s) => String(s.minutes) === levelMinutes)?.blurb ??
-              'Custom level length.'}
-          </FieldDescription>
-        </Field>
-
-        <Field>
-          <FieldLabel>Ante</FieldLabel>
-          <div className="grid grid-cols-3 gap-2">
-            {ANTE_MODES.map((a) => (
-              <Button
-                key={a.id}
-                type="button"
-                variant={anteMode === a.id ? 'secondary' : 'outline'}
-                onClick={() => setAnteMode(a.id)}
-                className="flex h-auto flex-col gap-0 py-2"
-              >
-                <span className="text-sm font-semibold">{a.label}</span>
-              </Button>
-            ))}
-          </div>
-          <FieldDescription>
-            {ANTE_MODES.find((a) => a.id === anteMode)?.blurb}
-          </FieldDescription>
-        </Field>
-
-        <div className="grid grid-cols-2 gap-4">
-          <Field>
-            <FieldLabel htmlFor="levelMinutes">Blinds up every</FieldLabel>
-            <Input
-              id="levelMinutes"
-              inputMode="numeric"
-              value={levelMinutes}
-              onChange={(e) =>
-                setLevelMinutes(e.target.value.replace(/[^0-9]/g, ''))
-              }
-            />
-            <FieldDescription>
-              Minutes per level. 0 keeps the blinds where they start.
-            </FieldDescription>
-          </Field>
-          <Field>
-            <FieldLabel htmlFor="actionSeconds">Time to act</FieldLabel>
-            <Input
-              id="actionSeconds"
-              inputMode="numeric"
-              value={actionSeconds}
-              onChange={(e) =>
-                setActionSeconds(e.target.value.replace(/[^0-9]/g, ''))
-              }
-            />
-            <FieldDescription>
-              Seconds per decision. Running out checks, or folds. 0 removes the
-              clock.
-            </FieldDescription>
-          </Field>
+        <div
+          aria-label="Table setup"
+          className="rounded-lg border border-primary/15 bg-primary/5 px-3 py-2.5"
+        >
+          <p className="font-mono text-[11px] leading-relaxed text-muted-foreground">
+            {smallBlind || '—'}/{bigBlind || '—'} blinds ·{' '}
+            {Number(startingChips || 0).toLocaleString()} chips ·{' '}
+            {levelMinutes === '0' ? 'fixed blinds' : `${levelMinutes} min levels`} ·{' '}
+            {actionSeconds === '0' ? 'no action clock' : `${actionSeconds} sec clock`}
+          </p>
         </div>
 
-        <Field>
-          <FieldLabel>Breaks</FieldLabel>
-          {/* The blinds stop climbing while the table is stopped, which is the
-              only thing that makes a break a break. Said out loud on the
-              screen where the host decides it. */}
-          <div className="flex items-center gap-2">
-            {BREAK_CHOICES.map((n) => (
-              <Button
-                key={n}
-                type="button"
-                variant={breakEveryLevels === n ? 'secondary' : 'outline'}
-                onClick={() => setBreakEveryLevels(n)}
-                className="flex-1"
-              >
-                {n === 0 ? 'No breaks' : `Every ${n} levels`}
-              </Button>
-            ))}
-          </div>
-          <FieldDescription>
-            {breakEveryLevels
-              ? `Five minutes off every ${breakEveryLevels} levels. The blinds stay where they are until everyone is back.`
-              : 'You can still stop the table whenever you like.'}
-          </FieldDescription>
-        </Field>
+        <details
+          className="group rounded-lg border border-border bg-muted/20"
+          onToggle={(event) => {
+            if (event.currentTarget.open) setCustomized(true)
+          }}
+        >
+          <summary className="flex min-h-11 cursor-pointer list-none items-center gap-3 rounded-[inherit] px-3 py-1.5 transition-colors hover:bg-muted/50 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring [&::-webkit-details-marker]:hidden">
+            <span className="flex size-8 items-center justify-center rounded-md bg-primary/10 text-primary">
+              <SlidersHorizontal className="size-4" aria-hidden />
+            </span>
+            <span className="min-w-0 flex-1">
+              <span className="block text-sm font-semibold text-foreground">Customize the night</span>
+              <span className="block truncate text-xs text-muted-foreground">
+                Stakes, pace, breaks and house rules
+              </span>
+            </span>
+            <ChevronDown className="size-4 text-muted-foreground transition-transform group-open:rotate-180" aria-hidden />
+          </summary>
 
-        <Field>
-          <FieldLabel>House rules</FieldLabel>
-          {/* Decided up front, by the host, and never mid-game — these change
-              how a hand is dealt, so they cannot be argued about at the table
-              once the cards are out. */}
-          <div className="flex flex-col gap-2">
-            <Button
-              type="button"
-              variant={straddle ? 'secondary' : 'outline'}
-              onClick={() => setStraddle(!straddle)}
-              className="h-auto justify-start py-2 text-left"
-            >
-              <span className="flex flex-col">
-                <span className="text-sm font-semibold">Straddle</span>
-                <span className="text-[11px] font-normal opacity-70">
-                  Under the gun pays two big blinds and gets the last word before the flop.
-                </span>
-              </span>
-            </Button>
-            <Button
-              type="button"
-              variant={sevenDeuce ? 'secondary' : 'outline'}
-              onClick={() => setSevenDeuce(sevenDeuce ? 0 : 2)}
-              className="h-auto justify-start py-2 text-left"
-            >
-              <span className="flex flex-col">
-                <span className="text-sm font-semibold">The 7-2 game</span>
-                <span className="text-[11px] font-normal opacity-70">
-                  Win a pot with seven-deuce offsuit and everyone pays you two big blinds.
-                  Counts on pots won by folding too — but you have to show it.
-                </span>
-              </span>
-            </Button>
-            <Button
-              type="button"
-              variant={runItTwice ? 'secondary' : 'outline'}
-              onClick={() => setRunItTwice(!runItTwice)}
-              className="h-auto justify-start py-2 text-left"
-            >
-              <span className="flex flex-col">
-                <span className="text-sm font-semibold">Run it twice</span>
-                <span className="text-[11px] font-normal opacity-70">
-                  All-in with cards to come? The rest of the board can be dealt twice,
-                  for half the pot each — if everybody still in agrees.
-                </span>
-              </span>
-            </Button>
-            <div className="flex items-center gap-2">
-              {BOMB_POT_CHOICES.map((n) => (
+          <div className="flex flex-col gap-6 border-t border-border/70 px-3 pb-4 pt-5">
+            <section className="flex flex-col gap-3">
+              <SettingHeading>Stakes</SettingHeading>
+              <Field>
+                <FieldLabel htmlFor="startingChips">Chips per player</FieldLabel>
+                <Input
+                  id="startingChips"
+                  inputMode="numeric"
+                  value={startingChips}
+                  onChange={(event) =>
+                    setStartingChips(event.target.value.replace(/[^0-9]/g, ''))
+                  }
+                />
+              </Field>
+              <div className="grid grid-cols-2 gap-3">
+                <Field>
+                  <FieldLabel htmlFor="smallBlind">Small blind</FieldLabel>
+                  <Input
+                    id="smallBlind"
+                    inputMode="numeric"
+                    value={smallBlind}
+                    onChange={(event) =>
+                      setSmallBlind(event.target.value.replace(/[^0-9]/g, ''))
+                    }
+                  />
+                </Field>
+                <Field>
+                  <FieldLabel htmlFor="bigBlind">Big blind</FieldLabel>
+                  <Input
+                    id="bigBlind"
+                    inputMode="numeric"
+                    value={bigBlind}
+                    onChange={(event) =>
+                      setBigBlind(event.target.value.replace(/[^0-9]/g, ''))
+                    }
+                  />
+                </Field>
+              </div>
+            </section>
+
+            <section className="flex flex-col gap-3">
+              <SettingHeading>Pace</SettingHeading>
+              <div className="grid grid-cols-3 gap-2">
+                {BLIND_STRUCTURES.map((structure) => (
+                  <Button
+                    key={structure.id}
+                    type="button"
+                    variant={levelMinutes === String(structure.minutes) ? 'secondary' : 'outline'}
+                    onClick={() => setLevelMinutes(String(structure.minutes))}
+                    aria-pressed={levelMinutes === String(structure.minutes)}
+                    className="flex h-auto flex-col gap-0 py-2"
+                  >
+                    <span className="text-sm font-semibold">{structure.label}</span>
+                    <span className="text-[10px] font-normal opacity-70">{structure.minutes} min</span>
+                  </Button>
+                ))}
+              </div>
+              <div className="grid grid-cols-2 gap-3">
+                <Field>
+                  <FieldLabel htmlFor="levelMinutes">Blinds up every</FieldLabel>
+                  <Input
+                    id="levelMinutes"
+                    inputMode="numeric"
+                    value={levelMinutes}
+                    onChange={(event) =>
+                      setLevelMinutes(event.target.value.replace(/[^0-9]/g, ''))
+                    }
+                  />
+                  <FieldDescription>Minutes. 0 keeps them fixed.</FieldDescription>
+                </Field>
+                <Field>
+                  <FieldLabel htmlFor="actionSeconds">Time to act</FieldLabel>
+                  <Input
+                    id="actionSeconds"
+                    inputMode="numeric"
+                    value={actionSeconds}
+                    onChange={(event) =>
+                      setActionSeconds(event.target.value.replace(/[^0-9]/g, ''))
+                    }
+                  />
+                  <FieldDescription>Seconds. 0 removes the clock.</FieldDescription>
+                </Field>
+              </div>
+            </section>
+
+            <section className="flex flex-col gap-3">
+              <SettingHeading>Antes & breaks</SettingHeading>
+              <Field>
+                <FieldLabel>Ante</FieldLabel>
+                <div className="grid grid-cols-3 gap-2">
+                  {ANTE_MODES.map((ante) => (
+                    <Button
+                      key={ante.id}
+                      type="button"
+                      variant={anteMode === ante.id ? 'secondary' : 'outline'}
+                      onClick={() => setAnteMode(ante.id)}
+                      aria-pressed={anteMode === ante.id}
+                    >
+                      {ante.label}
+                    </Button>
+                  ))}
+                </div>
+                <FieldDescription>
+                  {ANTE_MODES.find((ante) => ante.id === anteMode)?.blurb}
+                </FieldDescription>
+              </Field>
+              <Field>
+                <FieldLabel>Breaks</FieldLabel>
+                <div className="grid grid-cols-3 gap-2">
+                  {BREAK_CHOICES.map((choice) => (
+                    <Button
+                      key={choice}
+                      type="button"
+                      variant={breakEveryLevels === choice ? 'secondary' : 'outline'}
+                      onClick={() => setBreakEveryLevels(choice)}
+                      aria-pressed={breakEveryLevels === choice}
+                      className="h-auto whitespace-normal px-2 py-2 text-xs"
+                    >
+                      {choice === 0 ? 'None' : `Every ${choice} levels`}
+                    </Button>
+                  ))}
+                </div>
+              </Field>
+            </section>
+
+            <section className="flex flex-col gap-3">
+              <SettingHeading>House rules</SettingHeading>
+              {[
+                {
+                  label: 'Straddle',
+                  blurb: 'UTG posts two big blinds and acts last preflop.',
+                  selected: straddle,
+                  toggle: () => setStraddle((value) => !value),
+                },
+                {
+                  label: 'The 7-2 game',
+                  blurb: 'Win with seven-deuce offsuit and collect two big blinds each.',
+                  selected: !!sevenDeuce,
+                  toggle: () => setSevenDeuce((value) => (value ? 0 : 2)),
+                },
+                {
+                  label: 'Run it twice',
+                  blurb: 'All remaining players can agree to deal two boards.',
+                  selected: runItTwice,
+                  toggle: () => setRunItTwice((value) => !value),
+                },
+              ].map((rule) => (
                 <Button
-                  key={n}
+                  key={rule.label}
                   type="button"
-                  variant={bombPotEvery === n ? 'secondary' : 'outline'}
-                  onClick={() => setBombPotEvery(n)}
-                  className="flex-1"
+                  variant={rule.selected ? 'secondary' : 'outline'}
+                  onClick={rule.toggle}
+                  aria-pressed={rule.selected}
+                  className="h-auto justify-start py-2 text-left"
                 >
-                  {n === 0 ? 'No bomb pots' : `Every ${n}`}
+                  <span className="flex flex-col">
+                    <span className="text-sm font-semibold">{rule.label}</span>
+                    <span className="text-[11px] font-normal opacity-70">{rule.blurb}</span>
+                  </span>
                 </Button>
               ))}
-            </div>
+              <Field>
+                <FieldLabel>Bomb pots</FieldLabel>
+                <div className="grid grid-cols-3 gap-2">
+                  {BOMB_POT_CHOICES.map((choice) => (
+                    <Button
+                      key={choice}
+                      type="button"
+                      variant={bombPotEvery === choice ? 'secondary' : 'outline'}
+                      onClick={() => setBombPotEvery(choice)}
+                      aria-pressed={bombPotEvery === choice}
+                    >
+                      {choice === 0 ? 'Off' : `Every ${choice}`}
+                    </Button>
+                  ))}
+                </div>
+              </Field>
+            </section>
+
+            <section className="flex flex-col gap-3">
+              <SettingHeading>Doors & second chances</SettingHeading>
+              <Field>
+                <FieldLabel>Turning up late</FieldLabel>
+                <div className="grid grid-cols-3 gap-2">
+                  {WINDOW_CHOICES.map((choice) => (
+                    <Button
+                      key={choice.levels}
+                      type="button"
+                      variant={lateEntryLevels === choice.levels ? 'secondary' : 'outline'}
+                      onClick={() => setLateEntryLevels(choice.levels)}
+                      aria-pressed={lateEntryLevels === choice.levels}
+                      className="h-auto whitespace-normal px-2 py-2 text-xs"
+                    >
+                      {choice.label}
+                    </Button>
+                  ))}
+                </div>
+              </Field>
+              <Field>
+                <FieldLabel>Buying back in</FieldLabel>
+                <div className="grid grid-cols-3 gap-2">
+                  {WINDOW_CHOICES.map((choice) => (
+                    <Button
+                      key={choice.levels}
+                      type="button"
+                      variant={rebuyLevels === choice.levels ? 'secondary' : 'outline'}
+                      onClick={() => setRebuyLevels(choice.levels)}
+                      aria-pressed={rebuyLevels === choice.levels}
+                      className="h-auto whitespace-normal px-2 py-2 text-xs"
+                    >
+                      {choice.label}
+                    </Button>
+                  ))}
+                </div>
+              </Field>
+            </section>
           </div>
-          <FieldDescription>
-            {bombPotEvery
-              ? `Every ${bombPotEvery} hands nobody gets a preflop: everyone antes and the flop comes straight out.`
-              : 'Bomb pots are off.'}
-          </FieldDescription>
-        </Field>
+        </details>
 
-        <Field>
-          <FieldLabel>Turning up late</FieldLabel>
-          {/* Coming and going is the host's call, decided here rather than
-              argued about at midnight when somebody's flatmate walks in. */}
-          <div className="flex items-center gap-2">
-            {WINDOW_CHOICES.map((c) => (
-              <Button
-                key={c.levels}
-                type="button"
-                variant={lateEntryLevels === c.levels ? 'secondary' : 'outline'}
-                onClick={() => setLateEntryLevels(c.levels)}
-                className="flex-1"
-              >
-                {c.label}
-              </Button>
-            ))}
-          </div>
-          <FieldDescription>
-            {lateEntryLevels
-              ? 'Someone arriving takes an empty chair and plays from the next deal.'
-              : 'The table locks when the first hand is dealt.'}
-          </FieldDescription>
-        </Field>
-
-        <Field>
-          <FieldLabel>Buying back in</FieldLabel>
-          <div className="flex items-center gap-2">
-            {WINDOW_CHOICES.map((c) => (
-              <Button
-                key={c.levels}
-                type="button"
-                variant={rebuyLevels === c.levels ? 'secondary' : 'outline'}
-                onClick={() => setRebuyLevels(c.levels)}
-                className="flex-1"
-              >
-                {c.label}
-              </Button>
-            ))}
-          </div>
-          <FieldDescription>
-            {rebuyLevels
-              ? 'Two rebuys each after busting, plus one top-up for anybody still in. Nobody is knocked out for good while the window is open.'
-              : 'Bust once and you are out. The classic.'}
-          </FieldDescription>
-        </Field>
-
-        <Field>
-          <FieldLabel htmlFor="password">Room password</FieldLabel>
-          <Input
-            id="password"
-            value={password}
-            onChange={(e) => setPassword(e.target.value)}
-            maxLength={64}
-            placeholder="Share this with your friends"
-            autoComplete="off"
-          />
-          <FieldDescription>
-            Friends need this password to join from the invite link.
-          </FieldDescription>
-        </Field>
-
-        {error && (
+        {error ? (
           <p className="text-sm text-destructive" role="alert">
             {error}
           </p>
-        )}
+        ) : null}
 
         <Button type="submit" size="lg" disabled={loading} className="w-full">
           {loading ? (
-            <>Creating table…</>
+            <>Opening the table…</>
           ) : (
             <>
               <Spade data-icon="inline-start" />
-              Create table
+              {source === 'rematch' ? 'Create rematch' : 'Create table'}
               <ArrowRight data-icon="inline-end" />
             </>
           )}
         </Button>
+        <p className="text-center text-xs leading-relaxed text-muted-foreground">
+          Private by default. No account, download, or real-money chips.
+        </p>
       </FieldGroup>
     </form>
   )

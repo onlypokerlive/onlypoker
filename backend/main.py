@@ -2178,6 +2178,33 @@ async def health() -> dict[str, str]:
     return {"status": "ok"}
 
 
+@app.get("/rooms/{room_id}/preview")
+async def room_preview(room_id: str) -> dict[str, Any]:
+    """The small public face of an invitation link.
+
+    Link unfurlers cannot type the room password or hold a player's token, but
+    a useful invitation still needs to say which table the link opens. Keep
+    this projection deliberately separate from ``_build_view``: no player
+    names, credentials, cards, house rules or scheduled work belong in a chat
+    preview. Anyone with the room code can read exactly these table facts and
+    nothing else.
+    """
+    room = await load_room(room_id)
+    if not room:
+        raise fastapi.HTTPException(404, "Room not found.")
+
+    return {
+        "roomId": room["id"],
+        "name": room["name"],
+        "phase": room["phase"],
+        "playerCount": len(room.get("order") or []),
+        "maxSeats": MAX_SEATS,
+        "smallBlind": int(room["smallBlind"]),
+        "bigBlind": int(room["bigBlind"]),
+        "handNumber": int(room.get("handNumber", 0)),
+    }
+
+
 @app.post("/rooms")
 async def create_room(body: CreateRoomBody) -> dict[str, Any]:
     if body.bigBlind <= body.smallBlind:

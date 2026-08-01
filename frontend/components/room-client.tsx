@@ -21,9 +21,11 @@ import { BuyChips } from "@/components/buy-chips"
 import { PreActions } from "@/components/pre-actions"
 import { RunoutOffer } from "@/components/runout-offer"
 import { TournamentResults } from "@/components/tournament-results"
+import { InviteShareButton } from "@/components/invite-share-button"
 import { useSecondsLeft } from "@/lib/use-countdown"
 import { useTableEvents } from "@/lib/use-table-events"
 import { useRunout } from "@/lib/use-runout"
+import { recordGameStarted, recordTournamentFinished } from "@/lib/growth"
 import {
   ApiError,
   pokerApi,
@@ -115,6 +117,16 @@ export function RoomClient({ roomId }: { roomId: string }) {
   // An all-in arrives as a finished board in one response. Deal it out.
   const { board: shownBoard, revealing } = useRunout(view)
 
+  useEffect(() => {
+    if (view?.phase !== "finished") return
+    recordTournamentFinished(
+      view.roomId,
+      view.standings.length || view.players.length,
+      view.handNumber,
+      view.isHost,
+    )
+  }, [view?.phase, view?.roomId, view?.standings.length, view?.players.length, view?.handNumber, view?.isHost])
+
   async function withBusy(fn: () => Promise<void>) {
     if (busy) return
     setBusy(true)
@@ -131,9 +143,12 @@ export function RoomClient({ roomId }: { roomId: string }) {
 
   const handleStart = () =>
     withBusy(async () => {
-      if (!session) return
+      if (!session || !view) return
+      const firstDeal = view.phase === "lobby" && view.handNumber === 0
       const raw = await pokerApi.startHand(roomId, session.playerId, session.token)
-      setView(toGameView(raw, session.playerId))
+      const nextView = toGameView(raw, session.playerId)
+      setView(nextView)
+      if (firstDeal) recordGameStarted(roomId, nextView.players.length)
     })
 
   const handleAction = (action: "fold" | "check" | "call" | "raise", amount?: number) =>
@@ -193,29 +208,54 @@ export function RoomClient({ roomId }: { roomId: string }) {
   // chaining: `!you?.sittingOut` is *true* for a spectator, which is how you
   // end up offering a chair to somebody who does not have one.
   const spectating = !you
+  const phaseLabel =
+    view.phase === "lobby"
+      ? "Lobby open"
+      : view.phase === "hand"
+        ? "Hand in progress"
+        : view.phase === "handover"
+          ? "Between hands"
+          : "Final table"
 
   return (
-    <main className="mx-auto flex min-h-svh w-full max-w-4xl flex-col gap-4 px-3 py-4">
-      <header className="flex items-start justify-between gap-2">
-        <div className="flex flex-col">
-          <h1 className="font-serif text-lg font-bold leading-tight text-foreground">{view.roomName}</h1>
-          <span className="text-xs text-muted-foreground">
-            {view.handNumber > 0 ? `Hand #${view.handNumber}` : "Not started"}
+    <main className="relative isolate mx-auto flex min-h-svh w-full max-w-5xl flex-col gap-3 px-3 py-3 sm:gap-4 sm:px-5 sm:py-4">
+      <header className="room-stage grid grid-cols-[minmax(0,1fr)_auto] gap-x-3 gap-y-2 rounded-2xl px-3 py-3 sm:grid-cols-[minmax(0,1fr)_auto_auto] sm:items-center sm:px-4">
+        <div className="min-w-0">
+          <span className="flex items-center gap-1.5 text-[9px] font-bold uppercase tracking-[0.18em] text-primary/80">
+            <span className="size-1.5 rounded-full bg-primary shadow-[0_0_0_4px_color-mix(in_oklch,var(--primary),transparent_88%)]" aria-hidden />
+            {phaseLabel}
+          </span>
+          <h1 className="mt-1 truncate font-serif text-xl font-bold leading-none text-foreground sm:text-2xl">
+            {view.roomName}
+          </h1>
+          <div className="mt-1.5 flex flex-wrap items-center gap-x-2 gap-y-0.5 text-xs text-muted-foreground">
+            <span>{view.handNumber > 0 ? `Hand #${view.handNumber}` : "Waiting for players"}</span>
             {/* Everybody is told, not just the host: knowing it is the last
                 hand changes how it gets played. */}
             {view.lastHand && !finished && (
-              <span className="ml-2 font-bold text-accent">LAST HAND</span>
+              <span className="font-bold text-primary">LAST HAND</span>
             )}
             {/* A hand nobody chose to play needs saying, or the missing
                 preflop reads as the app having skipped a turn. */}
-            {view.bombPot && <span className="ml-2 font-bold text-accent">BOMB POT</span>}
+            {view.bombPot && <span className="font-bold text-primary">BOMB POT</span>}
             {view.ante > 0 && !view.bombPot && (
-              <span className="ml-2">ante {view.ante.toLocaleString()}</span>
+              <span>ante {view.ante.toLocaleString()}</span>
             )}
-            {error && <span className="ml-2 text-destructive">{error}</span>}
-          </span>
+            {error && <span className="text-destructive">{error}</span>}
+          </div>
         </div>
-        <div className="flex shrink-0 items-center gap-1.5">
+        <div className="flex shrink-0 items-center justify-end gap-1 self-start sm:self-center">
+          {view.phase !== "finished" && view.phase !== "lobby" && (
+            <InviteShareButton
+              roomId={view.roomId}
+              roomName={view.roomName}
+              phase={view.phase}
+              isHost={view.isHost}
+              playerCount={view.players.length}
+              surface="table"
+              compact
+            />
+          )}
           <HelpSheet />
           {/* On the table, not buried in settings: this gets used with other
               people in the room, and the person who needs it needs it now. */}
@@ -229,13 +269,17 @@ export function RoomClient({ roomId }: { roomId: string }) {
           >
             {soundOn ? <Volume2 /> : <VolumeX />}
           </Button>
-          {!finished && <BlindClock view={view} />}
         </div>
+        {!finished && (
+          <div className="col-span-2 min-w-0 sm:col-span-1 sm:col-start-3 sm:row-start-1">
+            <BlindClock view={view} />
+          </div>
+        )}
       </header>
 
       {view.phase === "lobby" ? (
-        <div className="flex flex-1 items-center justify-center">
-          <div className="flex w-full max-w-md flex-col gap-3">
+        <div className="flex flex-1 items-center justify-center py-1 sm:py-5">
+          <div className="flex w-full max-w-4xl flex-col gap-3">
             <RoomLobby view={view} onStart={handleStart} busy={busy} />
             {/* The moment you actually need this is before the cards come out:
                 somebody joined the wrong table, or took the last seat. */}
@@ -287,7 +331,7 @@ export function RoomClient({ roomId }: { roomId: string }) {
 
           {/* Pinned to the bottom: on a short phone the table scrolls, but the
               buttons must stay reachable while the shot clock runs. */}
-          <div className="sticky bottom-0 z-20 mt-auto -mx-3 flex flex-col gap-2 border-t border-border/40 bg-background/90 px-3 pb-[max(0.5rem,env(safe-area-inset-bottom))] pt-2 backdrop-blur">
+          <div className="sticky bottom-0 z-20 mt-auto -mx-3 flex flex-col gap-2 border-t border-border/50 bg-background/94 px-3 pb-[max(0.5rem,env(safe-area-inset-bottom))] pt-2 shadow-[0_-18px_42px_rgba(0,0,0,0.32)] backdrop-blur-xl sm:-mx-5 sm:px-5">
             {spectating ? (
               // Say it plainly. Somebody who is watching and does not know it
               // spends the night waiting for cards that are never coming.

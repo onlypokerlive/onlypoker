@@ -64,6 +64,22 @@ components where getting a condition wrong shows somebody something they should
 not see. `pnpm lint` is green; the React Compiler rules are left as warnings on
 purpose — see the note in `frontend/eslint.config.mjs`.
 
+## Growth measurement and invitations
+
+Production uses Vercel Analytics custom events for `Room Created`,
+`Invite Shared`, `Room Joined`, `Game Started`, `Tournament Finished`,
+`Results Shared`, `Finish CTA`, and `Guest Became Host`. Event properties are
+limited to roles, sources, methods, phases, booleans, and counts; room codes,
+player IDs/names, passwords, tokens, cards, and game state are not sent as
+custom properties. Guest-to-host attribution is stored only on that device and
+expires after 30 days.
+
+Room invitation pages and Open Graph images use the public
+`GET /api/rooms/:roomId/preview` projection. It exposes only the table name,
+phase, seat count, capacity, blinds, and hand count. Set `NEXT_PUBLIC_SITE_URL`
+when a deployment needs invitation metadata to use a custom canonical origin;
+Vercel deployment URLs are detected automatically.
+
 ## Deploying
 
 `vercel.json` describes two Vercel services: `frontend/` and `backend/`

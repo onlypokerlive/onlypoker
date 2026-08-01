@@ -8,6 +8,7 @@ import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Field, FieldLabel } from '@/components/ui/field'
 import { clearJoinAttempt, loadSession, pokerApi, saveSession } from '@/lib/poker-api'
+import { recordRoomJoined } from '@/lib/growth'
 
 export function JoinRoomForm({ roomId }: { roomId: string }) {
   const router = useRouter()
@@ -35,6 +36,9 @@ export function JoinRoomForm({ roomId }: { roomId: string }) {
             )
           : await pokerApi.watchRoom(roomId, password.trim())
       saveSession(session)
+      // A host reopening their own invitation is returning, not an acquired
+      // guest. Keep both the join count and guest-to-host attribution honest.
+      if (!session.isHost) recordRoomJoined(roomId, as)
       // The seat is confirmed and saved, so the attempt is over. Keeping the
       // name would make every later join from this device a "retry" of it.
       clearJoinAttempt(roomId)
@@ -67,6 +71,7 @@ export function JoinRoomForm({ roomId }: { roomId: string }) {
         <FieldLabel htmlFor="password">Room password</FieldLabel>
         <Input
           id="password"
+          type="password"
           value={password}
           onChange={(e) => setPassword(e.target.value)}
           maxLength={64}
