@@ -59,18 +59,54 @@ export function PlayerSeat({
         // without burying the felt. Wagered chips live out on the table.
         // The width tracks the viewport so a 320px phone doesn't push the
         // outermost seats off the edge of the table.
-        "flex flex-col items-center gap-0.5 rounded-lg border p-1 transition-all sm:w-28 sm:gap-1 sm:rounded-xl sm:p-2",
+        "relative flex flex-col items-center gap-0.5 rounded-lg border p-1 transition-all sm:w-28 sm:gap-1 sm:rounded-xl sm:p-2",
         compact
           ? "w-[clamp(3.25rem,17vw,3.875rem)]"
           : "w-[clamp(3.75rem,20vw,4.75rem)]",
         player.isActor
           ? "border-accent bg-accent/10 shadow-[0_0_18px_hsl(var(--accent)/0.45)]"
           : "border-border/60 bg-card/90",
+        // Running out of time, said three ways, because each one fails
+        // somewhere real: colour goes first on a dim screen and for anybody
+        // who does not separate red from gold, the number needs looking at,
+        // and the beat is what catches the corner of your eye while you are
+        // reading your own cards. Sound and haptics are a fourth and a fifth
+        // and neither can be relied on — the switch may be off, and Safari on
+        // iOS has no vibration at all.
+        //
+        // The beat pulses the glow rather than the seat: fading the whole box
+        // would dim the name and the chip count at exactly the moment somebody
+        // needs to read them.
+        urgent && "beat border-destructive",
         isFolded && "opacity-45",
         player.out && "opacity-40 grayscale",
         !player.connected && !player.out && "border-dashed",
       )}
     >
+      {/* The ring emptying round the seat. The focus travelling from chair to
+          chair is what tells the table where the action is without anybody
+          having to read a name — and a ring that drains says how long is left
+          at the same time, in the same glance. */}
+      {showClock && (
+        <div
+          aria-hidden
+          className="pointer-events-none absolute -inset-px rounded-lg sm:rounded-xl"
+          style={{
+            padding: 2,
+            background: `conic-gradient(from -90deg, ${
+              urgent ? "var(--destructive)" : "var(--fillet, var(--primary))"
+            } ${clockPct}%, transparent 0)`,
+            // Ring rather than disc: paint the padding box and knock the
+            // content box back out of it.
+            WebkitMask:
+              "linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0)",
+            WebkitMaskComposite: "xor",
+            mask: "linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0)",
+            maskComposite: "exclude",
+          }}
+        />
+      )}
+
       {/* Cards. At seven seats and up they are capped smaller — a hand turned
           over at full size on a 375px phone lands on the neighbour's name,
           and the seats are less than thirty pixels apart. This is the one
@@ -162,20 +198,21 @@ export function PlayerSeat({
         )}
       </div>
 
-      {/* Shot clock for whoever is on the spot */}
+      {/* Channel two: the number itself, once it is worth reading. A bar says
+          "some" and a number says "four", and at four seconds the difference
+          is whether you hurry. Held back until then so eight seats are not
+          all counting at you. */}
       {showClock && (
         <div
-          className="h-1 w-full overflow-hidden rounded-full bg-border"
+          className="h-3 leading-none"
           role="timer"
           aria-label={`${Math.ceil(secondsLeft!)} seconds left to act`}
         >
-          <div
-            className={cn(
-              "h-full rounded-full transition-[width] duration-200 ease-linear",
-              urgent ? "bg-destructive" : "bg-primary",
-            )}
-            style={{ width: `${clockPct}%` }}
-          />
+          {urgent && (
+            <span className="font-mono text-[10px] font-bold tabular-nums text-destructive">
+              {Math.ceil(secondsLeft!)}s
+            </span>
+          )}
         </div>
       )}
     </div>

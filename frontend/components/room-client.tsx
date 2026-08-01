@@ -23,6 +23,7 @@ import { RunoutOffer } from "@/components/runout-offer"
 import { TournamentResults } from "@/components/tournament-results"
 import { useSecondsLeft } from "@/lib/use-countdown"
 import { useTableEvents, type SoundMode } from "@/lib/use-table-events"
+import { useShotClockWarning } from "@/lib/use-shot-clock-warning"
 import { useRunout } from "@/lib/use-runout"
 import {
   ApiError,
@@ -121,6 +122,13 @@ export function RoomClient({ roomId }: { roomId: string }) {
   const secondsLeft = useSecondsLeft(view?.actionDeadlineMs ?? null)
   const autoDealIn = useSecondsLeft(view?.autoDealAtMs ?? null)
   const { soundMode, setSoundMode } = useTableEvents(view)
+  // Yours only. Nine countdowns ticking at once is not a warning, and whose
+  // clock is nearly out is theirs to give away rather than ours to broadcast.
+  useShotClockWarning({
+    active: !!view?.isYourTurn && (view?.actionSeconds ?? 0) > 0,
+    secondsLeft,
+    audible: soundMode !== "off",
+  })
   // An all-in arrives as a finished board in one response. Deal it out.
   const { board: shownBoard, revealing } = useRunout(view)
 
