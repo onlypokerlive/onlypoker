@@ -30,6 +30,23 @@ type AuthContextValue = {
 
 const AuthContext = createContext<AuthContextValue | undefined>(undefined)
 
+// Where Google should send the player back after login.
+// The v0 in-editor preview runs on a vusercontent.net host that Supabase does
+// not allow-list, so those sessions must route through the v0 dev redirect
+// proxy. Every real environment (localhost dev, Vercel staging/preview, and
+// production) uses its own origin, so the callback lands on the same host the
+// user is actually on instead of the dev proxy / localhost.
+function getOAuthRedirectTo(): string {
+  const origin = window.location.origin
+  const host = window.location.hostname
+  const isV0Preview =
+    host.endsWith('.vusercontent.net') || host.endsWith('.v0.dev')
+  if (isV0Preview && process.env.NEXT_PUBLIC_DEV_SUPABASE_REDIRECT_URL) {
+    return process.env.NEXT_PUBLIC_DEV_SUPABASE_REDIRECT_URL
+  }
+  return `${origin}/auth/callback`
+}
+
 async function fetchProfile(): Promise<PlayerProfile | null> {
   try {
     const res = await fetch('/srv/profile', { cache: 'no-store' })
@@ -85,9 +102,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     await supabase.auth.signInWithOAuth({
       provider: 'google',
       options: {
-        redirectTo:
-          process.env.NEXT_PUBLIC_DEV_SUPABASE_REDIRECT_URL ??
-          `${window.location.origin}/auth/callback`,
+        redirectTo: getOAuthRedirectTo(),
       },
     })
   }, [])
