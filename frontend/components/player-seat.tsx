@@ -56,8 +56,16 @@ export function PlayerSeat({
       {/* Cards */}
       <div className="flex h-8 items-center justify-center gap-0.5 sm:h-12 sm:gap-1">
         {cards ? (
+          // A null entry is a card its owner kept face down after turning the
+          // other one over — showing one card is a move in itself.
           cards.map((c, i) => (
-            <PlayingCard key={i} card={c} size="xs" className="sm:h-12 sm:w-9 sm:text-xs" />
+            <PlayingCard
+              key={i}
+              card={c}
+              faceDown={!c}
+              size="xs"
+              className="sm:h-12 sm:w-9 sm:text-xs"
+            />
           ))
         ) : player.cardsCount > 0 ? (
           Array.from({ length: player.cardsCount }).map((_, i) => (
@@ -103,6 +111,9 @@ export function PlayerSeat({
         )}
         {player.isBigBlind && (
           <span className={cn(STATUS_CHIP, "bg-secondary text-secondary-foreground")}>BB</span>
+        )}
+        {player.isStraddle && (
+          <span className={cn(STATUS_CHIP, "bg-accent text-accent-foreground")}>STR</span>
         )}
         {player.allIn && (
           <span className={cn(STATUS_CHIP, "bg-destructive text-destructive-foreground")}>

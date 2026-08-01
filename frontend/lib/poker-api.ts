@@ -20,8 +20,21 @@ export interface PlayerView {
   isButton: boolean
   isSmallBlind: boolean
   isBigBlind: boolean
+  /** Posted two big blinds under the gun and acts last preflop. */
+  isStraddle: boolean
   cardsCount: number
-  cards: string[] | null
+  /**
+   * The hand as this viewer is allowed to see it, or null for nothing at all.
+   * A null *entry* is a card still face down — that happens when a player
+   * turned over one card and kept the other.
+   */
+  cards: (string | null)[] | null
+  /**
+   * Cards this player has turned face up by choice. Present on your own seat
+   * as well, because you always see your whole hand — the cards alone cannot
+   * tell you what everyone else can see.
+   */
+  shownIndices: number[]
   /** The shot clock played this hand for them at least once. */
   timedOut: boolean
   /** Out of chips — eliminated from the tournament. */
@@ -33,6 +46,12 @@ export interface PlayerView {
    * heads-up, where sitting out would strand the tournament.
    */
   canSitOut: boolean
+  /** Said goodbye, and goes as soon as this hand is settled. */
+  leaving: boolean
+  rebuys: number
+  addOnTaken: boolean
+  /** Extra seconds this player has left for the whole tournament. */
+  timeBank: number
   allIn?: boolean
 }
 
@@ -96,11 +115,39 @@ export interface RoomView {
     levelMinutes: number
     /** Pause between hands before the next is dealt automatically. */
     autoDealSeconds: number
-    /** The host stopped automatic dealing. */
-    autoDealPaused: boolean
+    /** The table is stopped: no deals, and the blind clock is held still. */
+    paused: boolean
+    /** Stop the table every N blind levels. 0 turns scheduled breaks off. */
+    breakEveryLevels: number
+    breakMinutes: number
+    /** No hand after this one. Everybody is told, not just the host. */
+    lastHand: boolean
+    /** Whether anybody can take their chips and go home early. */
+    allowLeaving: boolean
+    /** Whether the door is still open to somebody turning up now. */
+    lateEntryOpen: boolean
+    /** Whether a busted player can still buy back in. */
+    rebuyOpen: boolean
+    /** Whether this table offers the one-per-player top-up. */
+    addOn: boolean
+    /** Extra seconds each player gets for the whole tournament. 0 is off. */
+    timeBankSeconds: number
+    /** Dead money each hand, already scaled to this level. */
+    ante: number
+    anteMode: 'off' | 'bb' | 'all'
+    straddle: boolean
+    bombPotEvery: number
+    /** The hand on the table right now is a bomb pot. */
+    bombPot: boolean
+    /** Big blinds each player owes a 7-2 winner. 0 is off. */
+    sevenDeuce: number
   }
   players: PlayerView[]
   board: string[]
+  /** Every board dealt. One entry on every hand that ran once. */
+  boards: string[][]
+  /** What each board came to, once the hand is over. */
+  boardResults: { cards: string[]; winners: string[] }[]
   pot: number
   street: string
   actorId: string | null
@@ -109,20 +156,55 @@ export interface RoomView {
   standings: Standing[]
   /** The finished hand was actually shown down (not won by everyone folding). */
   wentToShowdown: boolean
+  /** Who collected the 7-2 bonus this hand, and what it came to. */
+  sevenDeuceWin: { playerId: string; name: string; amount: number } | null
+  /** The bonus is there for the taking, but the cards are still face down. */
+  sevenDeucePending: boolean
+  /** The decision on the table is being paid for out of the actor's bank. */
+  bankRunning: boolean
+  /**
+   * What *you* have said you will do when your turn arrives, and nobody
+   * else's — a table that could see who has already folded in advance would be
+   * playing a different game.
+   */
+  preAction: PreAction | null
+  /** Players being asked whether to deal the rest of the board twice. */
+  runoutSeats: string[]
+  /** When the offer of a second board expires and the hand runs once. */
+  runoutDeadline: number | null
   level: LevelView | null
   /** Absolute server time (seconds) when the current decision expires. */
   actionDeadline: number | null
   /** Absolute server time (seconds) when the next hand deals itself. */
   autoDealAt: number | null
+  /** When the table starts itself again, or null if it is not on a break. */
+  breakUntil: number | null
   /** Server clock at the moment this view was built, for skew correction. */
   serverTime: number
+  /**
+   * The moment this view describes. Sent back with a decision so the server can
+   * refuse an order about a moment that has already passed — a double tap, or a
+   * retry that arrives after the action came back round.
+   */
+  turnId: number
   you: PlayerView | null
 }
 
 export interface Session {
   roomId: string
   playerId: string
+  /**
+   * Proof that this seat is yours. Every id at the table is public — clients
+   * need them to say whose seat is whose — so the id alone authorises nothing.
+   * Never leaves this device except as a request header.
+   *
+   * Required, not optional: every way of getting a session issues one, and a
+   * session without it is refused by every request it could make.
+   */
+  token: string
   isHost: boolean
+  /** Watching rather than playing: no seat, no chips, no cards. */
+  spectator?: boolean
 }
 
 // --- Flattened view consumed by the UI components -------------------------
@@ -139,9 +221,25 @@ export interface GameView {
   actionSeconds: number
   levelMinutes: number
   autoDealSeconds: number
-  autoDealPaused: boolean
+  paused: boolean
+  lastHand: boolean
+  allowLeaving: boolean
+  rebuyOpen: boolean
+  addOn: boolean
+  /** The countdown on screen is the actor's time bank, not the shot clock. */
+  bankRunning: boolean
+  /** What you have already said you will do when your turn comes. */
+  preAction: PreAction | null
+  ante: number
+  bombPot: boolean
   players: PlayerView[]
   board: string[]
+  boards: string[][]
+  boardResults: { cards: string[]; winners: string[] }[]
+  /** Players being asked whether to deal the rest of the board twice. */
+  runoutSeats: string[]
+  /** You are one of them. */
+  askedAboutRunout: boolean
   pot: number
   street: string
   actorId: string | null
@@ -151,12 +249,18 @@ export interface GameView {
   lastResults: HandResult[]
   standings: Standing[]
   wentToShowdown: boolean
+  sevenDeuceWin: { playerId: string; name: string; amount: number } | null
+  sevenDeucePending: boolean
   level: LevelView | null
+  /** The moment this view describes; travels back with every decision. */
+  turnId: number
   /** Both deadlines are rebased onto the browser's clock at fetch time, so a
    *  phone with the wrong time still counts down correctly. */
   actionDeadlineMs: number | null
   levelEndsAtMs: number | null
   autoDealAtMs: number | null
+  breakEndsAtMs: number | null
+  runoutEndsAtMs: number | null
   message: string | null
   legal: {
     canFold: boolean
@@ -168,7 +272,7 @@ export interface GameView {
   } | null
 }
 
-function resultsMessage(results: HandResult[], players: PlayerView[]): string | null {
+function resultsMessage(results: HandResult[]): string | null {
   if (!results.length) return null
   const winners = results.filter((r) => r.delta > 0)
   if (!winners.length) return null
@@ -205,6 +309,9 @@ export function toGameView(v: RoomView, playerId: string | null): GameView {
   const actionDeadlineMs =
     v.actionDeadline != null ? v.actionDeadline * 1000 + skewMs : null
   const autoDealAtMs = v.autoDealAt != null ? v.autoDealAt * 1000 + skewMs : null
+  const breakEndsAtMs = v.breakUntil != null ? v.breakUntil * 1000 + skewMs : null
+  const runoutEndsAtMs =
+    v.runoutDeadline != null ? v.runoutDeadline * 1000 + skewMs : null
   const levelEndsAtMs =
     v.level?.secondsLeft != null ? Date.now() + v.level.secondsLeft * 1000 : null
 
@@ -220,7 +327,19 @@ export function toGameView(v: RoomView, playerId: string | null): GameView {
     actionSeconds: v.room.actionSeconds,
     levelMinutes: v.room.levelMinutes,
     autoDealSeconds: v.room.autoDealSeconds,
-    autoDealPaused: v.room.autoDealPaused,
+    paused: v.room.paused,
+    lastHand: v.room.lastHand,
+    allowLeaving: v.room.allowLeaving,
+    rebuyOpen: v.room.rebuyOpen,
+    addOn: v.room.addOn,
+    bankRunning: !!v.bankRunning,
+    preAction: v.preAction ?? null,
+    boards: v.boards?.length ? v.boards : [v.board],
+    boardResults: v.boardResults ?? [],
+    runoutSeats: v.runoutSeats ?? [],
+    askedAboutRunout: !!playerId && (v.runoutSeats ?? []).includes(playerId),
+    ante: v.room.ante,
+    bombPot: v.room.bombPot,
     players,
     board: v.board,
     pot: v.pot,
@@ -232,12 +351,58 @@ export function toGameView(v: RoomView, playerId: string | null): GameView {
     lastResults: v.lastResults,
     standings: v.standings ?? [],
     wentToShowdown: !!v.wentToShowdown,
+    sevenDeuceWin: v.sevenDeuceWin ?? null,
+    sevenDeucePending: !!v.sevenDeucePending,
     level: v.level,
+    turnId: v.turnId ?? 0,
     actionDeadlineMs,
     levelEndsAtMs,
     autoDealAtMs,
-    message: resultsMessage(v.lastResults, players),
+    breakEndsAtMs,
+    runoutEndsAtMs,
+    message: resultsMessage(v.lastResults),
     legal,
+  }
+}
+
+/** The header the backend reads a player's credential from. */
+const TOKEN_HEADER = 'X-Player-Token'
+
+/**
+ * A failed request, with the status kept.
+ *
+ * Callers need to tell "this went wrong" from "you are not allowed in here":
+ * the second one means the session on this device is no good and the player
+ * should be sent back to the door, not left staring at a spinner while the
+ * same rejected request repeats every 1.2 seconds. Matching on the message
+ * text cannot make that distinction.
+ */
+export class ApiError extends Error {
+  constructor(
+    message: string,
+    readonly status: number,
+  ) {
+    super(message)
+    this.name = 'ApiError'
+  }
+
+  /** The server refused this caller, rather than failing to serve them. */
+  get isAuthFailure() {
+    return this.status === 401 || this.status === 403 || this.status === 404
+  }
+
+  /**
+   * The seat was removed by the host, and is not coming back.
+   *
+   * Deliberately apart from `isAuthFailure`, because the credential must be
+   * *kept*. It is the only thing that tells this device from a stranger's at
+   * the front door, and the password is no help — everybody at the table has
+   * it, including the person who was just asked to leave. Forget the
+   * credential and being removed lasts exactly as long as it takes to tap
+   * join again.
+   */
+  get isRemoved() {
+    return this.status === 410
   }
 }
 
@@ -254,7 +419,7 @@ async function req<T>(url: string, options?: RequestInit): Promise<T> {
     } catch {
       // ignore parse errors
     }
-    throw new Error(message)
+    throw new ApiError(message, res.status)
   }
   return res.json() as Promise<T>
 }
@@ -270,26 +435,137 @@ export interface CreateRoomInput {
   levelMinutes: number
   /** Seconds per decision; 0 removes the shot clock. */
   actionSeconds: number
+  /** Dead money each hand: none, the big blind posts for everyone, or all do. */
+  anteMode: 'off' | 'bb' | 'all'
+  /** Under the gun posts two big blinds and acts last preflop. */
+  straddle: boolean
+  /** Blow the hand up every N deals. 0 turns it off. */
+  bombPotEvery: number
+  /** Big blinds each player owes whoever wins with 7-2 offsuit. 0 is off. */
+  sevenDeuce: number
+  /** Stop the table every N blind levels. 0 turns scheduled breaks off. */
+  breakEveryLevels: number
+  breakMinutes: number
+  /** Join a running tournament while the blinds are on this level or below. */
+  lateEntryLevels: number
+  /** What a latecomer sits down behind. */
+  lateEntryChips: 'start' | 'average'
+  /** Whether anybody can take their chips and go home early. */
+  allowLeaving: boolean
+  /** Buy back in while the blinds are on this level or below. 0 is off. */
+  rebuyLevels: number
+  rebuysPerPlayer: number
+  /** One extra top-up per player, inside the same window. */
+  addOn: boolean
+  /** Extra seconds each player gets for the whole tournament. 0 is off. */
+  timeBankSeconds: number
+  /** Offer the all-in players a second board. Everybody left in has to agree. */
+  runItTwice: boolean
+}
+
+/**
+ * What you can decide before your turn arrives.
+ *
+ * None of them names an amount, deliberately: "call 100" would have to be
+ * invalidated the moment somebody raises to 300, and getting that wrong pays a
+ * price the player never accepted. All three are defined against whatever the
+ * situation turns out to be.
+ */
+export type PreAction = 'check' | 'check-fold' | 'call-any'
+
+/** What the host can do to the table itself, as opposed to to a hand. */
+export type TableControl = 'pause' | 'resume' | 'last-hand' | 'keep-playing'
+
+/** Blind structures, as a choice of how fast the night should go. */
+export const BLIND_STRUCTURES = [
+  { id: 'turbo', label: 'Turbo', minutes: 5, blurb: 'A short, sharp night' },
+  { id: 'normal', label: 'Normal', minutes: 15, blurb: 'The usual' },
+  { id: 'slow', label: 'Slow', minutes: 25, blurb: 'Room to actually play' },
+] as const
+
+function auth(token?: string): Record<string, string> {
+  return token ? { [TOKEN_HEADER]: token } : {}
+}
+
+/**
+ * A name for one attempt at doing something, so a retry is recognised as one.
+ *
+ * The server answers a name it has already seen instead of doing the thing
+ * twice — which matters most where doing it twice is silent: two seats for one
+ * person, a sit-out toggled back in, a rebuy charged again.
+ *
+ * These names are **derived from the intent, not generated per call**, which is
+ * the only version that works. A fresh random id on every send is a different
+ * name for the same decision, so the retry it was meant to catch sails
+ * straight past it. `turnId` makes that easy: it already identifies the exact
+ * moment a decision was made, so "fold, at this turn, in this hand" names
+ * itself and stays the same however many times it is sent.
+ */
+export function newRequestId(): string {
+  if (typeof crypto !== 'undefined' && 'randomUUID' in crypto) return crypto.randomUUID()
+  return `${Date.now()}-${Math.random().toString(36).slice(2)}`
+}
+
+/**
+ * The id for *this device's* attempt to join *this room*, kept until it works.
+ *
+ * Held in storage rather than in a component so that a reload halfway through
+ * — the phone locking, the tab being restored — is still the same attempt. The
+ * case being closed is a join whose response never arrives: without a stable
+ * name the retry takes a second seat, and the first one is unrecoverable,
+ * because the only proof it belonged to anybody went missing with the response.
+ */
+export function joinAttemptId(roomId: string): string {
+  const key = `holdem:join:${roomId}`
+  try {
+    const existing = localStorage.getItem(key)
+    if (existing) return existing
+    const fresh = newRequestId()
+    localStorage.setItem(key, fresh)
+    return fresh
+  } catch {
+    return newRequestId()
+  }
+}
+
+export function clearJoinAttempt(roomId: string) {
+  try {
+    localStorage.removeItem(`holdem:join:${roomId}`)
+  } catch {
+    // ignore
+  }
 }
 
 export const pokerApi = {
   createRoom: (input: CreateRoomInput) =>
     req<Session>('/api/rooms', { method: 'POST', body: JSON.stringify(input) }),
 
-  joinRoom: (roomId: string, name: string, password: string) =>
+  joinRoom: (roomId: string, name: string, password: string, token?: string) =>
     req<Session>(`/api/rooms/${roomId}/join`, {
       method: 'POST',
-      body: JSON.stringify({ name, password }),
+      // The credential, when this device already has one, says "the person who
+      // sat here is back" rather than "somebody new called the same thing".
+      headers: auth(token),
+      body: JSON.stringify({ name, password, requestId: joinAttemptId(roomId) }),
     }),
 
-  getState: (roomId: string, playerId?: string) =>
+  /** Watch without taking a seat. Still needs the password. */
+  watchRoom: (roomId: string, password: string) =>
+    req<Session>(`/api/rooms/${roomId}/watch`, {
+      method: 'POST',
+      body: JSON.stringify({ password }),
+    }),
+
+  getState: (roomId: string, playerId?: string, token?: string) =>
     req<RoomView>(
       `/api/rooms/${roomId}/state${playerId ? `?playerId=${encodeURIComponent(playerId)}` : ''}`,
+      { headers: auth(token) },
     ),
 
-  startHand: (roomId: string, playerId: string) =>
+  startHand: (roomId: string, playerId: string, token?: string) =>
     req<RoomView>(`/api/rooms/${roomId}/start`, {
       method: 'POST',
+      headers: auth(token),
       body: JSON.stringify({ playerId, action: 'start' }),
     }),
 
@@ -298,25 +574,171 @@ export const pokerApi = {
     playerId: string,
     action: string,
     amount?: number,
-    // Stamps the decision with the hand it was made for, so a slow or retried
-    // request can't be applied to whatever hand is running when it lands.
+    // Stamps the decision with the hand *and the moment* it was made for, so a
+    // slow or retried request can't be applied to whatever is on the table when
+    // it lands — not even later in the same hand, once the action comes back
+    // round to the same player.
     handNumber?: number,
+    turnId?: number,
+    token?: string,
   ) =>
     req<RoomView>(`/api/rooms/${roomId}/action`, {
       method: 'POST',
-      body: JSON.stringify({ playerId, action, amount, handNumber }),
+      headers: auth(token),
+      body: JSON.stringify({
+        playerId,
+        action,
+        amount,
+        handNumber,
+        turnId,
+        requestId: `a:${handNumber}:${turnId}:${action}:${amount ?? ''}`,
+      }),
     }),
 
-  toggleSitOut: (roomId: string, playerId: string) =>
+  /**
+   * Go home, taking your chips with you. During a hand it is a goodbye: the
+   * seat stays until the pot is settled, and the remaining decisions are
+   * played out so nobody is kept waiting.
+   */
+  leaveTable: (roomId: string, playerId: string, handNumber: number, token?: string) =>
+    req<RoomView>(`/api/rooms/${roomId}/leave`, {
+      method: 'POST',
+      headers: auth(token),
+      body: JSON.stringify({
+        playerId,
+        action: 'leave',
+        requestId: `l:${playerId}:${handNumber}`,
+      }),
+    }),
+
+  /** Buy back in after busting, or take the one add-on. */
+  buyChips: (
+    roomId: string,
+    playerId: string,
+    what: 'rebuy' | 'add-on',
+    handNumber: number,
+    token?: string,
+  ) =>
+    req<RoomView>(`/api/rooms/${roomId}/rebuy`, {
+      method: 'POST',
+      headers: auth(token),
+      body: JSON.stringify({
+        playerId,
+        action: what,
+        // Named after the purchase and the hand it was made at: tapping twice
+        // because nothing seemed to happen must not buy two.
+        requestId: `b:${playerId}:${handNumber}:${what}`,
+      }),
+    }),
+
+  /**
+   * Say now what you want to do when your turn arrives, or `clear` to take it
+   * back. Fires once and is then gone.
+   *
+   * Unnamed, unlike most of the list below: this writes down where the player
+   * wants to end up rather than recording that something happened, so sending
+   * it twice asks for the same thing. Naming it would be the bug — a plan set,
+   * fired on the flop, and set again on the turn is the same name twice, and
+   * the second one would be answered without being carried out.
+   */
+  setPreAction: (
+    roomId: string,
+    playerId: string,
+    action: PreAction | 'clear',
+    handNumber: number,
+    token?: string,
+  ) =>
+    req<RoomView>(`/api/rooms/${roomId}/preaction`, {
+      method: 'POST',
+      headers: auth(token),
+      body: JSON.stringify({ playerId, action, handNumber }),
+    }),
+
+  /** Say whether you want the rest of the board dealt once or twice. */
+  chooseRunout: (
+    roomId: string,
+    playerId: string,
+    answer: 'once' | 'twice',
+    handNumber: number,
+    token?: string,
+  ) =>
+    req<RoomView>(`/api/rooms/${roomId}/runout`, {
+      method: 'POST',
+      headers: auth(token),
+      body: JSON.stringify({
+        playerId,
+        action: answer,
+        handNumber,
+        requestId: `r:${playerId}:${handNumber}:${answer}`,
+      }),
+    }),
+
+  /** Host only: show a player the door. Between hands. */
+  kickPlayer: (roomId: string, playerId: string, targetId: string, token?: string) =>
+    req<RoomView>(`/api/rooms/${roomId}/kick`, {
+      method: 'POST',
+      headers: auth(token),
+      body: JSON.stringify({ playerId, targetId }),
+    }),
+
+  /** Turn your own cards face up after the hand. There is no way back. */
+  showCards: (
+    roomId: string,
+    playerId: string,
+    indices: number[],
+    handNumber: number,
+    token?: string,
+  ) =>
+    req<RoomView>(`/api/rooms/${roomId}/show`, {
+      method: 'POST',
+      headers: auth(token),
+      body: JSON.stringify({ playerId, indices, handNumber }),
+    }),
+
+  /** The board that would have come, once the hand is safely over. */
+  rabbitHunt: (roomId: string, token?: string) =>
+    req<{ handNumber: number; streets: { street: string; cards: string[] }[] }>(
+      `/api/rooms/${roomId}/rabbit`,
+      { headers: auth(token) },
+    ),
+
+  /**
+   * Sit out, or come back. `sittingOut` is the state being asked for, not a
+   * flip of the one in effect — a flip is the one shape where a retry undoes
+   * itself, so the player ends up sitting in when they asked to sit out with
+   * nothing on screen explaining why. Asking for a side of the table is safe
+   * to repeat on its own, so this needs no name.
+   */
+  toggleSitOut: (
+    roomId: string,
+    playerId: string,
+    sittingOut: boolean,
+    token?: string,
+  ) =>
     req<RoomView>(`/api/rooms/${roomId}/sit`, {
       method: 'POST',
-      body: JSON.stringify({ playerId, action: 'sit' }),
+      headers: auth(token),
+      body: JSON.stringify({ playerId, action: sittingOut ? 'out' : 'in' }),
     }),
 
-  setAutoDeal: (roomId: string, playerId: string, paused: boolean) =>
-    req<RoomView>(`/api/rooms/${roomId}/autodeal`, {
+  /**
+   * Host only: stop the table, start it again, or call the last hand.
+   *
+   * All four are settings rather than events, and the server writes each one
+   * to be safe against arriving twice. Naming them would stop the host pausing
+   * a second time during the same hand — the name would already have been
+   * seen, and the answer would be a 200 and a table that never stopped.
+   */
+  controlTable: (
+    roomId: string,
+    playerId: string,
+    action: TableControl,
+    token?: string,
+  ) =>
+    req<RoomView>(`/api/rooms/${roomId}/table`, {
       method: 'POST',
-      body: JSON.stringify({ playerId, action: paused ? 'pause' : 'resume' }),
+      headers: auth(token),
+      body: JSON.stringify({ playerId, action }),
     }),
 }
 
@@ -334,7 +756,14 @@ export function saveSession(session: Session) {
 export function loadSession(roomId: string): Session | null {
   try {
     const raw = localStorage.getItem(sessionKey(roomId))
-    return raw ? (JSON.parse(raw) as Session) : null
+    if (!raw) return null
+    const session = JSON.parse(raw) as Session
+    // A session without a credential is a session from before the server
+    // started asking for one. It will be refused by every request it makes, so
+    // treating it as "signed in" only buys a screen that never loads. Sending
+    // them to the door instead costs one re-join and works.
+    if (!session?.playerId || !session?.token) return null
+    return session
   } catch {
     return null
   }

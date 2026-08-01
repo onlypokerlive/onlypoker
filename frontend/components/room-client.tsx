@@ -3,7 +3,7 @@
 import { useCallback, useEffect, useRef, useState } from "react"
 import { useRouter } from "next/navigation"
 import { toast } from "sonner"
-import { Pause, Play } from "lucide-react"
+import { Pause, Play, Volume2, VolumeX } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { Spinner } from "@/components/ui/spinner"
 import { PokerTable } from "@/components/poker-table"
@@ -12,15 +12,27 @@ import { BlindClock } from "@/components/blind-clock"
 import { HoleCards } from "@/components/hole-cards"
 import { RoomLobby } from "@/components/room-lobby"
 import { HandResults } from "@/components/hand-results"
+import { RabbitHunt } from "@/components/rabbit-hunt"
+import { ShowCards } from "@/components/show-cards"
+import { HelpSheet } from "@/components/help-sheet"
+import { HostPanel } from "@/components/host-panel"
+import { TableBreak } from "@/components/table-break"
+import { BuyChips } from "@/components/buy-chips"
+import { PreActions } from "@/components/pre-actions"
+import { RunoutOffer } from "@/components/runout-offer"
 import { TournamentResults } from "@/components/tournament-results"
 import { useSecondsLeft } from "@/lib/use-countdown"
+import { useTableEvents } from "@/lib/use-table-events"
+import { useRunout } from "@/lib/use-runout"
 import {
+  ApiError,
   pokerApi,
   toGameView,
   loadSession,
   clearSession,
   type GameView,
   type Session,
+  type TableControl,
 } from "@/lib/poker-api"
 
 const POLL_MS = 1200
@@ -47,16 +59,25 @@ export function RoomClient({ roomId }: { roomId: string }) {
   const refresh = useCallback(async () => {
     if (!session || pausePollRef.current) return
     try {
-      const raw = await pokerApi.getState(roomId, session.playerId)
+      const raw = await pokerApi.getState(roomId, session.playerId, session.token)
       setView(toGameView(raw, session.playerId))
       setError(null)
     } catch (e) {
       const msg = e instanceof Error ? e.message : "Connection lost"
       setError(msg)
-      // If the room is gone, drop the stale session.
-      if (msg.toLowerCase().includes("not found")) {
-        clearSession(roomId)
-        router.replace("/")
+      // A refusal is not a hiccup. The room is gone, or this device is holding
+      // a credential the table no longer accepts — saved before the server
+      // started asking for one, or belonging to a seat that has closed.
+      // Retrying that every 1.2 seconds shows a spinner forever; the way out is
+      // the front door.
+      //
+      // Being removed by the host is the one case where the credential stays.
+      // It is the only thing that tells this device from a stranger's at that
+      // door, and throwing it away is what would turn "you were removed" into
+      // "welcome back" one tap later.
+      if (e instanceof ApiError && (e.isAuthFailure || e.isRemoved)) {
+        if (!e.isRemoved) clearSession(roomId)
+        router.replace(e.status === 404 ? "/" : `/join/${roomId}`)
       }
     }
   }, [session, roomId, router])
@@ -90,6 +111,9 @@ export function RoomClient({ roomId }: { roomId: string }) {
 
   const secondsLeft = useSecondsLeft(view?.actionDeadlineMs ?? null)
   const autoDealIn = useSecondsLeft(view?.autoDealAtMs ?? null)
+  const { soundOn, setSoundOn } = useTableEvents(view)
+  // An all-in arrives as a finished board in one response. Deal it out.
+  const { board: shownBoard, revealing } = useRunout(view)
 
   async function withBusy(fn: () => Promise<void>) {
     if (busy) return
@@ -108,7 +132,7 @@ export function RoomClient({ roomId }: { roomId: string }) {
   const handleStart = () =>
     withBusy(async () => {
       if (!session) return
-      const raw = await pokerApi.startHand(roomId, session.playerId)
+      const raw = await pokerApi.startHand(roomId, session.playerId, session.token)
       setView(toGameView(raw, session.playerId))
     })
 
@@ -123,24 +147,32 @@ export function RoomClient({ roomId }: { roomId: string }) {
         backendAction,
         amount,
         view.handNumber,
+        view.turnId,
+        session.token,
       )
       setView(toGameView(raw, session.playerId))
     })
 
   const handleSitToggle = () =>
     withBusy(async () => {
-      if (!session) return
-      const raw = await pokerApi.toggleSitOut(roomId, session.playerId)
+      if (!session || !view) return
+      const raw = await pokerApi.toggleSitOut(
+        roomId,
+        session.playerId,
+        !view.you?.sittingOut,
+        session.token,
+      )
       setView(toGameView(raw, session.playerId))
     })
 
-  const handleAutoDealToggle = () =>
+  const handleTableControl = (action: TableControl) =>
     withBusy(async () => {
       if (!session || !view) return
-      const raw = await pokerApi.setAutoDeal(
+      const raw = await pokerApi.controlTable(
         roomId,
         session.playerId,
-        !view.autoDealPaused,
+        action,
+        session.token,
       )
       setView(toGameView(raw, session.playerId))
     })
@@ -156,6 +188,11 @@ export function RoomClient({ roomId }: { roomId: string }) {
 
   const you = view.you
   const finished = view.phase === "finished"
+  // No seat at this table. Everything below that belongs to a player — your
+  // hand, sitting out, acting — has to be gated on this and not on optional
+  // chaining: `!you?.sittingOut` is *true* for a spectator, which is how you
+  // end up offering a chair to somebody who does not have one.
+  const spectating = !you
 
   return (
     <main className="mx-auto flex min-h-svh w-full max-w-4xl flex-col gap-4 px-3 py-4">
@@ -164,36 +201,108 @@ export function RoomClient({ roomId }: { roomId: string }) {
           <h1 className="font-serif text-lg font-bold leading-tight text-foreground">{view.roomName}</h1>
           <span className="text-xs text-muted-foreground">
             {view.handNumber > 0 ? `Hand #${view.handNumber}` : "Not started"}
+            {/* Everybody is told, not just the host: knowing it is the last
+                hand changes how it gets played. */}
+            {view.lastHand && !finished && (
+              <span className="ml-2 font-bold text-accent">LAST HAND</span>
+            )}
+            {/* A hand nobody chose to play needs saying, or the missing
+                preflop reads as the app having skipped a turn. */}
+            {view.bombPot && <span className="ml-2 font-bold text-accent">BOMB POT</span>}
+            {view.ante > 0 && !view.bombPot && (
+              <span className="ml-2">ante {view.ante.toLocaleString()}</span>
+            )}
             {error && <span className="ml-2 text-destructive">{error}</span>}
           </span>
         </div>
-        {!finished && <BlindClock view={view} />}
+        <div className="flex shrink-0 items-center gap-1.5">
+          <HelpSheet />
+          {/* On the table, not buried in settings: this gets used with other
+              people in the room, and the person who needs it needs it now. */}
+          <Button
+            variant="ghost"
+            size="icon"
+            onClick={() => setSoundOn(!soundOn)}
+            aria-pressed={soundOn}
+            aria-label={soundOn ? "Mute the table" : "Unmute the table"}
+            className="text-muted-foreground"
+          >
+            {soundOn ? <Volume2 /> : <VolumeX />}
+          </Button>
+          {!finished && <BlindClock view={view} />}
+        </div>
       </header>
 
       {view.phase === "lobby" ? (
         <div className="flex flex-1 items-center justify-center">
-          <RoomLobby view={view} onStart={handleStart} busy={busy} />
+          <div className="flex w-full max-w-md flex-col gap-3">
+            <RoomLobby view={view} onStart={handleStart} busy={busy} />
+            {/* The moment you actually need this is before the cards come out:
+                somebody joined the wrong table, or took the last seat. */}
+            <HostPanel view={view} roomId={roomId} onDone={refresh} session={session} />
+          </div>
         </div>
       ) : finished ? (
-        <div className="flex flex-1 items-center justify-center">
+        // The hand that ends a tournament is the one everybody talks about, and
+        // it used to be the only one nobody ever saw: the podium replaced it
+        // outright. Show what won before who won.
+        <div className="flex flex-1 flex-col items-center justify-center gap-3 overflow-y-auto py-2">
+          <HandResults view={view} title="The final hand" className="shrink-0" />
           <TournamentResults view={view} />
         </div>
       ) : (
         <>
-          <PokerTable view={view} revealed={revealed} secondsLeft={secondsLeft} />
+          {/* Above the table, because a stopped table looks exactly like a
+              broken one and the difference has to be the first thing read. */}
+          <TableBreak view={view} onControl={handleTableControl} busy={busy} />
+          {/* Shown to the whole table, not only to the players being asked:
+              otherwise the pause before the cards come out looks like the app
+              having hung. */}
+          <RunoutOffer view={view} roomId={roomId} onDone={refresh} session={session} />
+          <PokerTable
+            view={{ ...view, board: shownBoard }}
+            revealed={revealed}
+            secondsLeft={secondsLeft}
+          />
 
-          {view.phase === "handover" && <HandResults view={view} />}
+          {/* Held back while the board is still coming out: the panel names the
+              winner, and reading it before the river lands gives the ending
+              away. */}
+          {view.phase === "handover" && !revealing && (
+            <div className="flex flex-col gap-2">
+              <HandResults view={view} />
+              <ShowCards view={view} roomId={roomId} onShown={refresh} session={session} />
+              {/* Between hands is the only moment either of these is true, so
+                  they sit with everything else that belongs to the gap. */}
+              <BuyChips view={view} roomId={roomId} onDone={refresh} session={session} />
+              <HostPanel view={view} roomId={roomId} onDone={refresh} session={session} />
+              <RabbitHunt
+                roomId={roomId}
+                handNumber={view.handNumber}
+                boardLength={view.board.length}
+                session={session}
+              />
+            </div>
+          )}
 
           {/* Pinned to the bottom: on a short phone the table scrolls, but the
               buttons must stay reachable while the shot clock runs. */}
           <div className="sticky bottom-0 z-20 mt-auto -mx-3 flex flex-col gap-2 border-t border-border/40 bg-background/90 px-3 pb-[max(0.5rem,env(safe-area-inset-bottom))] pt-2 backdrop-blur">
-            {view.phase === "hand" && (
-              <HoleCards
-                cards={you?.cards ?? null}
-                revealed={revealed}
-                onRevealChange={setRevealed}
-                folded={you?.folded}
-              />
+            {spectating ? (
+              // Say it plainly. Somebody who is watching and does not know it
+              // spends the night waiting for cards that are never coming.
+              <div className="flex h-12 items-center justify-center rounded-xl border border-dashed border-border/60 text-sm text-muted-foreground">
+                You are watching this table
+              </div>
+            ) : (
+              view.phase === "hand" && (
+                <HoleCards
+                  cards={you?.cards ?? null}
+                  revealed={revealed}
+                  onRevealChange={setRevealed}
+                  folded={you?.folded}
+                />
+              )
             )}
 
             {/* Sat out by the clock, you are no longer dealt in — so the way
@@ -223,34 +332,33 @@ export function RoomClient({ roomId }: { roomId: string }) {
                       size="lg"
                       className="flex-1"
                     >
-                      {autoDealIn != null && !view.autoDealPaused
+                      {autoDealIn != null && !view.paused
                         ? `Deal now · ${Math.ceil(autoDealIn)}s`
                         : "Deal next hand"}
                     </Button>
                     <Button
                       variant="outline"
                       size="lg"
-                      onClick={handleAutoDealToggle}
+                      onClick={() => handleTableControl(view.paused ? "resume" : "pause")}
                       disabled={busy}
-                      aria-label={
-                        view.autoDealPaused
-                          ? "Resume dealing automatically"
-                          : "Pause between hands"
-                      }
+                      aria-label={view.paused ? "Start the table again" : "Stop the table"}
                     >
-                      {view.autoDealPaused ? <Play /> : <Pause />}
+                      {view.paused ? <Play /> : <Pause />}
                     </Button>
                   </div>
                 ) : (
                   <div className="flex h-16 items-center justify-center rounded-xl border border-border/60 bg-card/60 text-sm text-muted-foreground">
-                    {view.autoDealPaused
-                      ? "The host paused between hands…"
+                    {view.paused
+                      ? "The host stopped the table…"
                       : autoDealIn != null
                         ? `Next hand in ${Math.ceil(autoDealIn)}s`
                         : "Dealing the next hand…"}
                   </div>
                 )}
-                {!you?.sittingOut && (
+                {/* Not to somebody with no chips: they are already out of the
+                    next hand, and "sit out" next to "buy back in" reads as two
+                    ways of doing the same thing. */}
+                {!spectating && !you?.sittingOut && !you?.out && (
                   <Button
                     variant="ghost"
                     size="sm"
@@ -270,12 +378,26 @@ export function RoomClient({ roomId }: { roomId: string }) {
                 )}
               </>
             ) : (
-              <ActionBar
-                view={view}
-                onAction={handleAction}
-                busy={busy}
-                secondsLeft={view.isYourTurn ? secondsLeft : null}
-              />
+              <>
+                {/* Above the buttons, where the decision would have been made
+                    anyway. Renders nothing on your own turn — planning your
+                    turn is not planning, it is acting by a second route. */}
+                <PreActions
+                  view={view}
+                  roomId={roomId}
+                  onDone={refresh}
+                  session={session}
+                />
+                <ActionBar
+                  view={view}
+                  onAction={handleAction}
+                  busy={busy}
+                  // Passed whoever is on the clock, not just you: knowing the
+                  // player you are waiting on has seven seconds left is the
+                  // difference between waiting and wondering.
+                  secondsLeft={secondsLeft}
+                />
+              </>
             )}
           </div>
         </>
