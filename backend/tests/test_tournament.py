@@ -942,11 +942,24 @@ def fold_everyone_but(client, room_id, winner):
     raise AssertionError("hand did not finish")
 
 
-def rig_hand(client, room_id, seat, hole):
+# Something nobody could mistake for seven-deuce, for the seats a test is not
+# interested in. Without it a random deal occasionally hands a second player a
+# real 7-2 offsuit — a bit under one hand in a hundred — and a test that was
+# asserting on one claimant quietly starts failing once a fortnight for a
+# reason that has nothing to do with the code.
+BLAND = ["Ac", "Kd"]
+
+
+def rig_hand(client, room_id, seat, hole, others=BLAND):
     """Deal a known hand into a seat. The engine has already dealt; we only
-    change the snapshot the settlement reads, which is what the rule uses."""
+    change the snapshot the settlement reads, which is what the rule uses.
+
+    Every *other* seat is dealt something bland at the same time, so the test
+    is asserting about the hand it planted rather than about the deck.
+    """
     room = client.portal.call(main.load_room, room_id)
-    room["handHoleCards"][seat] = hole
+    for i in range(len(room["handHoleCards"])):
+        room["handHoleCards"][i] = list(hole if i == seat else others)
     client.portal.call(main.save_room, room)
     return room
 
@@ -988,8 +1001,17 @@ def check_down_with_seven_deuce_for_the_winner(client, room_id, ids):
             break
         if len(view["board"]) == 5:
             room = client.portal.call(main.load_room, room_id)
+            # Restored first, so the leader is worked out from the hand that
+            # was actually dealt rather than from the last rig.
             room["handHoleCards"] = list(dealt)
-            room["handHoleCards"][showdown_leader(room)] = ["7h", "2c"]
+            leader = showdown_leader(room)
+            # And everybody else is given something bland, so a deal that
+            # happens to contain a second seven-deuce cannot turn this into a
+            # two-claimant split once a fortnight.
+            room["handHoleCards"] = [
+                ["7h", "2c"] if i == leader else list(BLAND)
+                for i in range(len(dealt))
+            ]
             client.portal.call(main.save_room, room)
         act(client, room_id, view["actorId"], "call")
     return state(client, room_id, ids[0])
@@ -1120,7 +1142,10 @@ def test_a_chopped_pot_still_counts_as_winning_with_seven_deuce(client, clock):
     room = client.portal.call(main.load_room, room_id)
     # Two players chop; the third folded.
     room["foldedSeats"] = [2]
-    room["handHoleCards"][0] = ["7h", "2c"]
+    # Every seat, not just the one being planted: a random deal that hands
+    # somebody else a real seven-deuce would make this a two-claimant split.
+    for i in range(len(room["handHoleCards"])):
+        room["handHoleCards"][i] = ["7h", "2c"] if i == 0 else list(BLAND)
     room["lastResults"] = [
         {"playerId": room["handPlayerIds"][0], "name": "a", "delta": 0},
         {"playerId": room["handPlayerIds"][1], "name": "b", "delta": 0},
