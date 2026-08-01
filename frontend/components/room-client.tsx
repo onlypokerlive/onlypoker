@@ -519,16 +519,20 @@ export function RoomClient({ roomId }: { roomId: string }) {
               )
             )}
 
-            {/* Sat out by the clock, you are no longer dealt in — so the way
-                back has to be visible whatever the table is doing. */}
+            {/* Sitting out costs money, so the way back has to be visible
+                whatever the table is doing — and the notice has to say what it
+                is costing. It used to read "you sit out from the next hand",
+                which described a rule where an absent player was skipped by
+                the deal and paid nothing. That made stepping away the cheapest
+                move at the table. You are dealt in and blinded like everybody
+                else now, and somebody who is not told that will find out from
+                their stack. */}
             {you?.sittingOut && !you.out && (
               <div className="flex items-center justify-between gap-3 rounded-xl border border-primary/40 bg-primary/10 px-3 py-2">
                 <span className="text-sm text-foreground">
                   {you.autoSatOut
-                    ? "You were sat out after missing your turn."
-                    : you.inHand
-                      ? "You sit out from the next hand."
-                      : "You are sitting out."}
+                    ? "Sat out after missing your turn — the blinds keep coming."
+                    : "You are sitting out. The blinds still reach you."}
                 </span>
                 <Button size="sm" onClick={handleSitToggle} disabled={busy}>
                   Sit back in
@@ -621,17 +625,19 @@ export function RoomClient({ roomId }: { roomId: string }) {
                       variant="ghost"
                       size="sm"
                       onClick={handleSitToggle}
-                      // Heads-up there is nobody left to play, so the server
-                      // refuses. Say so on the button instead of on an error.
+                      // The server has stopped refusing this — an absent player
+                      // no longer strands the table, because they are still
+                      // dealt in — but the field is still in the contract and
+                      // still answered, so the button keeps obeying it.
                       disabled={busy || you?.canSitOut === false}
                       title={
                         you?.canSitOut === false
-                          ? "The table needs at least two players to keep dealing."
-                          : undefined
+                          ? "You can't step away from this table right now."
+                          : "You stay dealt in and keep paying the blinds."
                       }
                       className="h-7 px-2 text-xs text-muted-foreground"
                     >
-                      Sit out next hand
+                      Step away
                     </Button>
                   )}
                   {!revealing && <HandSummarySheet view={view} />}

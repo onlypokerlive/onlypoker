@@ -51,8 +51,16 @@ function tag(player: PlayerView): { text: string; kind: "post" | "fold" | "out" 
   if (player.isStraddle) return { text: "STR", kind: "post" }
   if (player.isBigBlind) return { text: "BB", kind: "post" }
   if (player.isSmallBlind) return { text: "SB", kind: "post" }
+  // Above folding, and it used to be below it — with `!player.inHand` on it
+  // besides, a condition that now never holds. Somebody sitting out is dealt
+  // in and blinded like everybody else, and their hand is folded for them the
+  // moment it comes round, so within a second of every deal the badge that
+  // said "Sat out" was replaced by one that said "Fold". Folding is already
+  // drawn, by the seat fading; being away was left with nothing, and it is the
+  // fact that explains why nobody is waiting for that seat and why its stack
+  // keeps going down.
+  if (player.sittingOut) return { text: "Sat out", kind: "out" }
   if (player.folded) return { text: "Fold", kind: "fold" }
-  if (player.sittingOut && !player.inHand) return { text: "Sat out", kind: "out" }
   if (player.timedOut) return { text: "Away", kind: "out" }
   return null
 }
