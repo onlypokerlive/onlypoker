@@ -20,6 +20,9 @@ export function waitingMessage(view: GameView): string {
   const actor = view.players.find((p) => p.id === view.actorId)
   // Between streets, and while a hand is being settled, nobody is on the spot.
   if (!actor) return "Dealing…"
+  // What the table would say out loud, and the reason their countdown started
+  // over — which reads as a glitch if nobody explains it.
+  if (view.bankRunning) return `${actor.name} is into their time bank`
   return `${actor.name} is up`
 }
 
@@ -88,7 +91,13 @@ export function ActionBar({
   // Shot clock. Running out is not a penalty when checking is free, so say
   // exactly which action the clock is about to take.
   const timed = view.actionSeconds > 0 && secondsLeft != null
-  const timePct = timed ? Math.min(100, Math.max(0, (secondsLeft! / view.actionSeconds) * 100)) : 0
+  // Once the bank is open the bar is measuring something else entirely, so it
+  // has to be scaled against the bank — otherwise a sixty-second bank on a
+  // twenty-second clock draws a bar that is three times full and never moves.
+  const window = view.bankRunning
+    ? Math.max(1, view.you?.timeBank ?? view.actionSeconds)
+    : view.actionSeconds
+  const timePct = timed ? Math.min(100, Math.max(0, (secondsLeft! / window) * 100)) : 0
   const urgent = timed && secondsLeft! <= 5
   const autoAction = legal.canCheck ? "Checking" : "Folding"
 
@@ -117,9 +126,13 @@ export function ActionBar({
             )}
             role="timer"
           >
+            {/* Saying which clock is running matters: a countdown that
+                restarts on its own reads as a glitch unless it is named. */}
             {urgent
               ? `${autoAction} in ${Math.ceil(secondsLeft!)}s`
-              : `${Math.ceil(secondsLeft!)}s to act`}
+              : view.bankRunning
+                ? `${Math.ceil(secondsLeft!)}s of bank`
+                : `${Math.ceil(secondsLeft!)}s to act`}
           </span>
         </div>
       )}

@@ -2203,6 +2203,114 @@ def test_a_table_from_before_the_credential_split_closes_every_door(client, cloc
 
 
 # --------------------------------------------------------------------------- #
+# The time bank
+# --------------------------------------------------------------------------- #
+def bank_of(client, room_id, player_id):
+    view = state(client, room_id, player_id)
+    return next(p["timeBank"] for p in view["players"] if p["id"] == player_id)
+
+
+def test_the_bank_opens_by_itself_when_the_clock_runs_out(client, clock):
+    """A bank that has to be claimed is a bank the player who needed it forgot.
+
+    They are staring at a decision, not at the interface. So the shot clock
+    running out hands over the bank instead of playing the hand for them.
+    """
+    room_id, ids = table(client, 3, actionSeconds=20, timeBankSeconds=60)
+    start(client, room_id, ids[0])
+    actor = state(client, room_id, ids[0])["actorId"]
+
+    clock.advance(25)  # past the clock and its grace
+    view = state(client, room_id, ids[1])
+    assert view["actorId"] == actor, "not folded — that is the whole point"
+    assert view["bankRunning"] is True
+    assert view["actionDeadline"] == pytest.approx(clock.now + 60)
+
+
+def test_the_bank_pays_for_exactly_what_it_was_used_for(client, clock):
+    """Nothing decrements anywhere in this file — every clock is a deadline and
+    the answer is worked out when somebody asks. So what is left of the bank is
+    read back off that deadline, not counted down."""
+    room_id, ids = table(client, 3, actionSeconds=20, timeBankSeconds=60)
+    start(client, room_id, ids[0])
+    actor = state(client, room_id, ids[0])["actorId"]
+
+    clock.advance(25)
+    state(client, room_id, ids[1])  # somebody's poll opens the bank
+    clock.advance(18)  # they think about it for eighteen seconds
+    assert act(client, room_id, actor, "call").status_code == 200
+    assert bank_of(client, room_id, actor) == 42
+
+    # And the next decision starts on the shot clock again, not on what is left.
+    view = state(client, room_id, ids[0])
+    assert view["bankRunning"] is False
+    assert view["actionDeadline"] == pytest.approx(view["serverTime"] + 20)
+
+
+def test_running_the_bank_dry_plays_the_hand(client, clock):
+    room_id, ids = table(client, 3, actionSeconds=20, timeBankSeconds=30)
+    start(client, room_id, ids[0])
+    actor = state(client, room_id, ids[0])["actorId"]
+
+    clock.advance(25)
+    state(client, room_id, ids[1])  # the bank opens
+    clock.advance(35)  # and runs out too
+    view = state(client, room_id, ids[1])
+    assert view["actorId"] != actor
+    assert bank_of(client, room_id, actor) == 0
+    assert view["bankRunning"] is False
+
+
+def test_the_bank_is_spent_once_and_lasts_the_tournament(client, clock):
+    """Not per hand and not per decision: a fixed amount for the night, which
+    is what makes spending it a decision at all."""
+    room_id, ids = table(client, 3, actionSeconds=20, timeBankSeconds=60)
+    start(client, room_id, ids[0])
+    actor = state(client, room_id, ids[0])["actorId"]
+    clock.advance(25)
+    state(client, room_id, ids[1])
+    clock.advance(30)
+    act(client, room_id, actor, "call")
+    spent_once = bank_of(client, room_id, actor)
+    assert spent_once == 30
+
+    # Round to them again, and they only have what they had left.
+    for _ in range(8):
+        view = state(client, room_id, ids[0])
+        if view["actorId"] == actor or not view["actorId"]:
+            break
+        act(client, room_id, view["actorId"], "call")
+    if state(client, room_id, ids[0])["actorId"] == actor:
+        clock.advance(25)
+        view = state(client, room_id, ids[1])
+        assert view["bankRunning"] is True
+        assert view["actionDeadline"] == pytest.approx(clock.now + spent_once)
+
+
+def test_no_bank_means_the_clock_still_folds_you(client, clock):
+    room_id, ids = table(client, 3, actionSeconds=20, timeBankSeconds=0)
+    start(client, room_id, ids[0])
+    actor = state(client, room_id, ids[0])["actorId"]
+    clock.advance(25)
+    view = state(client, room_id, ids[1])
+    assert view["actorId"] != actor
+    assert view["bankRunning"] is False
+
+
+def test_a_player_who_has_left_does_not_spend_their_bank(client, clock):
+    """They are not thinking about it. Making the table wait out a bank for
+    somebody who has gone home is the opposite of what the bank is for."""
+    room_id, ids = table(client, 3, actionSeconds=20, timeBankSeconds=60)
+    start(client, room_id, ids[0])
+    actor = state(client, room_id, ids[0])["actorId"]
+    leave(client, room_id, actor)
+
+    view = state(client, room_id, ids[1])
+    assert view["actorId"] != actor, "played out at once, not on any clock"
+    assert view["bankRunning"] is False
+
+
+# --------------------------------------------------------------------------- #
 # Coming and going
 # --------------------------------------------------------------------------- #
 def leave(client, room_id, player_id):

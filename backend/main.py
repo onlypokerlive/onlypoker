@@ -500,6 +500,9 @@ class CreateRoomBody(BaseModel):
     # One extra top-up per player inside the same window, for anyone who still
     # has chips. Off unless the host asks for it.
     addOn: bool = False
+    # Extra seconds each player may spend across the whole tournament, on the
+    # decisions that deserve them. 0 turns the time bank off.
+    timeBankSeconds: int = Field(default=0, ge=0, le=600)
 
 
 class JoinBody(BaseModel):
@@ -869,6 +872,9 @@ def _set_action_deadline(room: dict[str, Any], state, now: float) -> None:
     seconds = int(room.get("actionSeconds") or 0)
     live = bool(state.status) and state.actor_index is not None
     room["actionDeadline"] = now + seconds if (seconds and live) else None
+    # A new decision is on the shot clock, whatever the last one ended up
+    # costing. The bank only ever opens once the clock has run out.
+    room["bankRunning"] = False
     hand_ids = room.get("handPlayerIds") or []
     room["actorId"] = (
         hand_ids[state.actor_index]
@@ -1294,6 +1300,46 @@ def _finish_tournament(room: dict[str, Any], by_chips: bool = False) -> None:
     room["autoDealAt"] = None
 
 
+def _open_the_time_bank(room: dict[str, Any], now: float) -> bool:
+    """Spend the actor's bank instead of playing the hand for them.
+
+    The same trap as pausing, one level down: there is nothing running to
+    decrement. Nothing decrements anywhere in this file — every clock is a
+    deadline, and the answer is worked out when somebody asks. So the bank is
+    not counted down second by second; it is handed over whole at the moment
+    the shot clock runs out, as one longer deadline, and what is left of it is
+    read back off that deadline when the player finally acts.
+
+    That is also the right behaviour at the table. A bank that has to be
+    claimed is a bank that gets forgotten by exactly the player who most needed
+    it — the one staring at a decision, not at the interface.
+
+    ``TIMEOUT_GRACE`` is not part of it: that is slack for the network, not
+    thinking time, and it applies to the bank's deadline in its turn.
+    """
+    if room.get("bankRunning"):
+        return False  # already spent; the clock's answer stands
+    player = room["players"].get(room.get("actorId") or "")
+    left = int(player.get("timeBank", room.get("timeBankSeconds", 0)) or 0) if player else 0
+    if left <= 0:
+        return False
+    player["timeBank"] = left
+    room["bankRunning"] = True
+    room["actionDeadline"] = now + left
+    return True
+
+
+def _charge_the_time_bank(room: dict[str, Any], player_id: str, now: float) -> None:
+    """Take from the bank exactly what this decision used of it."""
+    if not room.get("bankRunning"):
+        return
+    player = room["players"].get(player_id)
+    if player is not None:
+        remaining = (room.get("actionDeadline") or now) - now
+        player["timeBank"] = max(0, int(remaining))
+    room["bankRunning"] = False
+
+
 def _apply_timeouts(room: dict[str, Any]) -> dict[str, Any] | None:
     """Fast-forward the shot clock. Returns what it did, or None if nothing.
 
@@ -1314,7 +1360,12 @@ def _apply_timeouts(room: dict[str, Any]) -> dict[str, Any] | None:
         room["actionDeadline"] = None
         return {"seat": None, "action": None}
 
+    if _open_the_time_bank(room, now):
+        return {"seat": state.actor_index, "action": None, "bank": True}
+
     seat = state.actor_index
+    # If the bank was open, this decision has just spent all of it.
+    _charge_the_time_bank(room, room.get("actorId") or "", now)
     legal = poker.legal_actions(state)
     # Checking is free, so never fold a hand that can see the next card for
     # nothing. Otherwise the clock costs you the hand.
@@ -1688,6 +1739,7 @@ def _build_view(room: dict[str, Any], viewer_id: str | None) -> dict[str, Any]:
             "leaving": bool(p.get("leaving")),
             "rebuys": int(p.get("rebuys", 0)),
             "addOnTaken": bool(p.get("addOnTaken")),
+            "timeBank": int(p.get("timeBank", room.get("timeBankSeconds", 0)) or 0),
             # Whether benching them would still leave a playable table. The
             # button is disabled rather than left to fail, so nobody taps "sit
             # out" heads-up and gets an error for an answer.
@@ -1729,7 +1781,12 @@ def _build_view(room: dict[str, Any], viewer_id: str | None) -> dict[str, Any]:
             "lateEntryOpen": _late_entry_open(room, now),
             "rebuyOpen": _rebuy_open(room, now),
             "addOn": bool(room.get("addOn")),
+            "timeBankSeconds": int(room.get("timeBankSeconds") or 0),
         },
+        # The decision on the table is being paid for out of the actor's bank.
+        # Everybody sees it, because "they are into their time bank" is what
+        # the table would say out loud and it is why the countdown restarted.
+        "bankRunning": bool(room.get("bankRunning")),
         "players": players_out,
         "board": board,
         "pot": pot,
@@ -1861,6 +1918,10 @@ async def create_room(body: CreateRoomBody) -> dict[str, Any]:
         "rebuyLevels": body.rebuyLevels,
         "rebuysPerPlayer": body.rebuysPerPlayer,
         "addOn": body.addOn,
+        "timeBankSeconds": body.timeBankSeconds,
+        # Whether the decision on the table is being paid for out of the
+        # actor's bank rather than the shot clock. See ``_open_the_time_bank``.
+        "bankRunning": False,
         # Every chip ever put on this table, and every chip taken off it. What
         # replaces "starting stack times players" once people can arrive, leave
         # and buy back in — see ``_chips_balance``.
@@ -2454,6 +2515,10 @@ async def take_action(
             raise fastapi.HTTPException(
                 409, "The action moved on while that was on its way."
             )
+
+        # Whatever this decision took out of their bank, before it changes the
+        # deadline the answer is read from.
+        _charge_the_time_bank(room, body.playerId, time.time())
 
         try:
             poker.apply_action(state, body.action, body.amount)

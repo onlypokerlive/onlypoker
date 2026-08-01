@@ -50,6 +50,8 @@ export interface PlayerView {
   leaving: boolean
   rebuys: number
   addOnTaken: boolean
+  /** Extra seconds this player has left for the whole tournament. */
+  timeBank: number
   allIn?: boolean
 }
 
@@ -128,6 +130,8 @@ export interface RoomView {
     rebuyOpen: boolean
     /** Whether this table offers the one-per-player top-up. */
     addOn: boolean
+    /** Extra seconds each player gets for the whole tournament. 0 is off. */
+    timeBankSeconds: number
     /** Dead money each hand, already scaled to this level. */
     ante: number
     anteMode: 'off' | 'bb' | 'all'
@@ -152,6 +156,8 @@ export interface RoomView {
   sevenDeuceWin: { playerId: string; name: string; amount: number } | null
   /** The bonus is there for the taking, but the cards are still face down. */
   sevenDeucePending: boolean
+  /** The decision on the table is being paid for out of the actor's bank. */
+  bankRunning: boolean
   level: LevelView | null
   /** Absolute server time (seconds) when the current decision expires. */
   actionDeadline: number | null
@@ -206,6 +212,8 @@ export interface GameView {
   allowLeaving: boolean
   rebuyOpen: boolean
   addOn: boolean
+  /** The countdown on screen is the actor's time bank, not the shot clock. */
+  bankRunning: boolean
   ante: number
   bombPot: boolean
   players: PlayerView[]
@@ -299,6 +307,7 @@ export function toGameView(v: RoomView, playerId: string | null): GameView {
     allowLeaving: v.room.allowLeaving,
     rebuyOpen: v.room.rebuyOpen,
     addOn: v.room.addOn,
+    bankRunning: !!v.bankRunning,
     ante: v.room.ante,
     bombPot: v.room.bombPot,
     players,
@@ -403,6 +412,8 @@ export interface CreateRoomInput {
   rebuysPerPlayer: number
   /** One extra top-up per player, inside the same window. */
   addOn: boolean
+  /** Extra seconds each player gets for the whole tournament. 0 is off. */
+  timeBankSeconds: number
 }
 
 /** What the host can do to the table itself, as opposed to to a hand. */

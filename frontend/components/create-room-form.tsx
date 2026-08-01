@@ -96,6 +96,7 @@ export function CreateRoomForm() {
         rebuyLevels,
         rebuysPerPlayer: 2,
         addOn: rebuyLevels > 0,
+        timeBankSeconds: Number(actionSeconds) ? 60 : 0,
       })
       saveSession(session)
       router.push(`/room/${session.roomId}`)

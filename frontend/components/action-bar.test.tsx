@@ -98,3 +98,30 @@ describe('ActionBar bet sizing', () => {
 function sizeFor(label: string): number {
   return { '2x': 20, '2.5x': 25, '3x': 30, 'All-in': 1000 }[label]!
 }
+
+describe('the time bank', () => {
+  it('names the clock that is running, so restarting is not a glitch', () => {
+    const view = gameView({ actorId: 'p1', bankRunning: true })
+    expect(waitingMessage(view)).toBe('Marcos is into their time bank')
+    expect(waitingMessage(gameView({ actorId: 'p1' }))).toBe('Marcos is up')
+  })
+
+  it('measures the bar against the bank rather than the shot clock', () => {
+    // A sixty-second bank on a twenty-second clock would otherwise draw a bar
+    // three times full, which never moves and tells the player nothing.
+    render(
+      <ActionBar
+        view={gameView({
+          ...YOUR_TURN,
+          bankRunning: true,
+          you: player({ id: 'me', isYou: true, timeBank: 60 }),
+        })}
+        onAction={() => {}}
+        busy={false}
+        secondsLeft={30}
+      />,
+    )
+    const bar = document.querySelector('[style*="width"]') as HTMLElement
+    expect(bar.style.width).toBe('50%')
+  })
+})
