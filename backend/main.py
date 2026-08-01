@@ -279,9 +279,37 @@ def _verify_password(password: str, stored: str) -> bool:
 # player sits down.
 PLAYER_TOKEN_HEADER = "X-Player-Token"
 
+# One message for every way a room from before the credential split can be
+# reached, and one status code. Failing closed in four different shapes —
+# a 401 here, a 500 there, a 200 that cannot then read anything — is how a
+# client ends up in a state nobody wrote a screen for. Rooms expire within the
+# day, so this is a message rather than a migration.
+_LEGACY_ROOM = (
+    "This table was created before the app started checking who is who. "
+    "Start a new one — it only takes a moment."
+)
+
 
 def _new_token() -> str:
     return secrets.token_urlsafe(24)
+
+
+def _reject_legacy(room: dict[str, Any]) -> None:
+    """Refuse a room that has no credentials to check against."""
+    if not room.get("watchToken"):
+        raise fastapi.HTTPException(401, _LEGACY_ROOM)
+
+
+def _has_seat(player: dict[str, Any] | None) -> bool:
+    """Whether this record is still somebody at the table.
+
+    A player removed by the host keeps their record — the final standings look
+    players up by id, so deleting them outright turns the podium into a
+    KeyError — but the record is a memory, not a seat. Their credential dies
+    with the seat: otherwise being shown the door leaves you able to read the
+    table, sit back in, and keep polling as if nothing happened.
+    """
+    return bool(player) and not player.get("removed")
 
 
 def _authenticate(room: dict[str, Any], player_id: str, token: str | None) -> None:
@@ -289,15 +317,11 @@ def _authenticate(room: dict[str, Any], player_id: str, token: str | None) -> No
     player = room["players"].get(player_id)
     if player is None:
         raise fastapi.HTTPException(404, "That player is not at this table.")
+    if not _has_seat(player):
+        raise fastapi.HTTPException(403, "You were removed from this table.")
     stored = player.get("token")
     if not stored:
-        # A room that predates this check has no secret to compare against, and
-        # trusting the id alone is exactly the hole being closed. Rooms expire
-        # within the day, so this is a message rather than a migration.
-        raise fastapi.HTTPException(
-            401, "This table was created before the app started checking who is "
-            "who. Start a new one — it only takes a moment."
-        )
+        raise fastapi.HTTPException(401, _LEGACY_ROOM)
     if not token or not hmac.compare_digest(stored, token):
         raise fastapi.HTTPException(403, "That is not your seat.")
 
@@ -310,6 +334,13 @@ def _may_watch(room: dict[str, Any], token: str | None) -> bool:
     table over the API — who is playing, what everyone has left, the board, the
     pot. Watching through the front door asks for the password, so reading the
     same thing through the side door has to as well.
+
+    The watch key is deliberately **group access, not per-person access**: one
+    key for the room, handed to anyone who knows the password, and it lives as
+    long as the room does. A spectator who leaves keeps it, and the host cannot
+    revoke one guest without revoking every guest. That is the right shape for
+    a table of friends and the wrong shape for anything else — if this ever
+    grows a public lobby, the key has to become per-spectator first.
     """
     if not token:
         return False
@@ -318,17 +349,13 @@ def _may_watch(room: dict[str, Any], token: str | None) -> bool:
         return True
     # A seated player's own credential lets them in too, obviously.
     return any(
-        p.get("token") and hmac.compare_digest(p["token"], token)
+        _has_seat(p) and p.get("token") and hmac.compare_digest(p["token"], token)
         for p in room["players"].values()
     )
 
 
 def _require_access(room: dict[str, Any], token: str | None) -> None:
-    if not room.get("watchToken"):
-        raise fastapi.HTTPException(
-            401, "This table was created before the app started checking who is "
-            "who. Start a new one — it only takes a moment."
-        )
+    _reject_legacy(room)
     if not _may_watch(room, token):
         raise fastapi.HTTPException(403, "This table is private.")
 
@@ -342,7 +369,7 @@ def _is_player(room: dict[str, Any], player_id: str | None, token: str | None) -
     if not player_id:
         return False
     player = room["players"].get(player_id)
-    if not player or not player.get("token") or not token:
+    if not _has_seat(player) or not player.get("token") or not token:
         return False
     return hmac.compare_digest(player["token"], token)
 
@@ -350,6 +377,21 @@ def _is_player(room: dict[str, Any], player_id: str | None, token: str | None) -
 def _new_id(n: int = 6) -> str:
     alphabet = "ABCDEFGHJKMNPQRSTUVWXYZ23456789"
     return "".join(secrets.choice(alphabet) for _ in range(n))
+
+
+def _free_seat(room: dict[str, Any]) -> int:
+    """The lowest seat nobody is sitting in.
+
+    Not the number of players (two people would share a seat as soon as one is
+    removed) and not one past the highest (seats then climb past the nine this
+    table has, and keep climbing with every arrival and departure). The seat
+    numbers are a fixed set of chairs; this finds an empty one.
+    """
+    taken = {p["seat"] for p in room["players"].values()}
+    for seat in range(MAX_SEATS):
+        if seat not in taken:
+            return seat
+    raise fastapi.HTTPException(400, "This room is full.")
 
 
 # --------------------------------------------------------------------------- #
@@ -698,12 +740,22 @@ def _settle_hand(room: dict[str, Any], state) -> None:
     board = poker.board_cards(state)
     stored_holes = room.get("handHoleCards") or []
 
+    # Read off the engine rather than netted out of the deltas: winning a pot
+    # and finishing ahead are different questions once side pots exist. See
+    # poker.pushed_amounts.
+    pushed = poker.pushed_amounts(state, len(hand_ids))
+
     results = []
     for i, pid in enumerate(hand_ids):
         final = int(state.stacks[i])
         delta = final - room["handStartStacks"][i]
         room["players"][pid]["chips"] = final
-        entry = {"playerId": pid, "name": room["players"][pid]["name"], "delta": delta}
+        entry = {
+            "playerId": pid,
+            "name": room["players"][pid]["name"],
+            "delta": delta,
+            "won": pushed[i],
+        }
         if went_to_showdown and i not in folded_seats and i < len(stored_holes):
             made = poker.evaluate_hand(stored_holes[i], board)
             if made:
@@ -726,21 +778,36 @@ def _settle_hand(room: dict[str, Any], state) -> None:
 
 
 def _hand_winners(room: dict[str, Any]) -> set[str]:
-    """Who took chips out of the pot.
+    """Who was pushed chips out of a pot.
 
-    Not simply "came out ahead": an exact chop hands each side back what they
-    put in, so both finish level and neither would count as having won — which
-    is how a chopped pot silently skips the 7-2 entirely. A player who stayed
-    in and did not lose chips was pushed some of it.
+    Deliberately not "who came out ahead". Two cases break that reading and
+    both are ordinary poker:
+
+      * an exact chop hands each side back what they put in, so nobody is up
+        and a chopped pot would silently skip the 7-2 entirely;
+      * with a side pot, the player who wins it can still be down on the hand —
+        a short stack takes the main pot and the side-pot winner finishes below
+        where they started. They won a pot. The net says otherwise.
+
+    So the pot pushes are recorded at settle time (``won``) and read back here.
+    ``delta`` remains the fallback for a room that settled before this existed;
+    rooms live a day, so that is a grace period, not a migration.
     """
     hand_ids = room.get("handPlayerIds") or []
     folded = set(room.get("foldedSeats", []))
-    deltas = {r["playerId"]: r["delta"] for r in room.get("lastResults", [])}
-    return {
-        pid
-        for seat, pid in enumerate(hand_ids)
-        if seat not in folded and deltas.get(pid, -1) >= 0
-    }
+    results = {r["playerId"]: r for r in room.get("lastResults", [])}
+    winners = set()
+    for seat, pid in enumerate(hand_ids):
+        if seat in folded:
+            continue
+        entry = results.get(pid)
+        if entry is None:
+            continue
+        won = entry.get("won")
+        took_a_pot = won > 0 if won is not None else entry.get("delta", -1) >= 0
+        if took_a_pot:
+            winners.add(pid)
+    return winners
 
 
 def _is_seven_deuce(hole: list[str]) -> bool:
@@ -1284,6 +1351,11 @@ async def join_room(room_id: str, body: JoinBody) -> dict[str, Any]:
         room = await load_room(room_id)
         if not room:
             raise fastapi.HTTPException(404, "Room not found.")
+        # Before the password check, because a room with no credentials cannot
+        # seat anybody usefully: they would be handed a key that every read
+        # rejects a moment later. Fail here, in one shape, like every other
+        # door into a legacy room.
+        _reject_legacy(room)
         if not _verify_password(body.password, room["passwordHash"]):
             raise fastapi.HTTPException(403, "Incorrect room password.")
         if room["phase"] != "lobby":
@@ -1295,10 +1367,7 @@ async def join_room(room_id: str, body: JoinBody) -> dict[str, Any]:
 
         player_id = secrets.token_urlsafe(12)
         token = _new_token()
-        # Seats are handed out from the highest one used, not from the size of
-        # the table: removing somebody leaves a gap, and counting seats would
-        # hand the next arrival a number that is already taken.
-        seat = max((p["seat"] for p in room["players"].values()), default=-1) + 1
+        seat = _free_seat(room)
         room["players"][player_id] = {
             "id": player_id,
             "name": body.name,
@@ -1409,6 +1478,7 @@ async def watch_room(room_id: str, body: WatchBody) -> dict[str, Any]:
     room = await load_room(room_id)
     if not room:
         raise fastapi.HTTPException(404, "Room not found.")
+    _reject_legacy(room)
     # Still a private table. Watching is not a way around the password.
     if not _verify_password(body.password, room["passwordHash"]):
         raise fastapi.HTTPException(403, "Incorrect room password.")

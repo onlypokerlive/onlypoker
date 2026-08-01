@@ -942,42 +942,114 @@ def rig_hand(client, room_id, seat, hole):
     return room
 
 
-def test_seven_deuce_pays_out_at_showdown_without_anyone_asking(client, clock):
-    """Shown down, the cards are already public, so the bonus needs no claim.
+def showdown_leader(room):
+    """The seat that will take the pot, worked out from the finished board.
 
-    The first version of this test dealt whatever came and asserted that the
-    payout matched the cards — which, on a random deal, almost always meant
-    asserting that nothing happened. It now fixes the winning hand.
+    Only correct once all five cards are out — which is exactly when the tests
+    below use it, on the last betting round, so the hand it names is the hand
+    that wins.
     """
-    room_id, ids = table(client, 3, sevenDeuce=2, actionSeconds=0, levelMinutes=0)
-    start(client, room_id, ids[0])
-    room = client.portal.call(main.load_room, room_id)
+    from pokerkit import StandardHighHand
+
+    board = "".join(main.poker.board_cards(main.poker.loads(room["stateB64"])))
+    folded = set(room.get("foldedSeats", []))
+    best = best_seat = None
+    for seat, hole in enumerate(room["handHoleCards"]):
+        if seat in folded:
+            continue
+        hand = StandardHighHand.from_game("".join(hole), board)
+        if best is None or hand > best:
+            best, best_seat = hand, seat
+    return best_seat
+
+
+def check_down_with_seven_deuce_for_the_winner(client, room_id, ids):
+    """Play a hand to showdown, putting 7-2 in the hand that ends up winning.
+
+    Deliberately without touching the settlement: the rig goes into the hole
+    card snapshot on the river, *before* the last action, so the payout has to
+    come out of ``_settle_hand`` on its own. A test that calls
+    ``_pay_seven_deuce`` by hand would pass just as happily with that call
+    deleted from the settlement, which is the one thing it claims to check.
+    """
+    dealt = list(client.portal.call(main.load_room, room_id)["handHoleCards"])
     for _ in range(30):
         view = state(client, room_id, ids[0])
         if view["room"]["phase"] != "hand" or not view["actorId"]:
             break
+        if len(view["board"]) == 5:
+            room = client.portal.call(main.load_room, room_id)
+            room["handHoleCards"] = list(dealt)
+            room["handHoleCards"][showdown_leader(room)] = ["7h", "2c"]
+            client.portal.call(main.save_room, room)
         act(client, room_id, view["actorId"], "call")
+    return state(client, room_id, ids[0])
 
-    view = state(client, room_id, ids[0])
-    if not view["wentToShowdown"]:
-        pytest.skip("checked-down hand did not reach a showdown")
-    winner = next(r for r in view["lastResults"] if r["delta"] > 0)
-    seat = room["handPlayerIds"].index(winner["playerId"])
 
-    # Replay the settlement with the winner holding seven-deuce.
-    settled = client.portal.call(main.load_room, room_id)
-    settled["handHoleCards"][seat] = ["7h", "2c"]
-    settled["sevenDeucePaid"] = False
-    settled["sevenDeuceWin"] = None
-    before = dict((pid, p["chips"]) for pid, p in settled["players"].items())
-    main._pay_seven_deuce(settled)
+def test_seven_deuce_pays_out_at_showdown_without_anyone_asking(client, clock):
+    """Shown down, the cards are already public, so the bonus needs no claim."""
+    room_id, ids = table(client, 3, sevenDeuce=2, actionSeconds=0, levelMinutes=0)
+    before = {p["id"]: p["chips"] for p in state(client, room_id, ids[0])["players"]}
+    start(client, room_id, ids[0])
+    view = check_down_with_seven_deuce_for_the_winner(client, room_id, ids)
 
-    assert settled["sevenDeuceWin"]["playerId"] == winner["playerId"]
-    for pid, was in before.items():
-        if pid == winner["playerId"]:
-            assert settled["players"][pid]["chips"] == was + 40
-        else:
-            assert settled["players"][pid]["chips"] == was - 20
+    assert view["wentToShowdown"]
+    assert view["sevenDeuceWin"] is not None
+    winner = view["sevenDeuceWin"]["playerId"]
+    assert view["sevenDeuceWin"]["amount"] == 40  # two big blinds from each loser
+
+    # Every stack moved by the bonus on top of whatever the pot did. Netting the
+    # pot out again leaves exactly the transfer.
+    pot_delta = {r["playerId"]: r["delta"] for r in view["lastResults"]}
+    for player in view["players"]:
+        moved = player["chips"] - before[player["id"]] - pot_delta[player["id"]]
+        assert moved == (40 if player["id"] == winner else -20)
+
+
+def test_winning_a_side_pot_counts_even_when_the_hand_lost_money(client, clock):
+    """Winning a pot and finishing ahead are different questions.
+
+    A short stack shoves for 90 while two others put in 100 each. The main pot
+    is 270 and the side pot is 20. If the short stack takes the main and one of
+    the others takes the side, that second player *won a pot* and is still 80
+    down on the deal. Netting their stack calls them a loser and the 7-2 in
+    their hand never gets paid.
+    """
+    room = {
+        "handPlayerIds": ["short", "sider", "loser"],
+        "foldedSeats": [],
+        "lastResults": [
+            {"playerId": "short", "delta": 180, "won": 270},
+            {"playerId": "sider", "delta": -80, "won": 20},
+            {"playerId": "loser", "delta": -100, "won": 0},
+        ],
+    }
+    assert main._hand_winners(room) == {"short", "sider"}
+
+
+def test_the_pot_pushes_are_read_off_the_engine(client, clock):
+    """``won`` has to be the engine's answer, not a guess reconstructed here.
+
+    Whatever left the players' stacks arrived somewhere, so the pushes add up
+    to the pot — and every chip pushed went to somebody who was still in the
+    hand.
+    """
+    room_id, ids = table(client, 3, actionSeconds=0, levelMinutes=0)
+    start(client, room_id, ids[0])
+    started = client.portal.call(main.load_room, room_id)["handStartStacks"]
+    view = check_down_with_seven_deuce_for_the_winner(client, room_id, ids)
+
+    room = client.portal.call(main.load_room, room_id)
+    results = {r["playerId"]: r for r in view["lastResults"]}
+    won = [results[pid]["won"] for pid in room["handPlayerIds"]]
+    staked = sum(started) - sum(
+        room["players"][pid]["chips"] - results[pid]["won"]
+        for pid in room["handPlayerIds"]
+    )
+    assert sum(won) == staked
+    assert sum(w > 0 for w in won) >= 1
+    folded = set(room["foldedSeats"])
+    assert all(w == 0 for seat, w in enumerate(won) if seat in folded)
 
 
 def test_seven_deuce_is_claimed_by_showing_a_pot_won_by_folding(client, clock):
@@ -1473,6 +1545,58 @@ def test_removing_the_button_keeps_the_blinds_going_round(client, clock):
     # The button carries on to the seat that was next, not to wherever the
     # arithmetic happens to land.
     assert after["buttonId"] == expected
+
+
+def test_a_seat_freed_in_the_lobby_is_handed_to_the_next_arrival(client, clock):
+    """Two people must never share a seat, and no seat may exceed the table.
+
+    Numbering from the size of the table hands the next arrival a chair that is
+    already occupied. Numbering from the highest one used avoids that and
+    creates the opposite problem — seats climb past the nine this table has,
+    and keep climbing with every arrival and departure.
+    """
+    room_id, ids = table(client, 3)
+    assert kick(client, room_id, ids[0], ids[1]).status_code == 200
+    late = join(client, room_id, "Late")["playerId"]
+
+    room = client.portal.call(main.load_room, room_id)
+    seats = [room["players"][pid]["seat"] for pid in room["order"]]
+    assert len(set(seats)) == len(seats), "two players cannot share a chair"
+    assert all(0 <= s < main.MAX_SEATS for s in seats)
+    assert room["players"][late]["seat"] == 1  # the chair that was freed
+
+    # And churn does not run the numbers away: fill, empty, refill.
+    for _ in range(main.MAX_SEATS - len(room["order"])):
+        join(client, room_id, "Filler")
+    room = client.portal.call(main.load_room, room_id)
+    assert sorted(room["players"][pid]["seat"] for pid in room["order"]) == list(
+        range(main.MAX_SEATS)
+    )
+
+
+def test_nobody_is_removed_once_the_podium_is_written(client, clock):
+    """The placings are already decided. Removing somebody now rewrites them.
+
+    A player kicked after the end would be recorded with a zeroed stack and
+    re-ranked, which quietly demotes whoever won the night.
+    """
+    room_id, ids = table(client, 3, actionSeconds=0, levelMinutes=0)
+    start(client, room_id, ids[0])
+    fold_until_hand_over(client, room_id, ids)
+    # Both challengers run out of chips, so the next deal has nowhere to go and
+    # the tournament closes itself.
+    room = client.portal.call(main.load_room, room_id)
+    for pid in ids[1:]:
+        room["players"][pid]["chips"] = 0
+    client.portal.call(main.save_room, room)
+    assert start(client, room_id, ids[0]).status_code == 400
+
+    before = client.portal.call(main.load_room, room_id)["standings"]
+    assert before, "the tournament has to be over for this to mean anything"
+    res = kick(client, room_id, ids[0], ids[1])
+    assert res.status_code == 400
+    assert "already over" in res.json()["detail"]
+    assert client.portal.call(main.load_room, room_id)["standings"] == before
 
 
 def test_removing_the_second_to_last_player_ends_the_tournament(client, clock):
@@ -2003,6 +2127,69 @@ def test_a_credential_is_never_sent_to_the_table(client, clock):
     ).text
     for pid in ids:
         assert TOKENS[pid] not in body
+
+
+def test_being_shown_the_door_takes_the_key_with_it(client, clock):
+    """A removed player keeps their record. They must not keep their access.
+
+    The record stays because the final standings look players up by id, so
+    deleting them outright turns the podium into a KeyError. But a record is a
+    memory of somebody who was here, and treating it as a live credential means
+    the host removes a player who then carries on reading the table, sitting
+    back in, and polling as if nothing had happened.
+    """
+    room_id, ids = table(client, 3, actionSeconds=0, levelMinutes=0)
+    start(client, room_id, ids[0])
+    fold_until_hand_over(client, room_id, ids)
+    assert kick(client, room_id, ids[0], ids[2]).status_code == 200
+
+    gone = ids[2]
+    reading = client.get(
+        f"/api/rooms/{room_id}/state", params={"playerId": gone}, headers=auth(gone)
+    )
+    assert reading.status_code == 403
+    sitting = client.post(
+        f"/api/rooms/{room_id}/sit",
+        headers=auth(gone),
+        json={"playerId": gone, "action": "sit"},
+    )
+    assert sitting.status_code == 403
+    assert "removed" in sitting.json()["detail"].lower()
+    # And the table itself is unchanged by the attempt.
+    room = client.portal.call(main.load_room, room_id)
+    assert gone not in room["order"]
+
+
+def test_a_table_from_before_the_credential_split_closes_every_door(client, clock):
+    """One refusal, one status code, whichever way the room is reached.
+
+    Failing closed in four different shapes — a 401 here, a 500 there, a 200
+    that then cannot read anything — is how a client ends up in a state nobody
+    wrote a screen for. The worst of them was a join that succeeded, took a
+    seat, handed out a key, and had every subsequent request reject it.
+    """
+    room_id, ids = table(client, 2)
+    room = client.portal.call(main.load_room, room_id)
+    room.pop("watchToken")
+    for player in room["players"].values():
+        player.pop("token", None)
+    client.portal.call(main.save_room, room)
+
+    doors = [
+        client.get(f"/api/rooms/{room_id}/state"),
+        client.get(f"/api/rooms/{room_id}/rabbit"),
+        client.post(f"/api/rooms/{room_id}/watch", json={"password": "secret"}),
+        client.post(
+            f"/api/rooms/{room_id}/join", json={"name": "Late", "password": "secret"}
+        ),
+        client.post(
+            f"/api/rooms/{room_id}/start", json={"playerId": ids[0], "action": "start"}
+        ),
+    ]
+    assert [d.status_code for d in doors] == [401] * len(doors)
+    assert all("Start a new one" in d.json()["detail"] for d in doors)
+    # And the refused join really did not seat anybody.
+    assert len(client.portal.call(main.load_room, room_id)["order"]) == 2
 
 
 # --------------------------------------------------------------------------- #

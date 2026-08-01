@@ -13,7 +13,7 @@ import pickle
 from collections import Counter
 from typing import Any
 
-from pokerkit import Automation, NoLimitTexasHoldem, StandardHighHand
+from pokerkit import Automation, ChipsPushing, NoLimitTexasHoldem, StandardHighHand
 
 # Everything is automated except the actual player betting decisions
 # (fold / check-call / bet-raise). pokerkit will post blinds, deal hole and
@@ -209,6 +209,28 @@ def apply_action(state, action: str, amount: int | None = None):
     else:
         raise ActionError(f"Unknown action: {action}")
     return state
+
+
+def pushed_amounts(state, seats: int) -> list[int]:
+    """What each seat was actually awarded out of the pots.
+
+    "Came out ahead" is not the same thing as "won a pot", and the difference
+    is not academic: a short all-in wins the main pot while somebody else takes
+    the side pot, and that somebody can finish the hand down on the deal.
+    Netting their stack against what they started with calls them a loser of a
+    pot they demonstrably won — which is how a side-pot winner with seven-deuce
+    quietly fails to collect the bonus.
+
+    pokerkit records every push it makes as an operation on the state we
+    already serialize, so this reads the answer instead of inferring it.
+    """
+    totals = [0] * seats
+    for op in state.operations:
+        if isinstance(op, ChipsPushing):
+            for i, amount in enumerate(op.amounts):
+                if i < seats:
+                    totals[i] += int(amount)
+    return totals
 
 
 def pot_total(state, hand_start_stacks: list[int]) -> int:
