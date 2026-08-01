@@ -286,6 +286,87 @@
   filter: drop-shadow(0 2px 1.5px oklch(0 0 0 / 0.5));
 }
 
+/* ------------------------------------------------------------------------ *
+ * A card landing
+ *
+ * It comes in from where the deck is, turns edge-on, and opens face up. The
+ * turn is a horizontal squeeze and a swap of what is drawn — deliberately not
+ * `preserve-3d` with `backface-visibility` on nested faces, which is the
+ * arrangement Safari leaves cards unpainted with. One element, one axis, and
+ * the back fades out at the exact moment the card has no width to see.
+ * ------------------------------------------------------------------------ */
+@keyframes card-arrive {
+  0% {
+    transform: translate(0, -34px) rotate(-7deg) scaleX(1);
+    opacity: 0;
+  }
+  30% {
+    opacity: 1;
+  }
+  55% {
+    transform: translate(0, 0) rotate(0deg) scaleX(0.06);
+    opacity: 1;
+  }
+  100% {
+    transform: translate(0, 0) rotate(0deg) scaleX(1);
+    opacity: 1;
+  }
+}
+
+/* Stepped, not faded: at the halfway point the card is edge-on and there is
+   nothing to cross-fade — a fade would be visible as a ghost through it. */
+@keyframes card-turn-over {
+  0%,
+  54.9% {
+    opacity: 1;
+  }
+  55%,
+  100% {
+    opacity: 0;
+  }
+}
+
+.card-arriving {
+  animation: card-arrive 420ms cubic-bezier(0.2, 0.7, 0.3, 1) backwards;
+}
+
+.card-arriving-back {
+  animation: card-turn-over 420ms linear backwards;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  /*
+   * No flight and no turn — but the *timing survives*. A showdown that
+   * resolves in a single frame does not tell somebody who turned motion off
+   * who won; it just shows them the answer. So each card still lands on its
+   * own beat, it simply appears there.
+   */
+  .card-arriving {
+    animation-name: card-appear;
+  }
+  .card-arriving-back {
+    animation-name: card-appear-gone;
+  }
+}
+
+@keyframes card-appear {
+  0%,
+  54.9% {
+    opacity: 0;
+  }
+  55%,
+  100% {
+    opacity: 1;
+  }
+}
+
+@keyframes card-appear-gone {
+  0%,
+  100% {
+    opacity: 0;
+  }
+}
+
 /*
  * The seat on the spot, running out of time.
  *

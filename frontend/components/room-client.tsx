@@ -24,6 +24,8 @@ import { TournamentResults } from "@/components/tournament-results"
 import { useSecondsLeft } from "@/lib/use-countdown"
 import { useTableEvents, type SoundMode } from "@/lib/use-table-events"
 import { useShotClockWarning } from "@/lib/use-shot-clock-warning"
+import { useDoubleTap } from "@/lib/use-double-tap"
+import { playCue } from "@/lib/sound"
 import { useRunout } from "@/lib/use-runout"
 import {
   ApiError,
@@ -131,6 +133,22 @@ export function RoomClient({ roomId }: { roomId: string }) {
   })
   // An all-in arrives as a finished board in one response. Deal it out.
   const { board: shownBoard, revealing } = useRunout(view)
+
+  // Rapping the table is what checking *is*, so it is the gesture and not a
+  // button. The whole felt, not a target: at a real table you knock wherever
+  // your hand happens to be.
+  const canCheckNow = !!view?.isYourTurn && !!view?.legal?.canCheck && !busy
+  const { onPointerDown: onFeltTap, refused } = useDoubleTap({
+    enabled: canCheckNow,
+    onDoubleTap: () => handleAction("check"),
+  })
+  // A gesture that silently does nothing is indistinguishable from one the app
+  // never received — so the player taps harder, and then stops trusting it.
+  useEffect(() => {
+    if (!refused) return
+    if (soundMode !== "off") playCue("error")
+    toast("Double-tap checks — but only on your turn, and only when checking is free.")
+  }, [refused, soundMode])
 
   async function withBusy(fn: () => Promise<void>) {
     if (busy) return
@@ -282,11 +300,16 @@ export function RoomClient({ roomId }: { roomId: string }) {
               otherwise the pause before the cards come out looks like the app
               having hung. */}
           <RunoutOffer view={view} roomId={roomId} onDone={refresh} session={session} />
-          <PokerTable
-            view={{ ...view, board: shownBoard }}
-            revealed={revealed}
-            secondsLeft={secondsLeft}
-          />
+          {/* The gesture lives on a wrapper rather than inside the table, so
+              the table stays a drawing of a table and knows nothing about
+              what tapping it means. */}
+          <div onPointerDown={onFeltTap}>
+            <PokerTable
+              view={{ ...view, board: shownBoard }}
+              revealed={revealed}
+              secondsLeft={secondsLeft}
+            />
+          </div>
 
           {/* Held back while the board is still coming out: the panel names the
               winner, and reading it before the river lands gives the ending
@@ -411,6 +434,14 @@ export function RoomClient({ roomId }: { roomId: string }) {
                   onDone={refresh}
                   session={session}
                 />
+                {/* Said only while it is true, which is the only time it is
+                    worth a line — and it is how anybody finds the gesture
+                    without an onboarding screen nobody reads. */}
+                {canCheckNow && (
+                  <p className="text-center text-[11px] text-muted-foreground">
+                    Double-tap the felt to check
+                  </p>
+                )}
                 <ActionBar
                   view={view}
                   onAction={handleAction}

@@ -7,6 +7,7 @@ import { PlayerSeat } from "@/components/player-seat"
 import { PotDisplay } from "@/components/pot-display"
 import { ChipStack } from "@/components/chip-stack"
 import { latestLine } from "@/lib/action-line"
+import { useBoardEntrance } from "@/lib/board-entrance"
 import { baizeOf, deckOf } from "@/lib/table-style"
 import {
   betLabel,
@@ -101,6 +102,46 @@ function BetChip({ amount }: { amount: number }) {
       >
         {betLabel(amount)}
       </span>
+    </div>
+  )
+}
+
+/**
+ * One community card, and its arrival.
+ *
+ * The animation lives on a wrapper so the card itself stays a card. That also
+ * keeps the transform off the measured box — a scaling child does not change
+ * its parent's layout, so the middle of the table holds still while the flop
+ * comes out, and nothing gets re-placed against a box that is mid-flight.
+ */
+function BoardCard({ card, delay }: { card: string; delay: number | null }) {
+  const face = (
+    <PlayingCard
+      card={card}
+      size="xs"
+      className="min-[380px]:h-12 min-[380px]:w-9 min-[380px]:text-xs"
+    />
+  )
+  if (delay == null) return face
+  return (
+    <div
+      className="card-arriving relative"
+      style={{ animationDelay: `${delay}ms` }}
+    >
+      {face}
+      {/* The back, on top, until the card is edge-on. */}
+      <div
+        className="card-arriving-back absolute inset-0"
+        style={{ animationDelay: `${delay}ms` }}
+        aria-hidden
+      >
+        <PlayingCard
+          card={null}
+          faceDown
+          size="xs"
+          className="min-[380px]:h-12 min-[380px]:w-9"
+        />
+      </div>
     </div>
   )
 }
@@ -279,6 +320,11 @@ export function PokerTable({
   const said =
     view.phase === "hand" ? latestLine(view.actions, view.players) : view.message
 
+  // Which board cards are landing right now, and on what beat. Null for the
+  // ones that were already there — somebody opening the app mid-hand is
+  // looking at a flop, not watching one being dealt.
+  const arriving = useBoardEntrance(view.board)
+
   return (
     // Taller than a 3:4 box on phones: nine seats need the vertical room, or
     // the pairs flanking the top corners run into each other.
@@ -323,12 +369,7 @@ export function PokerTable({
               // Small on narrow phones: five cards at the sm size leave a
               // nine-handed table no room between the board and the seats.
               view.board.map((c, i) => (
-                <PlayingCard
-                  key={i}
-                  card={c}
-                  size="xs"
-                  className="min-[380px]:h-12 min-[380px]:w-9 min-[380px]:text-xs"
-                />
+                <BoardCard key={i} card={c} delay={arriving[i]} />
               ))
             ) : (
               <span className="text-xs text-muted-foreground/70">

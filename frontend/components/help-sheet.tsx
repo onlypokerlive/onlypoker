@@ -19,6 +19,10 @@ const ENTRIES: { title: string; body: string }[] = [
     body: "Your hand only shows while a thumb is on it. Let go and it drops back onto the felt — so the person next to you never gets a look.",
   },
   {
+    title: "Double-tap to check",
+    body: "Anywhere on the felt, on your turn, when checking is free — the same knuckles on the table you would use in person. The buttons still work; this is just faster than finding one.",
+  },
+  {
     title: "Bet sizes",
     body: "The row above the buttons is the sizes you actually use. Preflop they are multiples of the big blind; after the flop they are fractions of the pot. Use + and − to nudge by one big blind.",
   },
