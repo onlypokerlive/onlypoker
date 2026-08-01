@@ -44,7 +44,7 @@ export function PhotoUpload({
       const form = new FormData()
       form.append('file', file)
       form.append('scope', scope)
-      const res = await fetch('/api/photo/upload', {
+      const res = await fetch('/srv/photo/upload', {
         method: 'POST',
         body: form,
       })

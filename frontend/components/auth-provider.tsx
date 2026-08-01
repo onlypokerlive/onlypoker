@@ -32,7 +32,7 @@ const AuthContext = createContext<AuthContextValue | undefined>(undefined)
 
 async function fetchProfile(): Promise<PlayerProfile | null> {
   try {
-    const res = await fetch('/api/profile', { cache: 'no-store' })
+    const res = await fetch('/srv/profile', { cache: 'no-store' })
     if (!res.ok) return null
     const data = await res.json()
     return data.profile ?? null

@@ -53,7 +53,7 @@ export default function ProfilePage() {
       return
     }
     let active = true
-    fetch('/api/profile', { cache: 'no-store' })
+    fetch('/srv/profile', { cache: 'no-store' })
       .then((r) => r.json())
       .then((data) => {
         if (!active || !data.profile) return
@@ -71,7 +71,7 @@ export default function ProfilePage() {
   async function persist(patch: Record<string, unknown>, quiet = false) {
     setSaving(true)
     try {
-      const res = await fetch('/api/profile', {
+      const res = await fetch('/srv/profile', {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(patch),

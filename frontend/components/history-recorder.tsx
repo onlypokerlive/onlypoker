@@ -75,7 +75,7 @@ export function HistoryRecorder({
 
     async function save() {
       try {
-        const res = await fetch('/api/history/record', {
+        const res = await fetch('/srv/history/record', {
           method: 'POST',
           headers: { 'content-type': 'application/json' },
           body: JSON.stringify(payload),

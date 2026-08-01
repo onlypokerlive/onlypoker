@@ -39,21 +39,10 @@ export async function updateSession(request: NextRequest) {
 
   // IMPORTANT: If you remove getUser() and you use server-side rendering
   // with the Supabase client, your users may be randomly logged out.
-  const {
-    data: { user },
-  } = await supabase.auth.getUser()
-
-  // Protect the profile + history areas; everything else (guest play) stays open.
-  const protectedPrefixes = ['/profile', '/history']
-  if (
-    !user &&
-    protectedPrefixes.some((p) => request.nextUrl.pathname.startsWith(p))
-  ) {
-    const url = request.nextUrl.clone()
-    url.pathname = '/'
-    url.searchParams.set('signin', '1')
-    return NextResponse.redirect(url)
-  }
+  // We only refresh the session here; auth is optional across the app, so
+  // pages that need a signed-in user render their own sign-in prompt instead
+  // of being force-redirected (guests can still play, host, and join).
+  await supabase.auth.getUser()
 
   // IMPORTANT: You *must* return the supabaseResponse object as it is.
   return supabaseResponse

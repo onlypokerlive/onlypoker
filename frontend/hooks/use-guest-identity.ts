@@ -65,7 +65,7 @@ export function useGuestIdentity() {
         return
       }
       try {
-        const res = await fetch('/api/photo/signed-url', {
+        const res = await fetch('/srv/photo/signed-url', {
           method: 'POST',
           headers: { 'content-type': 'application/json' },
           body: JSON.stringify({
