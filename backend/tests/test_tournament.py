@@ -3214,6 +3214,33 @@ def test_work_that_is_due_is_either_done_or_stops_being_due(client, clock):
     assert not main._work_due(room, clock.now)
 
 
+def test_a_stopped_table_does_not_fold_anybody(client, clock):
+    """Found by pausing a running table and watching it play on without me.
+
+    The blind clock was being held, the dealing was stopped — and the shot
+    clock carried on regardless, so the host pausing for a pizza came back to
+    a table where everybody had been folded by a clock that never stopped.
+    """
+    room_id, ids = table(client, 3, actionSeconds=20, timeBankSeconds=60)
+    start(client, room_id, ids[0])
+    actor = state(client, room_id, ids[0])["actorId"]
+    control(client, room_id, ids[0], "pause")
+
+    clock.advance(600)
+    view = state(client, room_id, ids[1])
+    assert view["actorId"] == actor, "still their decision to make"
+    assert view["bankRunning"] is False, "and not out of their time bank either"
+    room = client.portal.call(main.load_room, room_id)
+    assert room["foldedSeats"] == []
+    assert room["timedOutSeats"] == []
+
+    # Back on, and they get their time back in full rather than pro-rata.
+    control(client, room_id, ids[0], "resume")
+    view = state(client, room_id, ids[0])
+    assert view["actorId"] == actor
+    assert view["actionDeadline"] == pytest.approx(view["serverTime"] + 20, abs=1)
+
+
 def test_a_paused_table_asks_nothing_of_the_clock(client, clock):
     """Paused means paused: no appointment, so no reason to take the lock."""
     room_id, ids = table(client, 3, actionSeconds=0, levelMinutes=0)

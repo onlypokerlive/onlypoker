@@ -681,6 +681,17 @@ def _resume_table(room: dict[str, Any], now: float) -> None:
     room["paused"] = False
     room["autoDealPaused"] = False
     room["breakUntil"] = None
+    # Whoever was on the spot when the table stopped gets their time back, in
+    # full rather than pro-rata. Coming back from a break with two seconds left
+    # to make a decision nobody has been thinking about is a worse answer than
+    # the arithmetic being exactly fair.
+    if room.get("phase") == "hand":
+        seconds = int(room.get("actionSeconds") or 0)
+        if seconds and room.get("actorId"):
+            room["actionDeadline"] = now + seconds
+            room["bankRunning"] = False
+        if room.get("runoutSeats"):
+            room["runoutDeadline"] = now + RUNOUT_SECONDS
 
 
 def _break_due(room: dict[str, Any], now: float) -> bool:
@@ -1743,10 +1754,21 @@ _SCHEDULE = (
 )
 
 
+# The one thing a stopped table still does, which is start itself again.
+# Everything else — folding an unanswered decision, spending somebody's time
+# bank, carrying out a standing instruction, dealing, closing — is the table
+# playing, and a stopped table is not playing. Without this the host pauses for
+# a pizza and comes back to three players folded by a clock that never stopped.
+_WHILE_STOPPED = ("break",)
+
+
 def _work_due(room: dict[str, Any], now: float) -> list[str]:
     """Everything this room should already have done by ``now``."""
+    stopped = _is_paused(room)
     due = []
     for name, when, _ in _SCHEDULE:
+        if stopped and name not in _WHILE_STOPPED:
+            continue
         at = when(room)
         if at is not None and now >= at:
             due.append(name)
@@ -1762,10 +1784,10 @@ def _next_wakeup(room: dict[str, Any]) -> float | None:
 def _tick(room: dict[str, Any]) -> bool:
     """Bring the room up to date with the wall clock. True if it changed."""
     now = time.time()
+    due = _work_due(room, now)
     changed = False
-    for name, when, run in _SCHEDULE:
-        at = when(room)
-        if at is not None and now >= at:
+    for name, _, run in _SCHEDULE:
+        if name in due:
             changed = run(room) or changed
     return changed
 
