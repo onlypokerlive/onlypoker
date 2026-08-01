@@ -41,16 +41,45 @@ export function runoutSteps(from: number, to: number): number[] {
  * clock does not know or care that we are mid-reveal. So the whole sequence is
  * fitted inside a fraction of it, and a table with a short pause between hands
  * simply gets a faster run-out rather than one that gets dealt over.
+ *
+ * `pauseSeconds` is the time actually left before the next deal, not the room's
+ * setting. Those used to be the same number and are not any more: the pause the
+ * server grants depends on what happened in the hand, and an all-in gets its own
+ * allowance precisely so this reveal fits. Pacing off the setting would have
+ * spent a twelve-second pause as if it were five.
  */
-export function runoutStepMs(steps: number, autoDealSeconds: number, preferred = 800): number {
+export function runoutStepMs(steps: number, pauseSeconds: number, preferred = 800): number {
   if (steps <= 0) return preferred
-  const pause = (autoDealSeconds || 8) * 1000
+  // Zero is a real answer here — the deal is already due — and it has to mean
+  // "as fast as this is still watchable", not "use the default". `Infinity` is
+  // the other real answer, for a table with nothing scheduled, and falls out of
+  // the `min` below on its own.
+  const pause = Math.max(0, pauseSeconds) * 1000
   // Two thirds, so the finished board is on screen for a moment before the
   // next hand takes it away.
   return Math.max(120, Math.min(preferred, (pause * 0.66) / steps))
 }
 
 /** Total time the reveal will take, for checking it fits. */
-export function runoutDurationMs(steps: number, autoDealSeconds: number): number {
-  return steps * runoutStepMs(steps, autoDealSeconds)
+export function runoutDurationMs(steps: number, pauseSeconds: number): number {
+  return steps * runoutStepMs(steps, pauseSeconds)
+}
+
+/**
+ * The seconds the reveal has to play with.
+ *
+ * The deadline when there is one, because it is the truth; the room's setting
+ * only as a floor for the moment between the hand ending and the first view
+ * that carries the new deadline.
+ */
+export function runoutPauseSeconds(
+  autoDealAtMs: number | null,
+  autoDealSeconds: number,
+  now = Date.now(),
+): number {
+  if (autoDealAtMs != null) return Math.max(0, (autoDealAtMs - now) / 1000)
+  // Nothing scheduled: either the host deals by hand, or this view was taken
+  // before the handover was armed. Either way nothing is coming to cut the
+  // reveal off, so it plays at its own pace.
+  return autoDealSeconds || Infinity
 }

@@ -1,6 +1,11 @@
 import { describe, expect, it } from 'vitest'
 
-import { runoutDurationMs, runoutStepMs, runoutSteps } from '@/lib/runout'
+import {
+  runoutDurationMs,
+  runoutPauseSeconds,
+  runoutStepMs,
+  runoutSteps,
+} from '@/lib/runout'
 
 describe('runoutSteps', () => {
   it('does not animate an ordinary street', () => {
@@ -57,5 +62,31 @@ describe('runoutStepMs', () => {
 
   it('stays watchable even on an absurdly short pause', () => {
     expect(runoutStepMs(3, 1)).toBeGreaterThanOrEqual(120)
+  })
+})
+
+describe('runoutPauseSeconds', () => {
+  it('paces off the deadline, not the setting', () => {
+    // The server grants an all-in a longer pause than an ordinary hand, and
+    // that allowance exists for this reveal. Reading the room's setting would
+    // spend twelve seconds as if they were eight.
+    expect(runoutPauseSeconds(1_000_000 + 12_000, 8, 1_000_000)).toBe(12)
+  })
+
+  it('falls back to the setting before a deadline has arrived', () => {
+    expect(runoutPauseSeconds(null, 5)).toBe(5)
+  })
+
+  it('runs the reveal at its fastest when the deal is already due', () => {
+    // Zero is a real answer, not a missing one: the next hand is on its way.
+    // Falling back to the default here would deal the board over the reveal.
+    expect(runoutPauseSeconds(1_000_000, 8, 1_005_000)).toBe(0)
+    expect(runoutStepMs(3, 0)).toBe(120)
+  })
+
+  it('takes its time when the host is dealing by hand', () => {
+    // Auto-deal off. Nothing is coming, so nothing is racing.
+    expect(runoutPauseSeconds(null, 0)).toBe(Infinity)
+    expect(runoutStepMs(3, Infinity)).toBe(800)
   })
 })

@@ -1,98 +1,8 @@
 import { describe, expect, it } from 'vitest'
 
-import { diffViews, type TableEvent } from '@/lib/table-events'
+import { closedByABet, diffViews, potGrowth, type TableEvent } from '@/lib/table-events'
+import { gameView as view } from '@/lib/test-fixtures'
 import type { GameView, PlayerView, TableAction } from '@/lib/poker-api'
-
-function player(overrides: Partial<PlayerView> = {}): PlayerView {
-  return {
-    id: 'p1',
-    name: 'Marcos',
-    seat: 0,
-    chips: 1000,
-    isHost: false,
-    sittingOut: false,
-    isYou: false,
-    connected: true,
-    index: 0,
-    inHand: true,
-    folded: false,
-    bet: 0,
-    isActor: false,
-    isButton: false,
-    isSmallBlind: false,
-    isBigBlind: false,
-    isStraddle: false,
-    cardsCount: 2,
-    cards: null,
-    timedOut: false,
-    shownIndices: [],
-    out: false,
-    autoSatOut: false,
-    canSitOut: true,
-    leaving: false,
-    rebuys: 0,
-    addOnTaken: false,
-    timeBank: 0,
-    ...overrides,
-  }
-}
-
-function view(overrides: Partial<GameView> = {}): GameView {
-  const you = player({ id: 'me', name: 'You', isYou: true })
-  return {
-    roomId: 'ABC123',
-    roomName: 'Test table',
-    phase: 'hand',
-    smallBlind: 5,
-    bigBlind: 10,
-    startingChips: 1000,
-    handNumber: 1,
-    turnId: 1,
-    maxSeats: 9,
-    actionSeconds: 20,
-    levelMinutes: 10,
-    autoDealSeconds: 8,
-    paused: false,
-    lastHand: false,
-    allowLeaving: true,
-    rebuyOpen: false,
-    addOn: false,
-    bankRunning: false,
-    preAction: null,
-    ante: 0,
-    bombPot: false,
-    baize: 'emerald',
-    deck: 'claret',
-    players: [you, player()],
-    board: [],
-    boards: [[]],
-    boardResults: [],
-    runoutSeats: [],
-    askedAboutRunout: false,
-    pot: 0,
-    pots: [],
-    actions: [],
-    street: 'preflop',
-    actorId: 'p1',
-    isHost: false,
-    isYourTurn: false,
-    you,
-    lastResults: [],
-    standings: [],
-    wentToShowdown: false,
-    sevenDeuceWin: null,
-    sevenDeucePending: false,
-    level: null,
-    actionDeadlineMs: null,
-    levelEndsAtMs: null,
-    autoDealAtMs: null,
-    breakEndsAtMs: null,
-    runoutEndsAtMs: null,
-    message: null,
-    legal: null,
-    ...overrides,
-  }
-}
 
 /** Same players, with a patch applied to one of them. */
 function withPlayer(v: GameView, id: string, patch: Partial<PlayerView>): GameView {
@@ -284,5 +194,132 @@ describe('what the server wrote down', () => {
     expect(diff(betting, swept)).toContain('potCollect')
     // A deal also clears the felt, and is not a street closing.
     expect(diff(betting, view({ handNumber: 2, pot: 15 }))).not.toContain('potCollect')
+  })
+
+  it('reports it even when the next street is already being bet into', () => {
+    // The case that made this almost never fire. Two polls are 1.2 seconds
+    // apart and the table does not wait: by the response that carries the new
+    // board, somebody has usually already led out. Requiring the felt to be
+    // *empty* meant waiting for a snapshot of the table standing still, which
+    // on a live table almost never arrives — so the street closed in silence
+    // and the chips never went anywhere.
+    const betting = withPlayer(view({ pot: 0 }), 'p1', { bet: 30 })
+    const nextStreet = withPlayer(view({ pot: 60, board: ['As', 'Kd', '7h'] }), 'p2', {
+      bet: 50,
+    })
+    expect(diff(betting, nextStreet)).toContain('potCollect')
+  })
+
+  it('does not mistake somebody folding for the street closing', () => {
+    // Folding takes a player out and leaves the pot exactly where it was.
+    const before = withPlayer(view({ pot: 60 }), 'p1', { bet: 30 })
+    const after = withPlayer(view({ pot: 60 }), 'p1', { bet: 30, folded: true })
+    expect(diff(before, after)).not.toContain('potCollect')
+  })
+
+  it('reports the last street of the hand, which the pot cannot report itself', () => {
+    // Settling sweeps the bets in and pushes them to the winner in the same
+    // breath, so `pot` comes back as zero rather than as anything — and every
+    // hand ever played ended with its final bets simply ceasing to exist.
+    const river = withPlayer(view({ pot: 100 }), 'p1', { bet: 40 })
+    const settled = view({ phase: 'handover', pot: 0, potAtEnd: 180 })
+    expect(diff(river, settled)).toContain('potCollect')
+  })
+
+  it('says nothing about a last street that was checked through', () => {
+    // Nothing went in, so nothing is raked. The middle is the same middle it
+    // was a moment ago and a sound there is a sound about no event.
+    const river = view({ pot: 180 })
+    const settled = view({ phase: 'handover', pot: 0, potAtEnd: 180 })
+    expect(diff(river, settled)).not.toContain('potCollect')
+  })
+
+  it('reports it on the hand that ends the tournament too', () => {
+    // The last hand of the night goes straight from `hand` to `finished`, and
+    // it is the most-watched hand there is.
+    const river = withPlayer(view({ pot: 100 }), 'p1', { bet: 40 })
+    const done = view({ phase: 'finished', pot: 0, potAtEnd: 180 })
+    expect(diff(river, done)).toContain('potCollect')
+  })
+})
+
+describe('how much went into the middle', () => {
+  // The same question `potCollect` asks, answered with a number rather than a
+  // yes — because the chips crossing the felt have to add up to it. Drawn from
+  // the bets alone they did not: an uncalled bet is still on the felt and is
+  // never going in.
+  it('is what the pot grew by', () => {
+    expect(potGrowth(view({ pot: 100 }), view({ pot: 340 }))).toBe(240)
+  })
+
+  it('is what the middle came to, on the street that settles the hand', () => {
+    const river = withPlayer(view({ pot: 100 }), 'p1', { bet: 40 })
+    expect(potGrowth(river, view({ phase: 'handover', pot: 0, potAtEnd: 180 }))).toBe(80)
+  })
+
+  it('is nothing across a deal, and nothing on the first view', () => {
+    expect(potGrowth(view({ handNumber: 1, pot: 300 }), view({ handNumber: 2, pot: 15 }))).toBe(0)
+    expect(potGrowth(null, view({ pot: 300 }))).toBe(0)
+  })
+
+  it('never goes backwards', () => {
+    // A slow poll landing after a fast one puts an older table on screen. A
+    // negative rake is chips leaving the middle for the felt.
+    expect(potGrowth(view({ pot: 340 }), view({ pot: 100 }))).toBe(0)
+  })
+})
+
+describe('a street that closed on the last player calling', () => {
+  const betting = withPlayer(view({ pot: 0 }), 'p1', { bet: 30 })
+
+  it('spots the bet that was raked in the same breath as it was made', () => {
+    // The one decision in every betting round that ends it was also the one
+    // that never showed any chips moving: the server sweeps it before the
+    // client hears about it, so the felt the view describes is already empty.
+    const closed = view({
+      pot: 90,
+      board: ['As', 'Kd', '7h'],
+      actions: [action({ seq: 2, playerId: 'p2', kind: 'call', amount: 30, to: 30 })],
+    })
+    expect(closedByABet(betting, closed)).toBe(true)
+  })
+
+  it('says no when the bet is still standing on the felt', () => {
+    // Drawn a poll ago and resting where it landed. There is a rake left to
+    // do and nothing to wait for.
+    const closed = withPlayer(
+      view({ pot: 90, board: ['As', 'Kd', '7h'] }),
+      'p2',
+      { bet: 30 },
+    )
+    expect(
+      closedByABet(betting, {
+        ...closed,
+        actions: [action({ seq: 2, playerId: 'p2', kind: 'call', amount: 30, to: 30 })],
+      }),
+    ).toBe(true)
+    // …and with the action already known, there is nothing new to wait for.
+    expect(closedByABet({ ...betting, actions: closed.actions }, closed)).toBe(false)
+  })
+
+  it('says no when the street closed on a check', () => {
+    const checked = view({
+      pot: 60,
+      board: ['As', 'Kd', '7h'],
+      actions: [action({ seq: 2, playerId: 'p2', kind: 'check' })],
+    })
+    expect(closedByABet(betting, checked)).toBe(false)
+  })
+
+  it('says no when no street closed at all', () => {
+    const called = withPlayer(
+      view({
+        pot: 0,
+        actions: [action({ seq: 2, playerId: 'p2', kind: 'call', amount: 30, to: 30 })],
+      }),
+      'p2',
+      { bet: 30 },
+    )
+    expect(closedByABet(betting, called)).toBe(false)
   })
 })

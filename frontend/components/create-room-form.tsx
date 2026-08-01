@@ -7,6 +7,7 @@ import { Spade, ArrowRight } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
+import { PlayingCard } from '@/components/playing-card'
 import {
   Field,
   FieldDescription,
@@ -444,12 +445,29 @@ export function CreateRoomForm() {
                   deck === d.id ? 'border-primary' : 'border-border/60',
                 )}
               >
-                <span className="card-back h-7 w-full rounded border border-black/25 p-[2px]" />
+                {/* Real cards, on a scrap of felt. Comparing four decks from
+                    memory does not work — they have to be seen next to each
+                    other, printed the way they will actually be printed. */}
+                <span
+                  className="flex w-full items-center justify-center gap-0.5 rounded px-1 py-1.5"
+                  style={{
+                    background:
+                      'radial-gradient(ellipse at 50% 30%, #17604B, #08281D 88%)',
+                    boxShadow:
+                      'inset 0 0 0 1px rgba(0,0,0,.4), inset 0 2px 8px rgba(0,0,0,.5)',
+                  }}
+                >
+                  <PlayingCard card="Ah" size="xs" />
+                  <PlayingCard card="Kd" size="xs" />
+                  <PlayingCard card={null} faceDown size="xs" />
+                </span>
                 <span className="text-[10px] text-muted-foreground">{d.label}</span>
               </button>
             ))}
           </div>
-          <FieldDescription>What the backs look like when they land.</FieldDescription>
+          <FieldDescription>
+            The paper, the ink and the fillet — on every card, all night.
+          </FieldDescription>
         </Field>
 
         <Field>

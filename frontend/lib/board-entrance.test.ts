@@ -30,11 +30,50 @@ describe('cards landing one at a time', () => {
     expect(result.current).toEqual([null, null, null, 0])
   })
 
+  it('holds the new card back while the chips are being raked in', () => {
+    // The response that carries the turn usually also carries the end of the
+    // street it closed. Landing the card first draws it onto a felt still
+    // covered in bets.
+    const { result, rerender } = renderHook(
+      ({ b, lead }) => useBoardEntrance(b, lead),
+      { initialProps: { b: FLOP, lead: 0 } },
+    )
+    rerender({ b: TURN, lead: 900 })
+    expect(result.current).toEqual([null, null, null, 900])
+  })
+
+  it('keeps the lead-in the cards arrived on, whatever renders later', () => {
+    const { result, rerender } = renderHook(
+      ({ b, lead }) => useBoardEntrance(b, lead),
+      { initialProps: { b: FLOP, lead: 0 } },
+    )
+    rerender({ b: TURN, lead: 900 })
+    // A re-render for something else entirely — a resize, a measurement — must
+    // not restart a card that is already on its way in.
+    rerender({ b: TURN, lead: 0 })
+    expect(result.current).toEqual([null, null, null, 900])
+  })
+
   it('treats a cleared board as a new hand, not as cards arriving', () => {
     const { result, rerender } = renderHook(({ b }) => useBoardEntrance(b), {
       initialProps: { b: TURN },
     })
     rerender({ b: [] })
     expect(result.current).toEqual([])
+  })
+})
+
+describe('asking for the lead-in rather than being handed it', () => {
+  it('reads it at the moment the cards arrive', () => {
+    // The value is decided by the effect that starts the chips moving, which
+    // runs on the same view — so the caller has no number to pass at render
+    // time, only somewhere to look it up.
+    let lead = 0
+    const { result, rerender } = renderHook(({ b }) => useBoardEntrance(b, () => lead), {
+      initialProps: { b: [] as string[] },
+    })
+    lead = 900
+    rerender({ b: FLOP })
+    expect(result.current).toEqual([900, 900 + DEAL_STEP_MS, 900 + DEAL_STEP_MS * 2])
   })
 })

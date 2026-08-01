@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 
-import { chipBreakdown, chipStack, DENOMINATIONS } from '@/lib/chips'
+import { chipBreakdown, chipColumn, chipStack, DENOMINATIONS } from '@/lib/chips'
 
 const total = (amount: number, max?: number) =>
   chipBreakdown(amount, max).reduce((sum, g) => sum + g.value * g.count, 0)
@@ -65,5 +65,45 @@ describe('chipStack', () => {
 
   it('gives one entry per disc', () => {
     expect(chipStack(300)).toHaveLength(height(300))
+  })
+})
+
+describe('chipColumn', () => {
+  it('paints a pile in the colours the amount is actually made of', () => {
+    // 31,000 is mostly one 25,000 chip, so most of the pile is that colour —
+    // by *value*, not by count. Counting discs instead would paint a deep
+    // stack in the colour of its loose change.
+    const pile = chipColumn(31_000, 10)
+    expect(pile).toHaveLength(10)
+    const biggest = pile.filter((d) => d.value === 25_000).length
+    expect(biggest).toBeGreaterThan(5)
+  })
+
+  it('shows every denomination that is really in there, however small its share', () => {
+    // The 25,000 chip is a fortieth of this pile by value and rounds to no
+    // discs at all — but a stack with one in it should show it.
+    const pile = chipColumn(26_000, 8)
+    expect(pile.some((d) => d.value === 25_000)).toBe(true)
+    expect(pile).toHaveLength(8)
+  })
+
+  it('draws exactly as many discs as it was asked for', () => {
+    for (const amount of [1, 37, 900, 6_600, 31_000, 250_000]) {
+      for (const n of [1, 2, 3, 5, 10, 12]) {
+        expect(chipColumn(amount, n)).toHaveLength(n)
+      }
+    }
+  })
+
+  it('draws nothing for nothing', () => {
+    expect(chipColumn(0, 6)).toEqual([])
+    expect(chipColumn(5_000, 0)).toEqual([])
+  })
+
+  it('stacks biggest first, like anybody who has ever stacked chips', () => {
+    const pile = chipColumn(6_600, 6)
+    for (let i = 1; i < pile.length; i++) {
+      expect(pile[i].value).toBeLessThanOrEqual(pile[i - 1].value)
+    }
   })
 })

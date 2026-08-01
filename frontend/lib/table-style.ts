@@ -14,22 +14,32 @@
 export const BAIZES = [
   { id: 'emerald', label: 'Emerald', blurb: 'The green everybody pictures' },
   { id: 'claret', label: 'Claret', blurb: 'Deep red, back-room' },
-  { id: 'midnight', label: 'Midnight', blurb: 'Blue, easy at 2am' },
+  { id: 'midnight', label: 'Midnight', blurb: 'Blue and silver, easy at 2am' },
   { id: 'slate', label: 'Slate', blurb: 'Grey, and the cards do the talking' },
 ] as const
 
+/**
+ * The decks.
+ *
+ * These used to be four colours of card *back*, which meant picking one changed
+ * nothing about the card you actually read all night. A deck is its face — the
+ * paper, the ink, the fillet, the letterform — so these are four presses, and
+ * the back follows from each. The ids changed with the meaning; `deckOf` sends
+ * rooms saved under the old names back to the default, which is what its
+ * fallback has always been for.
+ */
 export const DECKS = [
-  { id: 'claret', label: 'Claret', blurb: 'The house deck' },
-  { id: 'navy', label: 'Navy', blurb: 'The other house deck' },
-  { id: 'forest', label: 'Forest', blurb: 'Dark green' },
-  { id: 'bone', label: 'Bone', blurb: 'Pale, ink lattice' },
+  { id: 'clasica', label: 'Classic', blurb: 'Warm ivory, red and black' },
+  { id: 'casino', label: 'Casino', blurb: 'Bright, big index, no grain' },
+  { id: 'bloque', label: 'Block', blurb: 'Solid corners — the most legible' },
+  { id: 'marfil', label: 'Ivory', blurb: 'Old paper and a double gold fillet' },
 ] as const
 
 export type BaizeId = (typeof BAIZES)[number]['id']
 export type DeckId = (typeof DECKS)[number]['id']
 
 export const DEFAULT_BAIZE: BaizeId = 'emerald'
-export const DEFAULT_DECK: DeckId = 'claret'
+export const DEFAULT_DECK: DeckId = 'clasica'
 
 /**
  * The cloth this room asked for, or the default.

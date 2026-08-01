@@ -2,8 +2,10 @@
 
 import { useCallback, useEffect, useRef, useState } from 'react'
 
-import { playEvent, unlockAudio } from '@/lib/sound'
-import { diffViews, HAPTICS, type TableEvent } from '@/lib/table-events'
+import { sweepLeadIn, sweepStart } from '@/lib/chip-flight'
+import { announce, unlockAudio } from '@/lib/sound'
+import { closedByABet, diffViews, type TableEvent } from '@/lib/table-events'
+import { useReducedMotion } from '@/lib/use-reduced-motion'
 import type { GameView } from '@/lib/poker-api'
 
 const STORAGE_KEY = 'holdem:sound'
@@ -22,11 +24,39 @@ export type SoundMode = 'all' | 'turn' | 'off'
 /** What still gets through on "only my turn". Nothing that is about anyone else. */
 const MINE: ReadonlySet<TableEvent> = new Set<TableEvent>(['yourTurn'])
 
+/**
+ * Moments this hook can name but cannot time, so the table says them instead.
+ *
+ * `diffViews` stays the one place a moment is *derived* — that is what keeps
+ * what you hear and what you see from being two accounts of the same hand —
+ * but deriving it is not the same as knowing when it happens. The pot going
+ * out waits for the hand to finish being told, and how long that takes is nine
+ * hands turning over or two, plus a runout, plus the rake it is made of. Said
+ * here it landed on the response, up to five seconds before a single chip
+ * moved: a sound for something that had not happened yet.
+ *
+ * So `poker-table` says this one, in `payOut`, at the instant the chips leave.
+ */
+const SAID_BY_THE_TABLE: ReadonlySet<TableEvent> = new Set<TableEvent>(['potWon'])
+
 /** Whether this phone, set this way, says anything about this moment. */
 export function audible(mode: SoundMode, event: TableEvent): boolean {
   if (mode === 'off') return false
   if (mode === 'all') return true
   return MINE.has(event)
+}
+
+/**
+ * Whether the table itself may make a noise.
+ *
+ * The table says the moments only it knows the timing of — a hand turning over,
+ * the pot going out — and every one of them is about somebody else, so none of
+ * them is in {@link MINE}. Written as its own function rather than left as a
+ * comparison at the call site because that comparison was `!== 'off'`, which
+ * kept the whole table talking on the one setting that exists to stop it.
+ */
+export function tableIsAudible(mode: SoundMode): boolean {
+  return mode === 'all'
 }
 
 /** Older devices stored a two-state switch. Read it rather than reset it. */
@@ -46,6 +76,7 @@ function parseMode(saved: string | null): SoundMode | null {
  */
 export function useTableEvents(view: GameView | null) {
   const [mode, setModeState] = useState<SoundMode>('all')
+  const reduced = useReducedMotion()
   const previous = useRef<GameView | null>(null)
   const ready = useRef(false)
   // The highest decision this phone has ever announced. Monotonic and kept
@@ -85,30 +116,65 @@ export function useTableEvents(view: GameView | null) {
     return () => window.removeEventListener('pointerdown', wake)
   }, [])
 
+  // Sounds waiting on the rake. Leaving the table is not a reason to hear a
+  // card land on it a second later.
+  const timers = useRef(new Set<ReturnType<typeof setTimeout>>())
+  const hush = useCallback(() => {
+    for (const timer of timers.current) clearTimeout(timer)
+    timers.current.clear()
+  }, [])
+  useEffect(() => hush, [hush])
+  // Turning the sound off is a decision about now, not about the next moment.
+  // Up to eight hundred milliseconds of table can already be scheduled when
+  // somebody reaches for the switch, and hearing the rake land after muting is
+  // the app arguing.
+  useEffect(() => {
+    if (mode === 'off') hush()
+  }, [mode, hush])
+
   useEffect(() => {
     if (!view) return
-    const events = diffViews(previous.current, view, announced.current)
+    const before = previous.current
+    const events = diffViews(before, view, announced.current)
     previous.current = view
     for (const action of view.actions) {
       announced.current = Math.max(announced.current, action.seq)
     }
     if (mode === 'off' || !events.length) return
 
+    // Two moments the table draws on a delay, and a sound has to arrive with
+    // the thing it is the sound of.
+    //
+    // The rake starts a beat after the bet that closed the street lands
+    // (`sweepStart`), and the next card lands partway into the rake
+    // (`sweepLeadIn`). The card was already waiting; the rake was not — so
+    // whenever a street closed on a call, the chips were *heard* going in
+    // about six hundred milliseconds before any of them moved.
+    const collecting = events.includes('potCollect')
+    const lateBet = collecting && closedByABet(before, view)
+    const waitFor = (event: TableEvent) =>
+      event === 'potCollect'
+        ? sweepStart(lateBet)
+        : event === 'street' && collecting
+          ? sweepLeadIn(lateBet)
+          : 0
+
     for (const event of events) {
       if (!audible(mode, event)) continue
-      playEvent(event)
-      const pattern = HAPTICS[event]
-      // Safari on iOS has no Vibration API at all. Nothing to fall back to —
-      // it just does not buzz there.
-      if (pattern && typeof navigator !== 'undefined' && 'vibrate' in navigator) {
-        try {
-          navigator.vibrate(pattern)
-        } catch {
-          // ignore
-        }
+      // Handed over to the table, unless nothing is going to move — with
+      // reduced motion there is no flight to wait for and the chips are simply
+      // where they end up, so the moment *is* the response and this is the only
+      // thing left to say it.
+      if (SAID_BY_THE_TABLE.has(event) && !reduced) continue
+      const wait = waitFor(event)
+      if (!wait) {
+        announce(event)
+        continue
       }
+      const timer = setTimeout(() => announce(event), wait)
+      timers.current.add(timer)
     }
-  }, [view, mode])
+  }, [view, mode, reduced])
 
   return { soundMode: mode, setSoundMode: setMode }
 }

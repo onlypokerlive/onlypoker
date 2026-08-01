@@ -19,6 +19,17 @@ const SLOP_PX = 10
 const PIECES = '[data-piece],[data-testid="board"],button,a,input,[role="slider"]'
 
 /**
+ * Where "they know about this" is written down.
+ *
+ * The prompt that teaches the gesture was shown every single time checking was
+ * free — which is most turns, for ever. A hint that never goes away is not a
+ * hint, it is furniture, and this particular piece of furniture was standing on
+ * the table: seventeen pixels off a band that is already the table's ceiling on
+ * a small phone.
+ */
+const LEARNED_KEY = 'holdem:learned:double-tap'
+
+/**
  * Checking by rapping the table, which is what checking is.
  *
  * A gesture and not a button, because it is the one action at a poker table
@@ -46,6 +57,19 @@ export function useDoubleTap({
   const previous = useRef<{ t: number; x: number; y: number } | null>(null)
   // What to say when the answer is "not now".
   const [refused, setRefused] = useState(0)
+  // Whether this device has ever knocked on the table. Read after mount rather
+  // than during render: the server has no localStorage, and a first paint that
+  // disagrees with the markup is a hydration error.
+  const [learned, setLearned] = useState(false)
+  useEffect(() => {
+    try {
+      if (localStorage.getItem(LEARNED_KEY)) setLearned(true)
+    } catch {
+      // A browser with storage blocked is told once per session. That is the
+      // right way round: forgetting costs a line, remembering wrongly costs
+      // somebody the gesture.
+    }
+  }, [])
 
   // A half-finished gesture does not survive the turn moving on. Without this
   // a tap left over from a previous turn pairs up with the first tap of this
@@ -110,8 +134,19 @@ export function useDoubleTap({
       // Consumed either way, so a third tap starts a fresh pair rather than
       // firing again off the second one.
       previous.current = null
-      if (enabled) onDoubleTap()
-      else setRefused((n) => n + 1)
+      if (!enabled) {
+        setRefused((n) => n + 1)
+        return
+      }
+      // Learned on the first one that *works*. A refused tap is somebody
+      // guessing, not somebody who has the gesture.
+      setLearned(true)
+      try {
+        localStorage.setItem(LEARNED_KEY, '1')
+      } catch {
+        // See above.
+      }
+      onDoubleTap()
     },
     [enabled, onDoubleTap],
   )
@@ -125,5 +160,7 @@ export function useDoubleTap({
     onPointerCancel: finish,
     onLostPointerCapture: finish,
     refused,
+    /** This device has checked by knocking at least once. */
+    learned,
   }
 }

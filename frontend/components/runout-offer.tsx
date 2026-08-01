@@ -56,7 +56,13 @@ export function RunoutOffer({
   }
 
   return (
-    <div className="flex flex-col items-center gap-2 rounded-xl border border-accent/40 bg-accent/10 px-4 py-3 text-center">
+    // Over the felt, for the same reason the stopped table is: the chips are
+    // already in and this is the table waiting on an answer, not a new row of
+    // the screen. A row here resized the table at the exact moment everybody
+    // was staring at the pot in the middle of it.
+    <div className="absolute inset-0 z-30 flex items-center justify-center p-4">
+      <div className="absolute inset-0 bg-background/70 backdrop-blur-[2px]" aria-hidden />
+      <div className="relative flex w-full max-w-xs flex-col items-center gap-2 rounded-xl border border-accent/40 bg-card px-4 py-3 text-center shadow-2xl">
       <span className="flex items-center gap-2 text-sm font-bold uppercase tracking-widest text-accent">
         <Layers className="size-4" aria-hidden />
         Run it twice?
@@ -91,6 +97,7 @@ export function RunoutOffer({
           {Math.max(0, Math.ceil(left))}s
         </span>
       )}
+      </div>
     </div>
   )
 }

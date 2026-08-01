@@ -3,27 +3,57 @@ import { describe, expect, it } from 'vitest'
 import {
   boxAt,
   collisions,
-  estimateStackSize,
   feltRadius,
   layoutTable,
+  MIN_TABLE_ROOM,
   LAYOUT,
-  overlaps,
+  OWN_ACTION_H,
+  OWN_ZONE_GAP,
+  OWN_ZONE_H,
+  ownZoneHeight,
+  roomChrome,
+  tableRoom,
+  PEEK_BAND_H,
+  zoneScale,
   seatAxes,
   seatCentre,
   spotCost,
-  stackOffset,
-  type Box,
+  type SeatHand,
+  type TableLayout,
 } from '@/lib/table-layout'
 
 /**
- * The screens this is actually played on — and the desktop ones, which is the
- * part that was missing.
+ * The phones this is actually played on. Real device widths, not round numbers.
  *
- * A matrix that stops at 430 guarantees the invariant for a table nobody with
- * a laptop is looking at. Everything from 640 up crosses `sm:`, where the seat
- * stops tracking the viewport and becomes a fixed size.
+ * This is a phone game before it is anything else, so the matrix is a list of
+ * hardware rather than a sample of the number line — 393 (Pixel 7/8) and 412
+ * (Pixel Pro, most Galaxies) sit between 390 and 430 and were never checked,
+ * and a bug that only appears at 402 is a bug for everybody holding a Galaxy
+ * S24. Round numbers are the widths a developer thinks of; these are the
+ * widths that exist.
+ *
+ *   320  iPhone SE 1st gen, and the floor
+ *   344  Galaxy S8/S9 and the narrow Androids
+ *   360  the single most common Android width in the world
+ *   375  iPhone SE 2/3, 6/7/8, X/XS, 13 mini
+ *   384  Pixel 4a and friends
+ *   390  iPhone 12/13/14, 16e
+ *   393  Pixel 7/8/9, iPhone 14 Pro/15/16
+ *   402  iPhone 16 Pro
+ *   412  Pixel Pro, Galaxy S21–S24
+ *   414  iPhone 6/7/8 Plus, XR, 11
+ *   428  iPhone 12–14 Pro Max
+ *   430  iPhone 15/16 Plus and Pro Max
+ *   440  Galaxy S24 Ultra
+ *   448  the widest phone anybody is holding
+ *
+ * The last four cross `sm:` and are the laptop end, kept because the table is
+ * reachable there and a table nobody checked is a table that breaks.
  */
-const WIDTHS = [320, 360, 375, 390, 430, 640, 768, 1024, 1280]
+const WIDTHS = [
+  320, 344, 360, 375, 384, 390, 393, 402, 412, 414, 428, 430, 440, 448, 640,
+  768, 1024, 1280,
+]
 /**
  * Every seat count a real table passes through, not a sample of it.
  *
@@ -38,7 +68,6 @@ const POTS = [1, 2, 3]
 
 /** Everybody has bet, which is the state that fills the felt. */
 const allBetting = (seats: number, amount = 1200) => Array.from({ length: seats }, () => amount)
-const allStacked = (seats: number, discs = 8) => Array.from({ length: seats }, () => discs)
 
 /**
  * The awkward table: some seats have not bet, some have shoved a five-figure
@@ -48,7 +77,6 @@ const allStacked = (seats: number, discs = 8) => Array.from({ length: seats }, (
  */
 const ragged = (seats: number) => ({
   bets: Array.from({ length: seats }, (_, i) => (i % 3 === 0 ? 0 : i % 2 ? 1200 : 24_500)),
-  stacks: Array.from({ length: seats }, (_, i) => (i % 4 === 0 ? 0 : 8)),
 })
 
 describe('nothing covers anything', () => {
@@ -64,8 +92,7 @@ describe('nothing covers anything', () => {
               seats,
               board,
               revealed,
-              bets: allBetting(seats),
-              stacks: allStacked(seats),
+              bets: allBetting(seats)
             })
             expect(collisions(layout)).toEqual([])
           })
@@ -96,51 +123,207 @@ describe('nothing covers anything', () => {
     })
   }
 
+  // Seats of three different heights on one ring, which is what a table looks
+  // like from the second street onwards: some players still holding cards, some
+  // who folded, one showing a hand down. The matrix above draws every seat the
+  // same height, and that is not a smaller version of this case — it is a
+  // different one. A neighbour that is shorter in life than on paper opens a
+  // spot the model never offered, and the chip search takes it.
+  for (const width of WIDTHS) {
+    it(`${width}px · seats of mixed heights, as a real table has`, () => {
+      const bad: string[] = []
+      for (const seats of SEATS) {
+        for (const board of BOARDS) {
+          // Every rotation, so no single arrangement of who folded can be the
+          // one that happens to work.
+          for (let turn = 0; turn < seats; turn++) {
+            const hands: SeatHand[] = Array.from({ length: seats }, (_, i) => {
+              const at = (i + turn) % 3
+              return at === 0 ? 'none' : at === 1 ? 'down' : 'up'
+            })
+            // Only the players still holding cards have chips out in front.
+            const bets = hands.map((h) => (h === 'none' ? 0 : 1200))
+            const layout = layoutTable({ width, seats, board, hands, bets })
+            for (const hit of collisions(layout)) {
+              bad.push(`${seats} seats · board ${board} · turn ${turn} · ${hit}`)
+            }
+          }
+        }
+      }
+      expect(bad).toEqual([])
+    })
+  }
+
+  /**
+   * The height the matrix never varied, and the one that decides everything.
+   *
+   * Every case above takes the default height for its width, so the whole
+   * matrix was one shape per width — and the shape is what the ring and the
+   * middle argue about. `pots: 3` was checked at that one height and at nine
+   * seats in `nine(available)`, and between those two the eight-seat table on a
+   * short screen was never looked at once.
+   */
+  const ROOM = [320, 340, 360, 380, 400, 440, 480, 520, 560, 600]
+
+  /** Every seat count, pot count and height, at one width. */
+  function everyShape(width: number, heights: number[]) {
+    const out: { available: number; seats: number; pots: number; layout: TableLayout }[] = []
+    for (const seats of SEATS) {
+      for (const pots of POTS) {
+        for (const available of heights) {
+          out.push({
+            available,
+            seats,
+            pots,
+            layout: layoutTable({
+              width, available, seats, board: 5, revealed: true, pots,
+              bets: allBetting(seats),
+            }),
+          })
+        }
+      }
+    }
+    return out
+  }
+
+  for (const width of WIDTHS) {
+    it(`${width}px · every height, three pots included`, () => {
+      // Three pots at every height, which is the case the matrix had never
+      // run: three pots are two rows in the middle, those rows come out of the
+      // ring, and the ring is where the bets live. Until now `pots: 3` was
+      // only ever checked at each width's default height, and at nine seats.
+      const escaped: string[] = []
+      const bad: string[] = []
+      for (const { available, seats, pots, layout } of everyShape(width, ROOM)) {
+        // A bet never leaves the table, at any height. The rule `spotCost`
+        // states and `betSpot` did not implement: given a crowded ring the
+        // search slid a pill up to thirty pixels past the edge of the table —
+        // where it costs a little felt and nothing else — rather than graze a
+        // neighbour. Its answer to a bet that would have been hard to read was
+        // a bet that could not be seen at all.
+        for (const { what, seat, box } of layout.boxes) {
+          if (what !== 'bet') continue
+          const by = Math.max(
+            -box.left,
+            -box.top,
+            box.right - layout.table.w,
+            box.bottom - layout.table.h,
+          )
+          if (by > 0.01) {
+            escaped.push(`${available}px · ${seats} seats · bet${seat} by ${by.toFixed(1)}`)
+          }
+        }
+        // And nothing covers anything, from 360 up. That floor is a boundary
+        // rather than a convenience — the test below pins what happens under
+        // it so nobody has to rediscover it.
+        if (available < 360) continue
+        for (const hit of collisions(layout)) {
+          bad.push(`${available}px · ${seats} seats · ${pots} pots · ${hit}`)
+        }
+      }
+      expect(escaped).toEqual([])
+      expect(bad).toEqual([])
+    })
+  }
+
+  it('names exactly what is still wrong below 360, rather than not looking', () => {
+    // Not an aspiration and not a skip. Under 360 the middle and the ring run
+    // out of room for each other, and the failure is entirely between *those
+    // two* — the seats are on a fixed ring and the centre block grows a row —
+    // which is a different repair from anything the bet search can do. A phone
+    // reaches this: 320×568 leaves the table 323.
+    //
+    // Pinned so it can only get better. If a change fixes some of it this test
+    // fails and the numbers come down; if a change makes it worse it fails and
+    // says by how much.
+    const seen: Record<string, number> = {}
+    let deepest = 0
+    let fewest = SEATS.length
+    for (const width of WIDTHS) {
+      for (const { available, seats, layout } of everyShape(
+        width,
+        ROOM.filter((h) => h < 360),
+      )) {
+        for (const hit of collisions(layout)) {
+          // Named by what touched what, with the seat numbers dropped and the
+          // two sides in a fixed order — `collisions` reports whichever it
+          // reached first, and this is a claim about the pair.
+          const kind = hit.replace(/\d+/g, '').split(' × ').sort().join(' × ')
+          seen[kind] = (seen[kind] ?? 0) + 1
+          deepest = Math.max(deepest, available)
+          fewest = Math.min(fewest, seats)
+        }
+      }
+    }
+    expect(seen).toEqual({ 'centre × seat': 144, 'bet × seat': 54 })
+    // Nothing under 340px of room, and never on a table small enough to play
+    // three-handed on — it takes a crowded ring to run out of felt.
+    expect(deepest).toBe(340)
+    expect(fewest).toBe(5)
+  })
+
   it('keeps everything on the table it was given', () => {
-    // A stack pushed off the felt looking for room is a stack the player
-    // cannot see. Seats are allowed to sit slightly proud of the box — that is
-    // the rail, and the page has margin either side — but nothing else is.
-    const spilled: string[] = []
+    // A stack pushed off the felt looking for room is a stack the player cannot
+    // see, so nothing but a seat may leave the box at all.
+    //
+    // A seat may sit proud *sideways*, and only sideways. At the waist of the
+    // table the rail is right there and the page has margin beyond it, so a
+    // plate overlapping the wood is what a plate does at a real table. Off the
+    // top or the bottom is different: that is the header above and the action
+    // bar below, and a plate that goes there is a plate somebody cannot read.
+    // The bottom seat is *you*, which is why this is asserted separately rather
+    // than folded into one allowance.
+    const sideways: string[] = []
+    const endways: string[] = []
     for (const width of WIDTHS) {
       for (const seats of SEATS) {
         const layout = layoutTable({ width, seats, board: 5, pots: 2, ...ragged(seats) })
         for (const { what, seat, box } of layout.boxes) {
-          const over = Math.max(
-            -box.left,
-            box.right - layout.table.w,
-            -box.top,
-            box.bottom - layout.table.h,
-          )
-          const allowance = what === 'seat' ? 12 : 0
-          if (over > allowance) spilled.push(`${width}px ${what}${seat ?? ''} by ${over.toFixed(0)}`)
+          const name = `${width}px ${what}${seat ?? ''}`
+          const x = Math.max(-box.left, box.right - layout.table.w)
+          const y = Math.max(-box.top, box.bottom - layout.table.h)
+          if (x > (what === 'seat' ? 18 : 0)) sideways.push(`${name} by ${x.toFixed(0)}`)
+          if (y > 0) endways.push(`${name} by ${y.toFixed(0)}`)
         }
       }
     }
-    expect(spilled).toEqual([])
+    expect(sideways).toEqual([])
+    expect(endways).toEqual([])
   })
 
-  // A table can only be squashed so far before nine seats start touching each
-  // other: the ring gets shorter, the circumference goes with it, and the
-  // boxes do not. This is the floor, and it is why the table keeps its aspect
-  // ratio on a short phone and lets the page scroll instead.
-  it('needs the height it asks for, and says so rather than degrading quietly', () => {
-    const nine = (height: number) =>
-      collisions(
-        layoutTable({
-          width: 375,
-          height,
-          seats: 9,
-          board: 5,
-          revealed: true,
-          bets: allBetting(9),
-          stacks: allStacked(9),
-        }),
-      )
-    // Squashed past this and the ring gets shorter while the seats do not.
-    expect(nine(300).length).toBeGreaterThan(0)
-    // Its own aspect ratio is comfortably clear of the floor, which is the
-    // point: the table keeps its shape and the page scrolls on a short phone.
-    expect(nine(370)).toEqual([])
+  // The invariant that replaced the height floor.
+  //
+  // There used to be a *floor*: below some height nine seats started touching,
+  // and the answer was "the table keeps its shape and the page scrolls". That
+  // answer was wrong on a phone — a player who has to scroll to see the table
+  // cannot see the table. Now the table fits whatever height it is handed and
+  // everything on it shrinks with it, so the assertion is no longer "it needs
+  // this much" but "give it anything and it still fits, and still holds".
+  it('fits whatever height it is given, and still holds together', () => {
+    const nine = (available: number) =>
+      layoutTable({
+        width: 375,
+        available,
+        seats: 9,
+        board: 5,
+        revealed: true,
+        pots: 2,
+        bets: allBetting(9),
+      })
+    // Every height a phone plausibly leaves for the table, from the tightest
+    // one supported upward. Below `MIN_TABLE_ROOM` the scale floor starts
+    // binding — the pieces stop shrinking so the names stay readable — and nine
+    // seats begin to touch. That is a deliberate trade and it is why the number
+    // exists: it is the budget the header and your own zone have to leave.
+    for (const available of [MIN_TABLE_ROOM, 320, 360, 400, 440, 500, 600]) {
+      const layout = nine(available)
+      expect(collisions(layout)).toEqual([])
+      // The whole point: it never takes more room than it was offered.
+      expect(layout.table.h).toBeLessThanOrEqual(available + 0.5)
+    }
+    // And it does use the room when there is room — a table that stays small on
+    // a big screen is the other half of the same bug.
+    expect(nine(600).table.w).toBeGreaterThan(nine(MIN_TABLE_ROOM).table.w)
   })
 
   it('holds when only some players have bet, which is most of a hand', () => {
@@ -148,7 +331,7 @@ describe('nothing covers anything', () => {
       for (const seats of SEATS) {
         const bets = Array.from({ length: seats }, (_, i) => (i % 2 === 0 ? 900 : 0))
         expect(
-          collisions(layoutTable({ width, seats, board: 5, bets, stacks: allStacked(seats) })),
+          collisions(layoutTable({ width, seats, board: 5, bets })),
         ).toEqual([])
       }
     }
@@ -162,8 +345,7 @@ describe('nothing covers anything', () => {
         width,
         seats: 9,
         board: 5,
-        bets: allBetting(9, 24_500),
-        stacks: allStacked(9),
+        bets: allBetting(9, 24_500)
       })
       expect(collisions(layout)).toEqual([])
     }
@@ -184,8 +366,9 @@ describe('the ring', () => {
     // The bottom seat's left is screen-left; the seat opposite them is facing
     // the other way, so their left is screen-right. Collapsing this to a
     // screen direction is what puts one player's chips on the wrong side.
-    expect(seatAxes(0, 2).left.x).toBeCloseTo(-1)
-    expect(seatAxes(1, 2).left.x).toBeCloseTo(1)
+    const table = { w: 360, h: 456 }
+    expect(seatAxes(0, 2, table).left.x).toBeCloseTo(-1)
+    expect(seatAxes(1, 2, table).left.x).toBeCloseTo(1)
   })
 })
 
@@ -220,44 +403,6 @@ describe('the cost function', () => {
   })
 })
 
-describe('a stack of chips', () => {
-  const table = { w: 360, h: 528 }
-  const seats = 6
-  const seatSize = { w: 68, h: 78 }
-  const boxes = Array.from({ length: seats }, (_, i) =>
-    boxAt(seatCentre(i, seats, table), seatSize),
-  )
-
-  it('is never above its own seat, which is where the cards are', () => {
-    // The rule that cost three rounds. A stack over the cards covers the one
-    // thing a seat exists to show.
-    for (let i = 0; i < seats; i++) {
-      const size = estimateStackSize(8)
-      const at = stackOffset(i, seats, table, boxes, size, [])
-      const own = boxes[i]
-      const above = at.y + size.h / 2 < own.top
-      expect(above).toBe(false)
-    }
-  })
-
-  it('gets out of the way of a bet rather than sitting on it', () => {
-    const size = estimateStackSize(8)
-    const bare = stackOffset(0, seats, table, boxes, size, [])
-    const inTheWay: Box = boxAt(bare, { w: size.w + 20, h: size.h + 20 })
-    const moved = stackOffset(0, seats, table, boxes, size, [inTheWay])
-    expect(overlaps(boxAt(moved, size), inTheWay)).toBe(false)
-  })
-
-  it('still answers when there is nowhere good left', () => {
-    // A table with no clean spot has to degrade, not throw or land at some
-    // arbitrary corner. Everything blocked: it still returns a real point.
-    const size = estimateStackSize(8)
-    const everywhere: Box = { left: -1000, top: -1000, right: 1000, bottom: 1000 }
-    const at = stackOffset(0, seats, table, boxes, size, [everywhere])
-    expect(Number.isFinite(at.x) && Number.isFinite(at.y)).toBe(true)
-  })
-})
-
 describe('re-laying out', () => {
   // §1.3 lists board 3→5, seat count and viewport. The one everybody forgets
   // is a seat changing size, and it is the one that actually breaks things:
@@ -266,7 +411,12 @@ describe('re-laying out', () => {
   const at = (o: Parameters<typeof layoutTable>[0]) =>
     layoutTable(o).boxes.map((b) => `${b.what}${b.seat ?? ''}:${Math.round(b.box.left)},${Math.round(b.box.top)}`)
 
-  const base = { width: 375, seats: 9, board: 3, bets: allBetting(9), stacks: allStacked(9) }
+  const base = {
+    width: 375,
+    seats: 9,
+    board: 3,
+    bets: allBetting(9)
+  }
 
   it('moves things when the board grows', () => {
     expect(at({ ...base, board: 5 })).not.toEqual(at(base))
@@ -282,5 +432,55 @@ describe('re-laying out', () => {
 
   it('moves things when a hand is turned over and a seat grows', () => {
     expect(at({ ...base, revealed: true })).not.toEqual(at(base))
+  })
+})
+
+describe('the rule: the table is the constant', () => {
+  it('reserves your zone the tallest state it ever holds', () => {
+    // The peek band and the full action controls, with the gap between them.
+    // Anything less and the normal case — a hand being played, on your turn —
+    // is a scroller, which is the state this whole reservation exists to stop
+    // being paid for out of the table.
+    expect(OWN_ZONE_H).toBeGreaterThanOrEqual(PEEK_BAND_H + OWN_ZONE_GAP + OWN_ACTION_H)
+  })
+
+  it('leaves the shortest phone supported a table it can still draw', () => {
+    // 568px of viewport, less *everything the room spends first*. This used to
+    // subtract a header and the zone and stop there, which credited the table
+    // with 29px of padding, gaps and safe area it never receives — a check
+    // measuring a room that does not exist. Verified against the live DOM at
+    // 320×568, where the felt row comes out at 323.
+    expect(tableRoom(568)).toBeGreaterThan(320)
+    expect(Math.round(tableRoom(568))).toBe(323)
+  })
+
+  it('spends the same chrome at every size, and the table takes the difference', () => {
+    // The other half of the constancy rule. Two phones get two tables; one
+    // phone gets one table, whatever it is being asked.
+    for (const h of [568, 640, 700, 812, 900, 1000]) {
+      expect(tableRoom(h)).toBe(h - roomChrome(h) - ownZoneHeight(h))
+      expect(tableRoom(h)).toBeGreaterThan(MIN_TABLE_ROOM - 20)
+    }
+    expect(tableRoom(812)).toBeGreaterThan(tableRoom(568))
+  })
+
+  it('draws the controls smaller on a short screen and full size on a tall one', () => {
+    // Buttons that big next to a table that small is not a table with controls
+    // under it. The floor is a 52px button drawn at 42, which is still a
+    // target — below that the table stops being what gives.
+    expect(zoneScale(812)).toBe(1)
+    expect(zoneScale(568)).toBeLessThan(1)
+    expect(zoneScale(568)).toBeGreaterThanOrEqual(0.8)
+    expect(ownZoneHeight(568)).toBeLessThan(ownZoneHeight(812))
+    // Continuous, not a breakpoint: a phone one pixel taller is not a phone
+    // with different buttons.
+    expect(zoneScale(700)).toBeGreaterThan(zoneScale(650))
+  })
+
+  it('never shrinks the pocket your cards slide out of', () => {
+    // The band is 54 for a 48px card with clearance. Scaled to 44 it clips the
+    // card at the one frame the whole gesture exists for.
+    expect(ownZoneHeight(568) - PEEK_BAND_H).toBeGreaterThan(0)
+    expect(ownZoneHeight(400)).toBeGreaterThan(PEEK_BAND_H)
   })
 })

@@ -114,14 +114,17 @@ export function diffViews(
   }
 
   // The street closed: the bets in front of everybody were swept into the
-  // middle. Told apart from a deal, which also clears the felt, by the hand
-  // holding — and from a fold, by the pot having grown.
-  if (
-    current.handNumber === previous.handNumber &&
-    onFelt(previous) > 0 &&
-    onFelt(current) === 0 &&
-    current.pot > previous.pot
-  ) {
+  // middle. The pot growing *is* that moment — nothing else at this table
+  // moves chips into the middle, because live bets sit on the felt and are only
+  // counted when the street is over. See `potGrowth`, which the chips read too.
+  //
+  // This used to also require the felt to be *empty* in the new view, and that
+  // extra condition is why almost nobody ever saw or heard a street close: two
+  // polls are 1.2 seconds apart and the next street's first bets are usually
+  // already out by the second one, so the one response that would have
+  // satisfied it never arrived. Detecting a moment only when the client happens
+  // to catch the table standing still is detecting it almost never.
+  if (potGrowth(previous, current) > 0) {
     events.push('potCollect')
   }
 
@@ -143,6 +146,61 @@ export function diffViews(
   }
 
   return events
+}
+
+/**
+ * How much went into the middle between these two views.
+ *
+ * A number rather than a yes/no because both callers need it: the sound asks
+ * whether it happened at all, and the chips need to know how much is crossing
+ * the felt — and the sum of what they carry has to be this, or the mound is
+ * drawn from one arithmetic and filled by another.
+ *
+ * The last street of a hand is why this is not simply `pot - pot`. Settling
+ * pushes the chips to whoever won them in the same breath as sweeping them in,
+ * so `pot` goes to zero rather than up, and *every* hand ended with its final
+ * bets ceasing to exist — no rake, no sound, straight to the payout.
+ * `potAtEnd` is what the middle came to before it was pushed, which is the same
+ * question asked of the one response where the pot cannot answer for itself.
+ * Equal means the last street was checked through and there was nothing to
+ * collect.
+ */
+export function potGrowth(previous: GameView | null, current: GameView): number {
+  if (!previous || current.handNumber !== previous.handNumber) return 0
+  const ending = previous.phase === 'hand' && current.phase !== 'hand'
+  const middle = ending && current.potAtEnd > 0 ? current.potAtEnd : current.pot
+  return Math.max(0, middle - previous.pot)
+}
+
+/**
+ * The street closed on chips that this same response has already raked in.
+ *
+ * The last player to act ends the betting round, so the server sweeps their
+ * call into the pot before anybody hears about the call — one response
+ * carrying the decision, the collection and the next card. Everything the
+ * table does about that has to be built on this one question, asked once: the
+ * bet has to be drawn from the action rather than from a felt that is already
+ * empty, the rake has to wait for it to land, and the card has to wait for the
+ * rake. Three answers to three slightly different questions is how they drift
+ * apart.
+ *
+ * False when the felt still shows the bet — that one was drawn a poll ago and
+ * there is only a rake left to do.
+ *
+ * True on the last street of a hand as well, now that a collection is detected
+ * there at all: settling raked and pushed in one response, so `pot` came back
+ * as zero and this said no to the one street of every hand where the answer
+ * was most obviously yes. See `potAtEnd`.
+ */
+export function closedByABet(previous: GameView | null, current: GameView): boolean {
+  if (!previous) return false
+  if (!diffViews(previous, current).includes('potCollect')) return false
+  return newActions(previous, current).some(
+    (a) =>
+      (a.kind === 'call' || a.kind === 'bet' || a.kind === 'raise') &&
+      a.to > 0 &&
+      (current.players.find((p) => p.id === a.playerId)?.bet ?? 0) <= 0,
+  )
 }
 
 /**
