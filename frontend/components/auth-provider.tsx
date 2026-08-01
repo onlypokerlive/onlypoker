@@ -89,6 +89,10 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       } else {
         setProfile(null)
       }
+      // Always mark loading done — covers the case where the OAuth redirect
+      // fires onAuthStateChange before getUser() resolves, which otherwise
+      // leaves the header stuck on the loading skeleton.
+      setLoading(false)
     })
 
     return () => {
