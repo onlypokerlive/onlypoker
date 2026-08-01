@@ -66,7 +66,7 @@
   --accent: oklch(0.3 0.03 160);
   --accent-foreground: oklch(0.96 0.01 100);
 
-  --destructive: oklch(0.58 0.2 25);
+  --destructive: oklch(0.72 0.17 25);
   --destructive-foreground: oklch(0.98 0.01 100);
 
   --border: oklch(0.3 0.02 160);
@@ -80,6 +80,58 @@
   --chip: oklch(0.55 0.02 160);
 
   --radius: 0.75rem;
+}
+
+@media (max-width: 639px) and (max-height: 700px) {
+  .compact-phone-shell {
+    gap: 0.65rem;
+    padding-block: 0.75rem;
+  }
+  .compact-phone-badge,
+  .compact-phone-cards {
+    display: none;
+  }
+  .compact-phone-title {
+    margin-top: 0;
+    font-size: 2rem;
+    line-height: 1.02;
+  }
+  .compact-phone-copy {
+    margin-top: 0.35rem;
+    line-height: 1.4;
+  }
+  .compact-phone-card-header {
+    padding-bottom: 0.4rem;
+  }
+  .compact-phone-card-description {
+    display: none;
+  }
+  .compact-phone-create [data-slot='card'] {
+    gap: 0.55rem;
+    padding-block: 0.75rem;
+  }
+}
+
+@media (max-width: 639px) and (max-height: 600px) {
+  .compact-phone-copy {
+    /* The title and form carry the same promise on the shortest supported
+       phones; reserving this paragraph would push the actual action offscreen. */
+    display: none;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  html:focus-within {
+    scroll-behavior: auto;
+  }
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    scroll-behavior: auto !important;
+    transition-duration: 0.01ms !important;
+  }
 }
 
 @layer base {

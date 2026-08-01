@@ -110,7 +110,14 @@ export function ActionBar({
     >
       {timed && (
         <div className="flex items-center gap-3">
-          <div className="h-1.5 flex-1 overflow-hidden rounded-full bg-border">
+          <div
+            className="h-1.5 flex-1 overflow-hidden rounded-full bg-border"
+            role="progressbar"
+            aria-label={view.bankRunning ? "Time bank remaining" : "Action time remaining"}
+            aria-valuemin={0}
+            aria-valuemax={100}
+            aria-valuenow={Math.round(timePct)}
+          >
             <div
               className={cn(
                 "h-full rounded-full transition-[width] duration-200 ease-linear",
@@ -163,53 +170,54 @@ export function ActionBar({
           {/* One row, not two: every pixel this bar takes comes off the table
               above it, and on a short phone the bottom seat is the first thing
               to go under it. */}
-          <div className="flex items-center gap-1.5">
-            <Button
-              type="button"
-              size="icon"
-              variant="outline"
-              disabled={busy || clamp(raiseTo) <= min}
-              onClick={() => setRaiseTo(clamp(raiseTo - step))}
-              aria-label={`Lower by ${step}`}
-              className="size-9 shrink-0"
-            >
-              <Minus />
-            </Button>
-            <Slider
-              value={raiseTo}
-              min={min}
-              max={max}
-              step={1}
-              onValueChange={(v) =>
-                setRaiseTo(clamp(snapToPreset(readSliderValue(v), sizes, max - min)))
-              }
-              className="flex-1"
-              aria-label="Raise amount"
-            />
-            <Button
-              type="button"
-              size="icon"
-              variant="outline"
-              disabled={busy || clamp(raiseTo) >= max}
-              onClick={() => setRaiseTo(clamp(raiseTo + step))}
-              aria-label={`Raise by ${step}`}
-              className="size-9 shrink-0"
-            >
-              <Plus />
-            </Button>
-            {/* Chips are the number the engine takes; big blinds are the number
-                players compare against. Both, or half the table is doing the
-                division in their head — and both bright, because this is read
-                at a glance in a dim room. */}
-            <span className="flex w-16 shrink-0 flex-col items-end leading-tight">
-              <span className="font-mono text-sm font-bold tabular-nums text-foreground">
-                {clamp(raiseTo).toLocaleString()}
+          <details className="group rounded-lg border border-border/55 bg-background/25 px-2.5">
+            <summary className="flex min-h-11 cursor-pointer list-none items-center justify-between gap-3 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring [&::-webkit-details-marker]:hidden">
+              <span className="text-xs font-medium text-muted-foreground">Fine tune</span>
+              <span className="flex items-baseline gap-1.5">
+                <strong className="font-mono text-sm tabular-nums text-foreground">
+                  {clamp(raiseTo).toLocaleString()}
+                </strong>
+                <span className="font-mono text-[10px] text-accent">
+                  {inBigBlinds(clamp(raiseTo), view.bigBlind)}
+                </span>
               </span>
-              <span className="font-mono text-[10px] text-accent">
-                {inBigBlinds(clamp(raiseTo), view.bigBlind)}
-              </span>
-            </span>
-          </div>
+            </summary>
+            <div className="flex items-center gap-2 border-t border-border/45 py-2.5">
+              <Button
+                type="button"
+                size="icon-lg"
+                variant="outline"
+                disabled={busy || clamp(raiseTo) <= min}
+                onClick={() => setRaiseTo(clamp(raiseTo - step))}
+                aria-label={`Lower by ${step}`}
+                className="shrink-0"
+              >
+                <Minus />
+              </Button>
+              <Slider
+                value={raiseTo}
+                min={min}
+                max={max}
+                step={1}
+                onValueChange={(v) =>
+                  setRaiseTo(clamp(snapToPreset(readSliderValue(v), sizes, max - min)))
+                }
+                className="flex-1"
+                aria-label="Raise amount"
+              />
+              <Button
+                type="button"
+                size="icon-lg"
+                variant="outline"
+                disabled={busy || clamp(raiseTo) >= max}
+                onClick={() => setRaiseTo(clamp(raiseTo + step))}
+                aria-label={`Raise by ${step}`}
+                className="shrink-0"
+              >
+                <Plus />
+              </Button>
+            </div>
+          </details>
         </div>
       )}
 

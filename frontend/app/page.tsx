@@ -48,24 +48,24 @@ function HowItWorks({ className = '' }: { className?: string }) {
 
 export default function HomePage() {
   return (
-    <main className="min-h-dvh">
-      <div className="mx-auto flex min-h-dvh max-w-6xl flex-col gap-4 px-5 py-5 lg:flex-row lg:items-center lg:gap-16 lg:py-16">
+    <main id="main-content" tabIndex={-1} className="min-h-dvh outline-none">
+      <div className="compact-phone-shell mx-auto flex min-h-dvh max-w-6xl flex-col gap-4 px-5 py-5 lg:flex-row lg:items-center lg:gap-16 lg:py-16">
         <section className="flex-1">
-          <div className="inline-flex items-center gap-2 rounded-full border border-primary/30 bg-primary/10 px-3 py-1 text-xs font-medium text-primary">
+          <div className="compact-phone-badge inline-flex items-center gap-2 rounded-full border border-primary/30 bg-primary/10 px-3 py-1 text-xs font-medium text-primary">
             <ShieldCheck className="size-3.5" aria-hidden />
             Private tables, powered by pokerkit
           </div>
 
-          <h1 className="mt-4 max-w-xl text-pretty font-serif text-4xl font-extrabold leading-[1.08] sm:text-5xl lg:mt-5 lg:text-6xl">
+          <h1 className="compact-phone-title mt-4 max-w-xl text-pretty font-serif text-4xl font-extrabold leading-[1.08] sm:text-5xl lg:mt-5 lg:text-6xl">
             Your poker night starts with{' '}
             <span className="text-primary">one link.</span>
           </h1>
 
-          <p className="mt-3 max-w-md text-pretty text-sm leading-relaxed text-muted-foreground sm:text-base lg:mt-4">
+          <p className="compact-phone-copy mt-3 max-w-md text-pretty text-sm leading-relaxed text-muted-foreground sm:text-base lg:mt-4">
             Name the table, send one link, and deal. The usual setup is ready.
           </p>
 
-          <div className="mt-3 flex items-center gap-2 lg:mt-6" aria-hidden>
+          <div className="compact-phone-cards mt-3 flex items-center gap-2 lg:mt-6" aria-hidden>
             <PlayingCard card="Ah" size="md" className="-rotate-6" />
             <PlayingCard card="Kh" size="md" className="rotate-3" />
             <PlayingCard card="Qh" size="md" className="-rotate-2" />
@@ -76,13 +76,13 @@ export default function HomePage() {
           <HowItWorks className="mt-8 hidden lg:grid" />
         </section>
 
-        <section id="create-table" className="w-full scroll-mt-4 lg:max-w-md">
+        <section id="create-table" className="compact-phone-create w-full scroll-mt-4 lg:max-w-md">
           <Card className="border-primary/15 shadow-xl">
-            <CardHeader className="gap-1 pb-4">
+            <CardHeader className="compact-phone-card-header gap-1 pb-4">
               <CardTitle className="font-serif text-2xl">
                 Create a table
               </CardTitle>
-              <CardDescription>
+              <CardDescription className="compact-phone-card-description">
                 You’ll be the host. Share the invitation on the next screen.
               </CardDescription>
             </CardHeader>

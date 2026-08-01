@@ -16,6 +16,8 @@ describe('HelpSheet', () => {
     expect(screen.getByRole('dialog')).toBeInTheDocument()
     expect(screen.getByRole('dialog').parentElement).toBe(document.body)
     expect(screen.getByText('Peek or tap to see your cards')).toBeInTheDocument()
+    expect(screen.getByText('The pot')).toBeInTheDocument()
+    expect(screen.getByText(/60-second personal time bank/)).toBeInTheDocument()
 
     await userEvent.click(screen.getByRole('button', { name: 'Close' }))
     expect(screen.queryByRole('dialog')).not.toBeInTheDocument()

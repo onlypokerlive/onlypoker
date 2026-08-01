@@ -25,7 +25,11 @@ const ENTRIES: { title: string; body: string }[] = [
   },
   {
     title: "The clock",
-    body: "When it runs out it checks for you if checking is free, and folds you if it is not. Miss three in a row and you are sat out until you come back.",
+    body: "When it runs out, your 60-second personal time bank starts automatically. After the bank is spent, the table checks for you if checking is free and folds otherwise. Miss three in a row and you are sat out until you come back.",
+  },
+  {
+    title: "The pot",
+    body: "The center total is the chips already swept into the pot. Current-street bets stay beside each player until that betting round ends, so both amounts are still in play.",
   },
   {
     title: "Sitting out",

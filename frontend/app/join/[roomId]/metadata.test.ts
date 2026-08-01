@@ -24,7 +24,7 @@ describe('room invitation metadata', () => {
 
     expect(metadata.title).toBe('Join Thursday Poker · Felt & Gold')
     expect(metadata.description).toContain('3/9 seats filled')
-    expect(metadata.openGraph).toMatchObject({ title: 'You have a seat at Thursday Poker' })
+    expect(metadata.openGraph).toMatchObject({ title: 'You’re invited to Thursday Poker' })
     expect(metadata.twitter).toMatchObject({ card: 'summary_large_image' })
   })
 

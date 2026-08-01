@@ -20,7 +20,9 @@ export function CreateRoomEntry() {
   const searchParams = useSearchParams()
   const requestedSource = searchParams.get('source')
   const source: CreationSource =
-    requestedSource === 'rematch' || requestedSource === 'finished-table'
+    requestedSource === 'rematch' ||
+    requestedSource === 'finished-table' ||
+    requestedSource === 'dead-invite'
       ? requestedSource
       : 'home'
   const preset: CreateRoomPreset =

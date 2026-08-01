@@ -79,6 +79,7 @@ describe('ActionBar bet sizing', () => {
     render(
       <ActionBar view={gameView(YOUR_TURN)} onAction={onAction} busy={false} secondsLeft={null} />,
     )
+    await userEvent.click(screen.getByText('Fine tune'))
     // Opens at the minimum raise, so lowering is not available yet.
     expect(screen.getByRole('button', { name: 'Lower by 10' })).toBeDisabled()
     await userEvent.click(screen.getByRole('button', { name: 'Raise by 10' }))

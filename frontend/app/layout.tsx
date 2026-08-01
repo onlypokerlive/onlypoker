@@ -40,8 +40,6 @@ export const viewport: Viewport = {
   themeColor: '#1b2a24',
   width: 'device-width',
   initialScale: 1,
-  maximumScale: 1,
-  userScalable: false,
 }
 
 export default function RootLayout({
@@ -55,6 +53,12 @@ export default function RootLayout({
       className={`dark bg-background ${geistSans.variable} ${geistMono.variable} ${playfair.variable}`}
     >
       <body className="font-sans antialiased">
+        <a
+          href="#main-content"
+          className="fixed left-3 top-3 z-[100] -translate-y-24 rounded-lg bg-primary px-4 py-2 text-sm font-semibold text-primary-foreground shadow-xl transition-transform focus:translate-y-0"
+        >
+          Skip to main content
+        </a>
         {children}
         {process.env.NODE_ENV === 'production' && <Analytics />}
       </body>

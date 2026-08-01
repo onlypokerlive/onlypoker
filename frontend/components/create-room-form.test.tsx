@@ -1,4 +1,4 @@
-import { render, screen } from '@testing-library/react'
+import { render, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
@@ -34,6 +34,9 @@ describe('quick table creation', () => {
     expect(screen.getByText(/5\/10 blinds · 1,000 chips/)).toBeVisible()
 
     await userEvent.click(screen.getByText('Customize the night'))
+    expect(screen.getByText('Starting stack and opening blinds')).toBeVisible()
+    expect(screen.getByLabelText('Chips per player')).not.toBeVisible()
+    await userEvent.click(screen.getByText('Stakes'))
     expect(screen.getByLabelText('Chips per player')).toBeVisible()
   })
 
@@ -62,5 +65,25 @@ describe('quick table creation', () => {
       customized: false,
     })
     expect(mocks.push).toHaveBeenCalledWith('/room/ABC123')
+  })
+
+  it('associates validation with the field and moves focus to the correction', async () => {
+    render(<CreateRoomForm />)
+
+    const hostName = screen.getByLabelText('Your name')
+    await userEvent.click(screen.getByRole('button', { name: 'Create table' }))
+
+    await waitFor(() => expect(hostName).toHaveFocus())
+    expect(hostName).toHaveAttribute('aria-invalid', 'true')
+    expect(screen.getByText('Enter your display name.')).toHaveAttribute('id', 'hostName-error')
+  })
+
+  it('keeps the primary create action before progressive customization in tab order', () => {
+    render(<CreateRoomForm />)
+    const create = screen.getByRole('button', { name: 'Create table' })
+    const customize = screen.getByText('Customize the night').closest('summary')!
+
+    expect(create.compareDocumentPosition(customize) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+    expect(screen.getByText(/60 sec time bank/)).toBeVisible()
   })
 })

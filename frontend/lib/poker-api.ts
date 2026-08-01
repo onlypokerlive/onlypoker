@@ -205,6 +205,8 @@ export interface Session {
   isHost: boolean
   /** Watching rather than playing: no seat, no chips, no cards. */
   spectator?: boolean
+  /** One-time accountless backup for moving host authority to another device. */
+  recoveryCode?: string
 }
 
 // --- Flattened view consumed by the UI components -------------------------
@@ -554,6 +556,34 @@ export const pokerApi = {
     req<Session>(`/api/rooms/${roomId}/watch`, {
       method: 'POST',
       body: JSON.stringify({ password }),
+    }),
+
+  /** Recover the current host seat on a replacement device. Rotates both secrets. */
+  recoverHost: (roomId: string, password: string, recoveryCode: string) =>
+    req<Session>(`/api/rooms/${roomId}/host/recover`, {
+      method: 'POST',
+      body: JSON.stringify({ password, recoveryCode }),
+    }),
+
+  /** Authenticated host: replace the one-time backup code. */
+  createHostBackup: (roomId: string, playerId: string, token?: string) =>
+    req<Session>(`/api/rooms/${roomId}/host/backup`, {
+      method: 'POST',
+      headers: auth(token),
+      body: JSON.stringify({ playerId }),
+    }),
+
+  /** Authenticated host: hand authority to another occupied seat. */
+  transferHost: (
+    roomId: string,
+    playerId: string,
+    targetId: string,
+    token?: string,
+  ) =>
+    req<RoomView>(`/api/rooms/${roomId}/host/transfer`, {
+      method: 'POST',
+      headers: auth(token),
+      body: JSON.stringify({ playerId, targetId }),
     }),
 
   getState: (roomId: string, playerId?: string, token?: string) =>

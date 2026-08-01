@@ -1,6 +1,6 @@
 'use client'
 
-import { useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { useRouter } from 'next/navigation'
 import { ArrowRight, ChevronDown, SlidersHorizontal, Spade } from 'lucide-react'
 
@@ -9,10 +9,20 @@ import { Input } from '@/components/ui/input'
 import {
   Field,
   FieldDescription,
+  FieldError,
   FieldGroup,
   FieldLabel,
 } from '@/components/ui/field'
-import { recordRoomCreated, type CreationSource } from '@/lib/growth'
+import {
+  failureCategory,
+  recordCreateAttempt,
+  recordCreateFailed,
+  recordCreateViewed,
+  recordCustomizeOpened,
+  recordRoomCreated,
+  type CreationSource,
+  type FailureCategory,
+} from '@/lib/growth'
 import { BLIND_STRUCTURES, pokerApi, saveSession } from '@/lib/poker-api'
 
 const ANTE_MODES = [
@@ -46,11 +56,40 @@ export interface CreateRoomPreset {
   actionSeconds?: number
 }
 
-function SettingHeading({ children }: { children: React.ReactNode }) {
+type CreateField =
+  | 'roomName'
+  | 'hostName'
+  | 'password'
+  | 'startingChips'
+  | 'smallBlind'
+  | 'bigBlind'
+  | 'levelMinutes'
+  | 'actionSeconds'
+
+type FormIssue = { field: CreateField | null; message: string }
+
+function CustomSection({
+  title,
+  summary,
+  children,
+}: {
+  title: string
+  summary: string
+  children: React.ReactNode
+}) {
   return (
-    <h3 className="font-mono text-[10px] font-semibold uppercase tracking-[0.18em] text-primary/80">
-      {children}
-    </h3>
+    <details className="group/section rounded-lg border border-border/55 bg-background/25 px-3">
+      <summary className="flex min-h-11 cursor-pointer list-none items-center justify-between gap-3 py-2 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring [&::-webkit-details-marker]:hidden">
+        <span className="min-w-0">
+          <span className="block text-sm font-semibold text-foreground">{title}</span>
+          <span className="block truncate text-xs text-muted-foreground">{summary}</span>
+        </span>
+        <ChevronDown className="size-4 shrink-0 text-muted-foreground transition-transform group-open/section:rotate-180" aria-hidden />
+      </summary>
+      <div className="flex flex-col gap-3 border-t border-border/45 pb-3 pt-3">
+        {children}
+      </div>
+    </details>
   )
 }
 
@@ -81,12 +120,53 @@ export function CreateRoomForm({
   const [runItTwice, setRunItTwice] = useState(false)
   const [password, setPassword] = useState('')
   const [customized, setCustomized] = useState(false)
-  const [error, setError] = useState<string | null>(null)
+  const [issue, setIssue] = useState<FormIssue | null>(null)
   const [loading, setLoading] = useState(false)
+  const formRef = useRef<HTMLFormElement>(null)
+  const formErrorRef = useRef<HTMLParagraphElement>(null)
+  const submitRef = useRef<HTMLButtonElement>(null)
+  const changedControlsRef = useRef(new Set<string>())
+  const customizeRecordedRef = useRef(false)
+
+  useEffect(() => {
+    formRef.current?.setAttribute('data-ready', 'true')
+    const frame = window.requestAnimationFrame(() => {
+      const rect = submitRef.current?.getBoundingClientRect()
+      recordCreateViewed(Boolean(rect && rect.top >= 0 && rect.bottom <= window.innerHeight))
+    })
+    return () => window.cancelAnimationFrame(frame)
+  }, [])
+
+  function markAdvanced(control: string) {
+    changedControlsRef.current.add(control)
+  }
+
+  function clearIssue(field: CreateField) {
+    if (issue?.field === field) setIssue(null)
+  }
+
+  function showIssue(
+    field: CreateField | null,
+    message: string,
+    stage: 'validation' | 'api' = 'validation',
+    category: FailureCategory = 'validation',
+  ) {
+    setIssue({ field, message })
+    recordCreateFailed({ source, stage, field: field ?? 'form', category })
+    window.requestAnimationFrame(() => {
+      if (field) document.getElementById(field)?.focus()
+      else formErrorRef.current?.focus()
+    })
+  }
 
   async function handleSubmit(event: React.FormEvent) {
     event.preventDefault()
-    setError(null)
+    setIssue(null)
+    recordCreateAttempt({
+      source,
+      customized,
+      changedControls: changedControlsRef.current.size,
+    })
 
     const sb = Number(smallBlind)
     const bb = Number(bigBlind)
@@ -94,15 +174,18 @@ export function CreateRoomForm({
     const minutes = Number(levelMinutes)
     const seconds = Number(actionSeconds)
 
-    if (!roomName.trim()) return setError('Give the table a name.')
-    if (!hostName.trim()) return setError('Enter your display name.')
-    if (!password.trim()) return setError('Set a room password to share.')
+    if (!roomName.trim()) return showIssue('roomName', 'Give the table a name.')
+    if (!hostName.trim()) return showIssue('hostName', 'Enter your display name.')
+    if (password.trim().length < 4)
+      return showIssue('password', 'Use at least 4 characters for the room password.')
     if (!sb || !bb || bb <= sb)
-      return setError('Big blind must be larger than the small blind.')
+      return showIssue('bigBlind', 'Big blind must be larger than the small blind.')
     if (!chips || chips < bb * 2)
-      return setError('Starting chips should be at least twice the big blind.')
-    if (minutes > 120) return setError('Blind levels can last at most 120 minutes.')
-    if (seconds > 120) return setError('A decision can take at most 120 seconds.')
+      return showIssue('startingChips', 'Starting chips should be at least twice the big blind.')
+    if (minutes > 120)
+      return showIssue('levelMinutes', 'Blind levels can last at most 120 minutes.')
+    if (seconds > 120)
+      return showIssue('actionSeconds', 'A decision can take at most 120 seconds.')
 
     setLoading(true)
     try {
@@ -134,50 +217,98 @@ export function CreateRoomForm({
       recordRoomCreated({ source, customized })
       router.push(`/room/${session.roomId}`)
     } catch (caught) {
-      setError(caught instanceof Error ? caught.message : 'Something went wrong.')
+      showIssue(
+        null,
+        caught instanceof Error ? caught.message : 'Something went wrong.',
+        'api',
+        failureCategory(caught),
+      )
       setLoading(false)
     }
   }
 
   return (
-    <form onSubmit={handleSubmit}>
+    <form ref={formRef} onSubmit={handleSubmit} aria-busy={loading} noValidate>
       <FieldGroup className="gap-3">
-        <Field>
+        <Field data-invalid={issue?.field === 'roomName'}>
           <FieldLabel htmlFor="roomName">Table name</FieldLabel>
           <Input
             id="roomName"
             value={roomName}
-            onChange={(event) => setRoomName(event.target.value)}
+            onChange={(event) => {
+              setRoomName(event.target.value)
+              clearIssue('roomName')
+            }}
             maxLength={40}
             placeholder="Friday Night Poker"
+            aria-invalid={issue?.field === 'roomName'}
+            aria-describedby={issue?.field === 'roomName' ? 'roomName-error' : undefined}
           />
+          {issue?.field === 'roomName' ? <FieldError id="roomName-error">{issue.message}</FieldError> : null}
         </Field>
 
         <div className="grid gap-3 sm:grid-cols-2">
-          <Field>
+          <Field data-invalid={issue?.field === 'hostName'}>
             <FieldLabel htmlFor="hostName">Your name</FieldLabel>
             <Input
               id="hostName"
               value={hostName}
-              onChange={(event) => setHostName(event.target.value)}
+              onChange={(event) => {
+                setHostName(event.target.value)
+                clearIssue('hostName')
+              }}
               maxLength={20}
               placeholder="e.g. Alex"
               autoComplete="nickname"
+              aria-invalid={issue?.field === 'hostName'}
+              aria-describedby={issue?.field === 'hostName' ? 'hostName-error' : undefined}
             />
+            {issue?.field === 'hostName' ? <FieldError id="hostName-error">{issue.message}</FieldError> : null}
           </Field>
-          <Field>
+          <Field data-invalid={issue?.field === 'password'}>
             <FieldLabel htmlFor="password">Room password</FieldLabel>
             <Input
               id="password"
               type="password"
               value={password}
-              onChange={(event) => setPassword(event.target.value)}
+              onChange={(event) => {
+                setPassword(event.target.value)
+                clearIssue('password')
+              }}
+              minLength={4}
               maxLength={64}
               placeholder="For your friends"
               autoComplete="new-password"
+              aria-invalid={issue?.field === 'password'}
+              aria-describedby={`password-hint${issue?.field === 'password' ? ' password-error' : ''}`}
             />
+            <FieldDescription id="password-hint">
+              Use 4+ characters. Only people with the password can enter or watch.
+            </FieldDescription>
+            {issue?.field === 'password' ? <FieldError id="password-error">{issue.message}</FieldError> : null}
           </Field>
         </div>
+
+        {issue?.field === null ? (
+          <p ref={formErrorRef} tabIndex={-1} className="text-sm text-destructive outline-none" role="alert">
+            {issue.message}
+          </p>
+        ) : null}
+
+        <Button ref={submitRef} type="submit" size="lg" disabled={loading} className="w-full">
+          {loading ? (
+            <>Opening the table…</>
+          ) : (
+            <>
+              <Spade data-icon="inline-start" />
+              {source === 'rematch' ? 'Create rematch' : 'Create table'}
+              <ArrowRight data-icon="inline-end" />
+            </>
+          )}
+        </Button>
+        <p className="text-center text-xs leading-relaxed text-muted-foreground">
+          Private by default. No account, download, or real-money chips.
+        </p>
 
         <div
           aria-label="Table setup"
@@ -187,14 +318,22 @@ export function CreateRoomForm({
             {smallBlind || '—'}/{bigBlind || '—'} blinds ·{' '}
             {Number(startingChips || 0).toLocaleString()} chips ·{' '}
             {levelMinutes === '0' ? 'fixed blinds' : `${levelMinutes} min levels`} ·{' '}
-            {actionSeconds === '0' ? 'no action clock' : `${actionSeconds} sec clock`}
+            {actionSeconds === '0'
+              ? 'no action clock'
+              : `${actionSeconds} sec clock + 60 sec time bank`}
           </p>
         </div>
 
         <details
           className="group rounded-lg border border-border bg-muted/20"
           onToggle={(event) => {
-            if (event.currentTarget.open) setCustomized(true)
+            if (event.currentTarget.open) {
+              setCustomized(true)
+              if (!customizeRecordedRef.current) {
+                customizeRecordedRef.current = true
+                recordCustomizeOpened()
+              }
+            }
           }}
         >
           <summary className="flex min-h-11 cursor-pointer list-none items-center gap-3 rounded-[inherit] px-3 py-1.5 transition-colors hover:bg-muted/50 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring [&::-webkit-details-marker]:hidden">
@@ -210,55 +349,68 @@ export function CreateRoomForm({
             <ChevronDown className="size-4 text-muted-foreground transition-transform group-open:rotate-180" aria-hidden />
           </summary>
 
-          <div className="flex flex-col gap-6 border-t border-border/70 px-3 pb-4 pt-5">
-            <section className="flex flex-col gap-3">
-              <SettingHeading>Stakes</SettingHeading>
-              <Field>
+          <div className="flex flex-col gap-2 border-t border-border/70 px-3 pb-4 pt-3">
+            <CustomSection title="Stakes" summary="Starting stack and opening blinds">
+              <Field data-invalid={issue?.field === 'startingChips'}>
                 <FieldLabel htmlFor="startingChips">Chips per player</FieldLabel>
                 <Input
                   id="startingChips"
                   inputMode="numeric"
                   value={startingChips}
-                  onChange={(event) =>
+                  onChange={(event) => {
                     setStartingChips(event.target.value.replace(/[^0-9]/g, ''))
-                  }
+                    clearIssue('startingChips')
+                    markAdvanced('starting-chips')
+                  }}
+                  aria-invalid={issue?.field === 'startingChips'}
+                  aria-describedby={issue?.field === 'startingChips' ? 'startingChips-error' : undefined}
                 />
+                {issue?.field === 'startingChips' ? <FieldError id="startingChips-error">{issue.message}</FieldError> : null}
               </Field>
               <div className="grid grid-cols-2 gap-3">
-                <Field>
+                <Field data-invalid={issue?.field === 'smallBlind'}>
                   <FieldLabel htmlFor="smallBlind">Small blind</FieldLabel>
                   <Input
                     id="smallBlind"
                     inputMode="numeric"
                     value={smallBlind}
-                    onChange={(event) =>
+                    onChange={(event) => {
                       setSmallBlind(event.target.value.replace(/[^0-9]/g, ''))
-                    }
+                      clearIssue('smallBlind')
+                      markAdvanced('small-blind')
+                    }}
                   />
                 </Field>
-                <Field>
+                <Field data-invalid={issue?.field === 'bigBlind'}>
                   <FieldLabel htmlFor="bigBlind">Big blind</FieldLabel>
                   <Input
                     id="bigBlind"
                     inputMode="numeric"
                     value={bigBlind}
-                    onChange={(event) =>
+                    onChange={(event) => {
                       setBigBlind(event.target.value.replace(/[^0-9]/g, ''))
-                    }
+                      clearIssue('bigBlind')
+                      markAdvanced('big-blind')
+                    }}
+                    aria-invalid={issue?.field === 'bigBlind'}
+                    aria-describedby={issue?.field === 'bigBlind' ? 'bigBlind-error' : undefined}
                   />
+                  {issue?.field === 'bigBlind' ? <FieldError id="bigBlind-error">{issue.message}</FieldError> : null}
                 </Field>
               </div>
-            </section>
+            </CustomSection>
 
-            <section className="flex flex-col gap-3">
-              <SettingHeading>Pace</SettingHeading>
+            <CustomSection title="Pace" summary="Blind levels, action clock and time bank">
               <div className="grid grid-cols-3 gap-2">
                 {BLIND_STRUCTURES.map((structure) => (
                   <Button
                     key={structure.id}
                     type="button"
                     variant={levelMinutes === String(structure.minutes) ? 'secondary' : 'outline'}
-                    onClick={() => setLevelMinutes(String(structure.minutes))}
+                    onClick={() => {
+                      setLevelMinutes(String(structure.minutes))
+                      markAdvanced('level-minutes')
+                    }}
                     aria-pressed={levelMinutes === String(structure.minutes)}
                     className="flex h-auto flex-col gap-0 py-2"
                   >
@@ -268,35 +420,46 @@ export function CreateRoomForm({
                 ))}
               </div>
               <div className="grid grid-cols-2 gap-3">
-                <Field>
+                <Field data-invalid={issue?.field === 'levelMinutes'}>
                   <FieldLabel htmlFor="levelMinutes">Blinds up every</FieldLabel>
                   <Input
                     id="levelMinutes"
                     inputMode="numeric"
                     value={levelMinutes}
-                    onChange={(event) =>
+                    onChange={(event) => {
                       setLevelMinutes(event.target.value.replace(/[^0-9]/g, ''))
-                    }
+                      clearIssue('levelMinutes')
+                      markAdvanced('level-minutes')
+                    }}
+                    aria-invalid={issue?.field === 'levelMinutes'}
+                    aria-describedby={`levelMinutes-hint${issue?.field === 'levelMinutes' ? ' levelMinutes-error' : ''}`}
                   />
-                  <FieldDescription>Minutes. 0 keeps them fixed.</FieldDescription>
+                  <FieldDescription id="levelMinutes-hint">Minutes. 0 keeps them fixed.</FieldDescription>
+                  {issue?.field === 'levelMinutes' ? <FieldError id="levelMinutes-error">{issue.message}</FieldError> : null}
                 </Field>
-                <Field>
+                <Field data-invalid={issue?.field === 'actionSeconds'}>
                   <FieldLabel htmlFor="actionSeconds">Time to act</FieldLabel>
                   <Input
                     id="actionSeconds"
                     inputMode="numeric"
                     value={actionSeconds}
-                    onChange={(event) =>
+                    onChange={(event) => {
                       setActionSeconds(event.target.value.replace(/[^0-9]/g, ''))
-                    }
+                      clearIssue('actionSeconds')
+                      markAdvanced('action-seconds')
+                    }}
+                    aria-invalid={issue?.field === 'actionSeconds'}
+                    aria-describedby={`actionSeconds-hint${issue?.field === 'actionSeconds' ? ' actionSeconds-error' : ''}`}
                   />
-                  <FieldDescription>Seconds. 0 removes the clock.</FieldDescription>
+                  <FieldDescription id="actionSeconds-hint">
+                    Seconds. 0 removes the clock; timed tables include a 60-second bank.
+                  </FieldDescription>
+                  {issue?.field === 'actionSeconds' ? <FieldError id="actionSeconds-error">{issue.message}</FieldError> : null}
                 </Field>
               </div>
-            </section>
+            </CustomSection>
 
-            <section className="flex flex-col gap-3">
-              <SettingHeading>Antes & breaks</SettingHeading>
+            <CustomSection title="Antes & breaks" summary="Dead money and planned pauses">
               <Field>
                 <FieldLabel>Ante</FieldLabel>
                 <div className="grid grid-cols-3 gap-2">
@@ -305,7 +468,10 @@ export function CreateRoomForm({
                       key={ante.id}
                       type="button"
                       variant={anteMode === ante.id ? 'secondary' : 'outline'}
-                      onClick={() => setAnteMode(ante.id)}
+                      onClick={() => {
+                        setAnteMode(ante.id)
+                        markAdvanced('ante')
+                      }}
                       aria-pressed={anteMode === ante.id}
                     >
                       {ante.label}
@@ -324,7 +490,10 @@ export function CreateRoomForm({
                       key={choice}
                       type="button"
                       variant={breakEveryLevels === choice ? 'secondary' : 'outline'}
-                      onClick={() => setBreakEveryLevels(choice)}
+                      onClick={() => {
+                        setBreakEveryLevels(choice)
+                        markAdvanced('breaks')
+                      }}
                       aria-pressed={breakEveryLevels === choice}
                       className="h-auto whitespace-normal px-2 py-2 text-xs"
                     >
@@ -333,44 +502,60 @@ export function CreateRoomForm({
                   ))}
                 </div>
               </Field>
-            </section>
+            </CustomSection>
 
-            <section className="flex flex-col gap-3">
-              <SettingHeading>House rules</SettingHeading>
-              {[
-                {
-                  label: 'Straddle',
-                  blurb: 'UTG posts two big blinds and acts last preflop.',
-                  selected: straddle,
-                  toggle: () => setStraddle((value) => !value),
-                },
-                {
-                  label: 'The 7-2 game',
-                  blurb: 'Win with seven-deuce offsuit and collect two big blinds each.',
-                  selected: !!sevenDeuce,
-                  toggle: () => setSevenDeuce((value) => (value ? 0 : 2)),
-                },
-                {
-                  label: 'Run it twice',
-                  blurb: 'All remaining players can agree to deal two boards.',
-                  selected: runItTwice,
-                  toggle: () => setRunItTwice((value) => !value),
-                },
-              ].map((rule) => (
-                <Button
-                  key={rule.label}
-                  type="button"
-                  variant={rule.selected ? 'secondary' : 'outline'}
-                  onClick={rule.toggle}
-                  aria-pressed={rule.selected}
-                  className="h-auto justify-start py-2 text-left"
-                >
-                  <span className="flex flex-col">
-                    <span className="text-sm font-semibold">{rule.label}</span>
-                    <span className="text-[11px] font-normal opacity-70">{rule.blurb}</span>
+            <CustomSection title="House rules" summary="Straddle, 7-2, run it twice and bomb pots">
+              <Button
+                type="button"
+                variant={straddle ? 'secondary' : 'outline'}
+                onClick={() => {
+                  setStraddle((value) => !value)
+                  markAdvanced('straddle')
+                }}
+                aria-pressed={straddle}
+                className="h-auto justify-start py-2 text-left"
+              >
+                <span className="flex flex-col">
+                  <span className="text-sm font-semibold">Straddle</span>
+                  <span className="text-[11px] font-normal opacity-70">
+                    UTG posts two big blinds and acts last preflop.
                   </span>
-                </Button>
-              ))}
+                </span>
+              </Button>
+              <Button
+                type="button"
+                variant={sevenDeuce ? 'secondary' : 'outline'}
+                onClick={() => {
+                  setSevenDeuce((value) => (value ? 0 : 2))
+                  markAdvanced('seven-deuce')
+                }}
+                aria-pressed={Boolean(sevenDeuce)}
+                className="h-auto justify-start py-2 text-left"
+              >
+                <span className="flex flex-col">
+                  <span className="text-sm font-semibold">The 7-2 game</span>
+                  <span className="text-[11px] font-normal opacity-70">
+                    Win with seven-deuce offsuit and collect two big blinds each.
+                  </span>
+                </span>
+              </Button>
+              <Button
+                type="button"
+                variant={runItTwice ? 'secondary' : 'outline'}
+                onClick={() => {
+                  setRunItTwice((value) => !value)
+                  markAdvanced('run-it-twice')
+                }}
+                aria-pressed={runItTwice}
+                className="h-auto justify-start py-2 text-left"
+              >
+                <span className="flex flex-col">
+                  <span className="text-sm font-semibold">Run it twice</span>
+                  <span className="text-[11px] font-normal opacity-70">
+                    All remaining players can agree to deal two boards.
+                  </span>
+                </span>
+              </Button>
               <Field>
                 <FieldLabel>Bomb pots</FieldLabel>
                 <div className="grid grid-cols-3 gap-2">
@@ -379,7 +564,10 @@ export function CreateRoomForm({
                       key={choice}
                       type="button"
                       variant={bombPotEvery === choice ? 'secondary' : 'outline'}
-                      onClick={() => setBombPotEvery(choice)}
+                      onClick={() => {
+                        setBombPotEvery(choice)
+                        markAdvanced('bomb-pots')
+                      }}
                       aria-pressed={bombPotEvery === choice}
                     >
                       {choice === 0 ? 'Off' : `Every ${choice}`}
@@ -387,10 +575,9 @@ export function CreateRoomForm({
                   ))}
                 </div>
               </Field>
-            </section>
+            </CustomSection>
 
-            <section className="flex flex-col gap-3">
-              <SettingHeading>Doors & second chances</SettingHeading>
+            <CustomSection title="Doors & second chances" summary="Late entry and buying back in">
               <Field>
                 <FieldLabel>Turning up late</FieldLabel>
                 <div className="grid grid-cols-3 gap-2">
@@ -399,7 +586,10 @@ export function CreateRoomForm({
                       key={choice.levels}
                       type="button"
                       variant={lateEntryLevels === choice.levels ? 'secondary' : 'outline'}
-                      onClick={() => setLateEntryLevels(choice.levels)}
+                      onClick={() => {
+                        setLateEntryLevels(choice.levels)
+                        markAdvanced('late-entry')
+                      }}
                       aria-pressed={lateEntryLevels === choice.levels}
                       className="h-auto whitespace-normal px-2 py-2 text-xs"
                     >
@@ -416,7 +606,10 @@ export function CreateRoomForm({
                       key={choice.levels}
                       type="button"
                       variant={rebuyLevels === choice.levels ? 'secondary' : 'outline'}
-                      onClick={() => setRebuyLevels(choice.levels)}
+                      onClick={() => {
+                        setRebuyLevels(choice.levels)
+                        markAdvanced('rebuys')
+                      }}
                       aria-pressed={rebuyLevels === choice.levels}
                       className="h-auto whitespace-normal px-2 py-2 text-xs"
                     >
@@ -425,30 +618,10 @@ export function CreateRoomForm({
                   ))}
                 </div>
               </Field>
-            </section>
+            </CustomSection>
           </div>
         </details>
 
-        {error ? (
-          <p className="text-sm text-destructive" role="alert">
-            {error}
-          </p>
-        ) : null}
-
-        <Button type="submit" size="lg" disabled={loading} className="w-full">
-          {loading ? (
-            <>Opening the table…</>
-          ) : (
-            <>
-              <Spade data-icon="inline-start" />
-              {source === 'rematch' ? 'Create rematch' : 'Create table'}
-              <ArrowRight data-icon="inline-end" />
-            </>
-          )}
-        </Button>
-        <p className="text-center text-xs leading-relaxed text-muted-foreground">
-          Private by default. No account, download, or real-money chips.
-        </p>
       </FieldGroup>
     </form>
   )

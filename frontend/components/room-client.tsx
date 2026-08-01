@@ -25,12 +25,22 @@ import { InviteShareButton } from "@/components/invite-share-button"
 import { useSecondsLeft } from "@/lib/use-countdown"
 import { useTableEvents } from "@/lib/use-table-events"
 import { useRunout } from "@/lib/use-runout"
-import { recordGameStarted, recordTournamentFinished } from "@/lib/growth"
+import { handoverState } from "@/lib/handover"
+import {
+  failureCategory,
+  recordActionRejected,
+  recordGameStartAttempt,
+  recordGameStartFailed,
+  recordGameStarted,
+  recordRoomSessionMissing,
+  recordTournamentFinished,
+} from "@/lib/growth"
 import {
   ApiError,
   pokerApi,
   toGameView,
   loadSession,
+  saveSession,
   clearSession,
   type GameView,
   type Session,
@@ -47,14 +57,18 @@ export function RoomClient({ roomId }: { roomId: string }) {
   const [busy, setBusy] = useState(false)
   const [revealed, setRevealed] = useState(false)
   const pausePollRef = useRef(false)
+  const resultsHeadingRef = useRef<HTMLHeadingElement>(null)
+  const savedHostStateRef = useRef<boolean | null>(null)
 
   // Resolve session from local storage; if absent, send to join page.
   useEffect(() => {
     const s = loadSession(roomId)
     if (!s) {
+      recordRoomSessionMissing()
       router.replace(`/join/${roomId}`)
       return
     }
+    savedHostStateRef.current = s.isHost
     setSession(s)
   }, [roomId, router])
 
@@ -118,6 +132,28 @@ export function RoomClient({ roomId }: { roomId: string }) {
   const { board: shownBoard, revealing } = useRunout(view)
 
   useEffect(() => {
+    if (!session || !view || savedHostStateRef.current === view.isHost) return
+    const latest = loadSession(roomId) ?? session
+    const nextSession = view.isHost
+      ? { ...latest, isHost: true }
+      : {
+          roomId: latest.roomId,
+          playerId: latest.playerId,
+          token: latest.token,
+          isHost: false,
+          spectator: latest.spectator,
+        }
+    saveSession(nextSession)
+    savedHostStateRef.current = view.isHost
+  }, [roomId, session, view])
+
+  useEffect(() => {
+    if (phase !== "finished") return
+    window.scrollTo({ top: 0, behavior: "auto" })
+    window.requestAnimationFrame(() => resultsHeadingRef.current?.focus())
+  }, [phase])
+
+  useEffect(() => {
     if (view?.phase !== "finished") return
     recordTournamentFinished(
       view.roomId,
@@ -127,13 +163,17 @@ export function RoomClient({ roomId }: { roomId: string }) {
     )
   }, [view?.phase, view?.roomId, view?.standings.length, view?.players.length, view?.handNumber, view?.isHost])
 
-  async function withBusy(fn: () => Promise<void>) {
+  async function withBusy(
+    fn: () => Promise<void>,
+    onError?: (error: unknown) => void,
+  ) {
     if (busy) return
     setBusy(true)
     pausePollRef.current = true
     try {
       await fn()
     } catch (e) {
+      onError?.(e)
       toast.error(e instanceof Error ? e.message : "Action failed")
     } finally {
       pausePollRef.current = false
@@ -141,15 +181,20 @@ export function RoomClient({ roomId }: { roomId: string }) {
     }
   }
 
-  const handleStart = () =>
-    withBusy(async () => {
+  const handleStart = () => {
+    const initialStart = view?.phase === "lobby" && view.handNumber === 0
+    if (view && initialStart) recordGameStartAttempt(view.players.length)
+    return withBusy(async () => {
       if (!session || !view) return
       const firstDeal = view.phase === "lobby" && view.handNumber === 0
       const raw = await pokerApi.startHand(roomId, session.playerId, session.token)
       const nextView = toGameView(raw, session.playerId)
       setView(nextView)
       if (firstDeal) recordGameStarted(roomId, nextView.players.length)
+    }, (error) => {
+      if (initialStart) recordGameStartFailed(failureCategory(error))
     })
+  }
 
   const handleAction = (action: "fold" | "check" | "call" | "raise", amount?: number) =>
     withBusy(async () => {
@@ -166,7 +211,7 @@ export function RoomClient({ roomId }: { roomId: string }) {
         session.token,
       )
       setView(toGameView(raw, session.playerId))
-    })
+    }, (error) => recordActionRejected(action, failureCategory(error)))
 
   const handleSitToggle = () =>
     withBusy(async () => {
@@ -208,6 +253,12 @@ export function RoomClient({ roomId }: { roomId: string }) {
   // chaining: `!you?.sittingOut` is *true* for a spectator, which is how you
   // end up offering a chair to somebody who does not have one.
   const spectating = !you
+  const handover = handoverState({
+    lastHand: view.lastHand,
+    isHost: view.isHost,
+    paused: view.paused,
+    autoDealIn,
+  })
   const phaseLabel =
     view.phase === "lobby"
       ? "Lobby open"
@@ -218,7 +269,7 @@ export function RoomClient({ roomId }: { roomId: string }) {
           : "Final table"
 
   return (
-    <main className="relative isolate mx-auto flex min-h-svh w-full max-w-5xl flex-col gap-3 px-3 py-3 sm:gap-4 sm:px-5 sm:py-4">
+    <main id="main-content" tabIndex={-1} className="relative isolate mx-auto flex min-h-svh w-full max-w-5xl flex-col gap-3 px-3 py-3 outline-none sm:gap-4 sm:px-5 sm:py-4">
       <header className="room-stage grid grid-cols-[minmax(0,1fr)_auto] gap-x-3 gap-y-2 rounded-2xl px-3 py-3 sm:grid-cols-[minmax(0,1fr)_auto_auto] sm:items-center sm:px-4">
         <div className="min-w-0">
           <span className="flex items-center gap-1.5 text-[9px] font-bold uppercase tracking-[0.18em] text-primary/80">
@@ -291,6 +342,9 @@ export function RoomClient({ roomId }: { roomId: string }) {
         // it used to be the only one nobody ever saw: the podium replaced it
         // outright. Show what won before who won.
         <div className="flex flex-1 flex-col items-center justify-center gap-3 overflow-y-auto py-2">
+          <h2 ref={resultsHeadingRef} tabIndex={-1} className="sr-only">
+            Final results for {view.roomName}
+          </h2>
           <HandResults view={view} title="The final hand" className="shrink-0" />
           <TournamentResults view={view} />
         </div>
@@ -368,7 +422,15 @@ export function RoomClient({ roomId }: { roomId: string }) {
 
             {view.phase === "handover" ? (
               <>
-                {view.isHost ? (
+                {handover.kind === "finishing" ? (
+                  <div
+                    role="status"
+                    aria-live="polite"
+                    className="flex min-h-14 items-center justify-center rounded-xl border border-primary/35 bg-primary/10 px-4 text-center text-sm font-medium text-foreground"
+                  >
+                    {handover.label}
+                  </div>
+                ) : handover.kind === "host" ? (
                   <div className="flex gap-2">
                     <Button
                       onClick={handleStart}
@@ -376,9 +438,7 @@ export function RoomClient({ roomId }: { roomId: string }) {
                       size="lg"
                       className="flex-1"
                     >
-                      {autoDealIn != null && !view.paused
-                        ? `Deal now · ${Math.ceil(autoDealIn)}s`
-                        : "Deal next hand"}
+                      {handover.label}
                     </Button>
                     <Button
                       variant="outline"
@@ -392,11 +452,7 @@ export function RoomClient({ roomId }: { roomId: string }) {
                   </div>
                 ) : (
                   <div className="flex h-16 items-center justify-center rounded-xl border border-border/60 bg-card/60 text-sm text-muted-foreground">
-                    {view.paused
-                      ? "The host stopped the table…"
-                      : autoDealIn != null
-                        ? `Next hand in ${Math.ceil(autoDealIn)}s`
-                        : "Dealing the next hand…"}
+                    {handover.label}
                   </div>
                 )}
                 {/* Not to somebody with no chips: they are already out of the

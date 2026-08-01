@@ -1,9 +1,13 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 import {
+  failureCategory,
+  recordCreateAttempt,
   recordGameStarted,
+  recordInviteOutcome,
   recordRoomCreated,
   recordRoomJoined,
+  recordRoomSessionMissing,
   recordTournamentFinished,
 } from './growth'
 import { track } from '@vercel/analytics'
@@ -59,5 +63,44 @@ describe('growth measurement', () => {
       isHost: false,
     })
     expect(vi.mocked(track).mock.calls.filter(([name]) => name === 'Tournament Finished')).toHaveLength(1)
+  })
+
+  it('records diagnostic attempts with only coarse viewport and control counts', () => {
+    Object.defineProperty(window, 'innerWidth', { configurable: true, value: 375 })
+    Object.defineProperty(window, 'innerHeight', { configurable: true, value: 667 })
+
+    recordCreateAttempt({ source: 'dead-invite', customized: true, changedControls: 3 })
+    recordInviteOutcome({
+      outcome: 'cancelled',
+      surface: 'table',
+      phase: 'hand',
+      isHost: false,
+    })
+    recordRoomSessionMissing()
+
+    expect(track).toHaveBeenCalledWith('Create Attempted', {
+      source: 'dead-invite',
+      customized: true,
+      changedControls: 3,
+      viewport: 'compact-phone',
+    })
+    expect(track).toHaveBeenCalledWith('Invite Outcome', {
+      outcome: 'cancelled',
+      surface: 'table',
+      phase: 'hand',
+      isHost: false,
+      viewport: 'compact-phone',
+    })
+    expect(track).toHaveBeenCalledWith('Room Session Missing', {
+      viewport: 'compact-phone',
+    })
+  })
+
+  it('maps errors to privacy-safe categories instead of sending messages', () => {
+    expect(failureCategory({ status: 403, message: 'secret room name' })).toBe(
+      'authentication',
+    )
+    expect(failureCategory({ status: 429 })).toBe('rate-limited')
+    expect(failureCategory(new TypeError('network detail'))).toBe('network')
   })
 })

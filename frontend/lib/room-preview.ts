@@ -11,6 +11,11 @@ export interface RoomPreview {
   handNumber: number
 }
 
+export type RoomPreviewResult =
+  | { status: 'available'; preview: RoomPreview }
+  | { status: 'missing' }
+  | { status: 'unavailable' }
+
 function apiBase(): string {
   const direct = process.env.POKER_BACKEND_URL
   if (direct) return `${direct.replace(/\/$/, '')}/api`
@@ -33,7 +38,7 @@ function apiBase(): string {
  * A missing backend must degrade to a generic invite instead of delaying the
  * join page or turning a chat unfurl into an error page.
  */
-export const getRoomPreview = cache(async (roomId: string): Promise<RoomPreview | null> => {
+export const getRoomPreviewResult = cache(async (roomId: string): Promise<RoomPreviewResult> => {
   try {
     const response = await fetch(
       `${apiBase()}/rooms/${encodeURIComponent(roomId)}/preview`,
@@ -42,9 +47,16 @@ export const getRoomPreview = cache(async (roomId: string): Promise<RoomPreview 
         signal: AbortSignal.timeout(2000),
       },
     )
-    if (!response.ok) return null
-    return (await response.json()) as RoomPreview
+    if (response.status === 404) return { status: 'missing' }
+    if (!response.ok) return { status: 'unavailable' }
+    return { status: 'available', preview: (await response.json()) as RoomPreview }
   } catch {
-    return null
+    return { status: 'unavailable' }
   }
 })
+
+/** Metadata and share art need only the safe projection, not failure details. */
+export async function getRoomPreview(roomId: string): Promise<RoomPreview | null> {
+  const result = await getRoomPreviewResult(roomId)
+  return result.status === 'available' ? result.preview : null
+}

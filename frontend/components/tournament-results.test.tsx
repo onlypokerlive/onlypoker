@@ -4,7 +4,13 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { TournamentResults, rematchHref } from './tournament-results'
 import { gameView, player } from '@/lib/test-fixtures'
-import { recordFinishCta, recordResultsShared } from '@/lib/growth'
+import {
+  recordFinishCta,
+  recordFinishCtaImpression,
+  recordResultsShareAttempt,
+  recordResultsShareOutcome,
+  recordResultsShared,
+} from '@/lib/growth'
 import { shareTournamentPoster } from '@/lib/tournament-poster'
 
 const mocks = vi.hoisted(() => ({ push: vi.fn() }))
@@ -12,6 +18,9 @@ const mocks = vi.hoisted(() => ({ push: vi.fn() }))
 vi.mock('next/navigation', () => ({ useRouter: () => ({ push: mocks.push }) }))
 vi.mock('@/lib/growth', () => ({
   recordFinishCta: vi.fn(),
+  recordFinishCtaImpression: vi.fn(),
+  recordResultsShareAttempt: vi.fn(),
+  recordResultsShareOutcome: vi.fn(),
   recordResultsShared: vi.fn(),
 }))
 vi.mock('@/lib/tournament-poster', async (importOriginal) => ({
@@ -42,11 +51,15 @@ describe('the tournament conversion loop', () => {
     await userEvent.click(screen.getByRole('button', { name: 'Share the night' }))
 
     expect(shareTournamentPoster).toHaveBeenCalledWith(finished)
+    expect(recordResultsShareAttempt).toHaveBeenCalledWith(false)
+    expect(recordResultsShareOutcome).toHaveBeenCalledWith('native', false)
     expect(recordResultsShared).toHaveBeenCalledWith('native', 2, false)
   })
 
   it('offers a settings-preserving rematch and a fresh table', async () => {
     render(<TournamentResults view={finished} />)
+
+    expect(recordFinishCtaImpression).not.toHaveBeenCalledTimes(2)
 
     await userEvent.click(screen.getByRole('button', { name: 'Play again' }))
     expect(mocks.push).toHaveBeenLastCalledWith(rematchHref(finished))

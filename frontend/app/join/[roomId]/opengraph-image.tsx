@@ -21,7 +21,7 @@ export default async function OpenGraphImage({
       : preview.phase === 'finished'
         ? 'Final table'
         : `Hand ${preview.handNumber} in progress`
-    : 'Your seat is waiting'
+    : 'Private invitation'
 
   return new ImageResponse(
     (
@@ -73,7 +73,7 @@ export default async function OpenGraphImage({
               letterSpacing: -2,
             }}
           >
-            You have a seat at {name}
+            You’re invited to {name}
           </div>
           <div
             style={{
