@@ -16,6 +16,7 @@ import { RabbitHunt } from "@/components/rabbit-hunt"
 import { ShowCards } from "@/components/show-cards"
 import { HelpSheet } from "@/components/help-sheet"
 import { HostPanel } from "@/components/host-panel"
+import { TableBreak } from "@/components/table-break"
 import { TournamentResults } from "@/components/tournament-results"
 import { useSecondsLeft } from "@/lib/use-countdown"
 import { useTableEvents } from "@/lib/use-table-events"
@@ -28,6 +29,7 @@ import {
   clearSession,
   type GameView,
   type Session,
+  type TableControl,
 } from "@/lib/poker-api"
 
 const POLL_MS = 1200
@@ -155,13 +157,14 @@ export function RoomClient({ roomId }: { roomId: string }) {
       setView(toGameView(raw, session.playerId))
     })
 
-  const handleAutoDealToggle = () =>
+  const handleTableControl = (action: TableControl) =>
     withBusy(async () => {
       if (!session || !view) return
-      const raw = await pokerApi.setAutoDeal(
+      const raw = await pokerApi.controlTable(
         roomId,
         session.playerId,
-        !view.autoDealPaused,
+        action,
+        view.handNumber,
         session.token,
       )
       setView(toGameView(raw, session.playerId))
@@ -191,6 +194,11 @@ export function RoomClient({ roomId }: { roomId: string }) {
           <h1 className="font-serif text-lg font-bold leading-tight text-foreground">{view.roomName}</h1>
           <span className="text-xs text-muted-foreground">
             {view.handNumber > 0 ? `Hand #${view.handNumber}` : "Not started"}
+            {/* Everybody is told, not just the host: knowing it is the last
+                hand changes how it gets played. */}
+            {view.lastHand && !finished && (
+              <span className="ml-2 font-bold text-accent">LAST HAND</span>
+            )}
             {/* A hand nobody chose to play needs saying, or the missing
                 preflop reads as the app having skipped a turn. */}
             {view.bombPot && <span className="ml-2 font-bold text-accent">BOMB POT</span>}
@@ -237,6 +245,9 @@ export function RoomClient({ roomId }: { roomId: string }) {
         </div>
       ) : (
         <>
+          {/* Above the table, because a stopped table looks exactly like a
+              broken one and the difference has to be the first thing read. */}
+          <TableBreak view={view} onControl={handleTableControl} busy={busy} />
           <PokerTable
             view={{ ...view, board: shownBoard }}
             revealed={revealed}
@@ -307,28 +318,24 @@ export function RoomClient({ roomId }: { roomId: string }) {
                       size="lg"
                       className="flex-1"
                     >
-                      {autoDealIn != null && !view.autoDealPaused
+                      {autoDealIn != null && !view.paused
                         ? `Deal now · ${Math.ceil(autoDealIn)}s`
                         : "Deal next hand"}
                     </Button>
                     <Button
                       variant="outline"
                       size="lg"
-                      onClick={handleAutoDealToggle}
+                      onClick={() => handleTableControl(view.paused ? "resume" : "pause")}
                       disabled={busy}
-                      aria-label={
-                        view.autoDealPaused
-                          ? "Resume dealing automatically"
-                          : "Pause between hands"
-                      }
+                      aria-label={view.paused ? "Start the table again" : "Stop the table"}
                     >
-                      {view.autoDealPaused ? <Play /> : <Pause />}
+                      {view.paused ? <Play /> : <Pause />}
                     </Button>
                   </div>
                 ) : (
                   <div className="flex h-16 items-center justify-center rounded-xl border border-border/60 bg-card/60 text-sm text-muted-foreground">
-                    {view.autoDealPaused
-                      ? "The host paused between hands…"
+                    {view.paused
+                      ? "The host stopped the table…"
                       : autoDealIn != null
                         ? `Next hand in ${Math.ceil(autoDealIn)}s`
                         : "Dealing the next hand…"}

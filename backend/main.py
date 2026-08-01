@@ -480,6 +480,10 @@ class CreateRoomBody(BaseModel):
     # Big blinds each other player owes whoever wins with 7-2 offsuit.
     # 0 turns the rule off.
     sevenDeuce: int = Field(default=0, ge=0, le=20)
+    # Stop the table every N blind levels. 0 turns scheduled breaks off; the
+    # host can still stop it by hand whenever they like.
+    breakEveryLevels: int = Field(default=0, ge=0, le=20)
+    breakMinutes: int = Field(default=5, ge=1, le=60)
 
 
 class JoinBody(BaseModel):
@@ -596,12 +600,89 @@ def _apply_level(room: dict[str, Any], now: float) -> None:
     if room.get("levelStartedAt") is None:
         # The clock starts with the first hand, not when the room is created.
         room["levelStartedAt"] = now
-    index, started = _projected_level(room, now)
+    index, started = _projected_level(room, _clock_now(room, now))
     room["levelIndex"] = index
     room["levelStartedAt"] = started
     level = schedule[index]
     room["smallBlind"] = level["smallBlind"]
     room["bigBlind"] = level["bigBlind"]
+
+
+# --------------------------------------------------------------------------- #
+# Stopping the table
+# --------------------------------------------------------------------------- #
+# There is no counter to stop. The blind level is *projected* from
+# ``levelStartedAt`` every time somebody asks, because nothing runs in the
+# background — so pausing cannot mean "stop decrementing something". It means
+# holding the clock still while the table is not playing, and then handing back
+# exactly the time that was left. Done wrong, twenty minutes for a pizza comes
+# back three levels higher, which is the difference between a break and an
+# ambush.
+def _is_paused(room: dict[str, Any]) -> bool:
+    # ``autoDealPaused`` is what this used to be called, back when it only
+    # stopped the dealing. Rooms live a day, so a few are still using it.
+    return bool(room.get("paused", room.get("autoDealPaused")))
+
+
+def _clock_now(room: dict[str, Any], now: float) -> float:
+    """The time the blind clock thinks it is.
+
+    Frozen at the moment the table stopped, so no level passes while nobody is
+    playing. On the way back, ``_resume_table`` moves the level's start forward
+    by however long the stoppage lasted, and the projection lines up again.
+    """
+    stopped = room.get("pausedAt")
+    return stopped if stopped is not None else now
+
+
+def _pause_table(room: dict[str, Any], now: float) -> None:
+    room["paused"] = True
+    room["autoDealPaused"] = True  # kept in step for anything still reading it
+    if room.get("pausedAt") is None:
+        room["pausedAt"] = now
+    room["autoDealAt"] = None
+
+
+def _resume_table(room: dict[str, Any], now: float) -> None:
+    stopped = room.get("pausedAt")
+    if stopped is not None and room.get("levelStartedAt") is not None:
+        # Give back exactly what the stoppage took. Not "restart the level":
+        # coming back from a five-minute break should leave four minutes on a
+        # level that had four minutes left, not fifteen.
+        room["levelStartedAt"] += max(0.0, now - stopped)
+    room["pausedAt"] = None
+    room["paused"] = False
+    room["autoDealPaused"] = False
+    room["breakUntil"] = None
+
+
+def _break_due(room: dict[str, Any], now: float) -> bool:
+    """Whether the table has just played through a scheduled break.
+
+    Counted in levels crossed rather than in hands, and consumed once, so a
+    long gap between hands that skips two boundaries still stops the table
+    exactly once — nobody wants two breaks back to back because the pizza
+    arrived late.
+    """
+    every = int(room.get("breakEveryLevels") or 0)
+    if not every or not int(room.get("breakMinutes") or 0):
+        return False
+    index, _ = _projected_level(room, _clock_now(room, now))
+    return index // every > int(room.get("breaksTaken", 0))
+
+
+def _no_more_hands(room: dict[str, Any]) -> bool:
+    """Whether the hand the host called as the last one has been played."""
+    last = room.get("lastHandNumber")
+    return last is not None and room["handNumber"] >= last
+
+
+def _start_break(room: dict[str, Any], now: float) -> None:
+    every = int(room["breakEveryLevels"])
+    index, _ = _projected_level(room, _clock_now(room, now))
+    room["breaksTaken"] = index // every
+    _pause_table(room, now)
+    room["breakUntil"] = now + int(room["breakMinutes"]) * 60
 
 
 # --------------------------------------------------------------------------- #
@@ -660,9 +741,9 @@ def _can_sit_out(room: dict[str, Any], player: dict[str, Any]) -> bool:
 
 
 def _arm_auto_deal(room: dict[str, Any]) -> None:
-    """Schedule the next deal, unless the host paused between hands."""
+    """Schedule the next deal, unless the table is stopped."""
     seconds = int(room.get("autoDealSeconds", AUTO_DEAL_SECONDS) or 0)
-    if seconds and not room.get("autoDealPaused"):
+    if seconds and not _is_paused(room):
         room["autoDealAt"] = time.time() + seconds
     else:
         room["autoDealAt"] = None
@@ -1016,11 +1097,18 @@ def _record_busts(room: dict[str, Any]) -> None:
     busted.extend(newly_out)
 
 
-def _finish_tournament(room: dict[str, Any]) -> None:
-    """Close the room once at most one player still has chips."""
+def _finish_tournament(room: dict[str, Any], by_chips: bool = False) -> None:
+    """Close the room once at most one player still has chips.
+
+    ``by_chips`` ends it while several players still have some, which is what
+    "one more hand and then we stop" means: nobody was knocked out, so the
+    placings come from the stacks. Everyone busted along the way keeps the
+    finish they earned, below the players still standing.
+    """
     survivors = [pid for pid in room["order"] if room["players"][pid]["chips"] > 0]
-    if len(survivors) > 1:
+    if len(survivors) > 1 and not by_chips:
         return
+    survivors.sort(key=lambda pid: -room["players"][pid]["chips"])
     _record_busts(room)
     busted = list(room.get("bustOrder", []))
     ranking = survivors + [pid for pid in reversed(busted) if pid not in survivors]
@@ -1124,16 +1212,38 @@ def _scheduled_clock(room: dict[str, Any]) -> float | None:
 
 def _scheduled_deal(room: dict[str, Any]) -> float | None:
     """When the next hand deals itself."""
-    if room.get("phase") != "handover" or room.get("autoDealPaused"):
+    if room.get("phase") != "handover" or _is_paused(room):
         return None
     return room.get("autoDealAt") or None
+
+
+def _scheduled_break_end(room: dict[str, Any]) -> float | None:
+    """When a break is over and the table starts itself again."""
+    return room.get("breakUntil") or None
 
 
 def _run_clock(room: dict[str, Any]) -> bool:
     return _apply_timeouts(room) is not None
 
 
+def _run_break_end(room: dict[str, Any]) -> bool:
+    _resume_table(room, time.time())
+    if room.get("phase") == "handover":
+        _arm_auto_deal(room)
+    return True
+
+
 def _run_deal(room: dict[str, Any]) -> bool:
+    now = time.time()
+    # A break interrupts the deal rather than the hand: stopping the table
+    # between hands is the only version of "back in ten minutes" that does not
+    # abandon a half-played pot.
+    if _break_due(room, now):
+        _start_break(room, now)
+        return True
+    if _no_more_hands(room):
+        _finish_tournament(room, by_chips=True)
+        return True
     try:
         _start_hand(room)
     except fastapi.HTTPException:
@@ -1145,8 +1255,10 @@ def _run_deal(room: dict[str, Any]) -> bool:
 
 
 # In the order they must happen: an expired decision is settled before the next
-# hand is dealt, or a late fold lands on a hand that has already started.
+# hand is dealt, or a late fold lands on a hand that has already started. A
+# break ending comes first of all, because it is what makes a deal due again.
 _SCHEDULE = (
+    ("break", _scheduled_break_end, _run_break_end),
     ("clock", _scheduled_clock, _run_clock),
     ("deal", _scheduled_deal, _run_deal),
 )
@@ -1189,6 +1301,10 @@ def _level_view(room: dict[str, Any], now: float) -> dict[str, Any] | None:
         return None
     duration = _level_duration(room)
     current_index = int(room.get("levelIndex", 0))
+    # Held still while the table is stopped, so the countdown on everyone's
+    # screen stops too. A clock that keeps running through a break is the
+    # clearest way to tell players the pause is not real.
+    now = _clock_now(room, now)
     projected_index, projected_start = _projected_level(room, now)
     last_index = len(schedule) - 1
 
@@ -1368,7 +1484,13 @@ def _build_view(room: dict[str, Any], viewer_id: str | None) -> dict[str, Any]:
             "sevenDeuce": int(room.get("sevenDeuce") or 0),
             "levelMinutes": int(room.get("levelMinutes") or 0),
             "autoDealSeconds": int(room.get("autoDealSeconds") or 0),
-            "autoDealPaused": bool(room.get("autoDealPaused")),
+            # The table is stopped: no deals, and the blind clock is held still.
+            "paused": _is_paused(room),
+            "breakEveryLevels": int(room.get("breakEveryLevels") or 0),
+            "breakMinutes": int(room.get("breakMinutes") or 0),
+            # No hand after this one. Shown to everybody, not just the host:
+            # knowing it is the last hand changes how it is played.
+            "lastHand": bool(room.get("lastHand")),
         },
         "players": players_out,
         "board": board,
@@ -1392,6 +1514,8 @@ def _build_view(room: dict[str, Any], viewer_id: str | None) -> dict[str, Any]:
         # serverTime to stay correct even when a device's clock is off.
         "actionDeadline": room.get("actionDeadline"),
         "autoDealAt": room.get("autoDealAt"),
+        # When the table starts itself again, or None if it is not on a break.
+        "breakUntil": room.get("breakUntil"),
         # The moment this view describes. Sent back with a decision so an order
         # about a moment that has passed can be refused rather than applied.
         "turnId": int(room.get("turnId", 0)),
@@ -1481,7 +1605,16 @@ async def create_room(body: CreateRoomBody) -> dict[str, Any]:
         "actionDeadline": None,
         "autoDealSeconds": AUTO_DEAL_SECONDS,
         "autoDealAt": None,
+        # The table is stopped: no deals, and the blind clock is held still.
+        "paused": False,
         "autoDealPaused": False,
+        "pausedAt": None,
+        "breakEveryLevels": body.breakEveryLevels,
+        "breakMinutes": body.breakMinutes,
+        "breakUntil": None,
+        "breaksTaken": 0,
+        # The host has called it: no hand after the one being played.
+        "lastHand": False,
         "bustOrder": [],
         "standings": [],
         # Seat holding the button. Advances one seat per hand; see _next_button.
@@ -1853,6 +1986,14 @@ async def start_hand(
             raise fastapi.HTTPException(400, "A hand is already in progress.")
         if room["phase"] == "finished":
             raise fastapi.HTTPException(400, "This tournament is over.")
+        if _no_more_hands(room):
+            # The last hand has been played. Dealing another would quietly
+            # unsay what the whole table was told.
+            _finish_tournament(room, by_chips=True)
+            await save_room(room)
+            raise fastapi.HTTPException(400, "That was the last hand.")
+        if room.get("breakUntil") and time.time() < room["breakUntil"]:
+            raise fastapi.HTTPException(400, "The table is on a break.")
         try:
             _start_hand(room)
         except fastapi.HTTPException:
@@ -2006,16 +2147,27 @@ async def toggle_sit_out(
         return _build_view(room, body.playerId)
 
 
-@app.post("/rooms/{room_id}/autodeal")
-async def set_auto_deal(
+@app.post("/rooms/{room_id}/table")
+async def control_table(
     room_id: str,
     body: ActionBody,
     x_player_token: str | None = fastapi.Header(default=None),
 ) -> dict[str, Any]:
-    """Host control for the pause between hands.
+    """The host's controls over the table itself, rather than over a hand.
 
-    ``action`` is "pause" to stop dealing automatically, anything else to
-    resume. Pausing mid-countdown cancels the pending deal.
+    ``action`` is one of:
+
+      * ``pause`` — stop the table. No deals, and the blind clock holds still.
+      * ``resume`` — start it again, with exactly the time the level had left.
+      * ``last-hand`` — no hand after the one being played. Everybody is told,
+        because knowing it is the last hand changes how it is played.
+      * ``keep-playing`` — take that back, while there is still a hand to take
+        it back during.
+
+    Pausing mid-countdown cancels the pending deal. Resuming while the table is
+    between hands starts the countdown again from now, rather than from
+    whatever was left when it stopped — nobody wants the next hand dealt half a
+    second after they sit back down.
     """
     async with _RoomLock(room_id):
         room = await load_room(room_id)
@@ -2024,11 +2176,41 @@ async def set_auto_deal(
         _authenticate(room, body.playerId, x_player_token)
         if body.playerId != room["hostId"]:
             raise fastapi.HTTPException(403, "Only the host can change this.")
-        room["autoDealPaused"] = body.action == "pause"
-        if room["phase"] == "handover":
-            _arm_auto_deal(room)
+        if _receipt(room, body.requestId):
+            return _build_view(room, body.playerId)
+        now = time.time()
+
+        if body.action == "pause":
+            _pause_table(room, now)
+        elif body.action == "resume":
+            _resume_table(room, now)
+            if room["phase"] == "handover":
+                _arm_auto_deal(room)
+        elif body.action == "last-hand":
+            if room["phase"] == "finished":
+                raise fastapi.HTTPException(400, "This tournament is already over.")
+            # Which hand is the last one is decided now and written down, not
+            # re-derived later. Called during a hand, it is this one; called
+            # between hands, there is one more to play — which is what a host
+            # saying "last hand" at the table means, and the only reading that
+            # does not end the night on a pot nobody knew was the final one.
+            room["lastHandNumber"] = room["handNumber"] + (
+                0 if room["phase"] == "hand" else 1
+            )
+            room["lastHand"] = True
+        elif body.action == "keep-playing":
+            if room["phase"] == "finished":
+                raise fastapi.HTTPException(
+                    400, "The placings are written. Start a new table."
+                )
+            room["lastHand"] = False
+            room["lastHandNumber"] = None
         else:
+            raise fastapi.HTTPException(400, f"Unknown table control: {body.action}")
+
+        if room["phase"] != "handover":
             room["autoDealAt"] = None
+        _keep_receipt(room, body.requestId, {})
         await save_room(room)
         return _build_view(room, body.playerId)
 

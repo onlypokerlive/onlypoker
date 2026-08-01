@@ -25,6 +25,9 @@ const ANTE_MODES = [
 /** How often to blow a hand up. Kept to a few sane choices. */
 const BOMB_POT_CHOICES = [0, 10, 20] as const
 
+/** How often the table stops, in blind levels. */
+const BREAK_CHOICES = [0, 3, 5] as const
+
 export function CreateRoomForm() {
   const router = useRouter()
   const [roomName, setRoomName] = useState('Friday Night Poker')
@@ -38,6 +41,7 @@ export function CreateRoomForm() {
   const [straddle, setStraddle] = useState(false)
   const [bombPotEvery, setBombPotEvery] = useState(0)
   const [sevenDeuce, setSevenDeuce] = useState(0)
+  const [breakEveryLevels, setBreakEveryLevels] = useState(0)
   const [password, setPassword] = useState('')
   const [error, setError] = useState<string | null>(null)
   const [loading, setLoading] = useState(false)
@@ -75,6 +79,8 @@ export function CreateRoomForm() {
         straddle,
         bombPotEvery,
         sevenDeuce,
+        breakEveryLevels,
+        breakMinutes: 5,
       })
       saveSession(session)
       router.push(`/room/${session.roomId}`)
@@ -223,6 +229,31 @@ export function CreateRoomForm() {
             </FieldDescription>
           </Field>
         </div>
+
+        <Field>
+          <FieldLabel>Breaks</FieldLabel>
+          {/* The blinds stop climbing while the table is stopped, which is the
+              only thing that makes a break a break. Said out loud on the
+              screen where the host decides it. */}
+          <div className="flex items-center gap-2">
+            {BREAK_CHOICES.map((n) => (
+              <Button
+                key={n}
+                type="button"
+                variant={breakEveryLevels === n ? 'secondary' : 'outline'}
+                onClick={() => setBreakEveryLevels(n)}
+                className="flex-1"
+              >
+                {n === 0 ? 'No breaks' : `Every ${n} levels`}
+              </Button>
+            ))}
+          </div>
+          <FieldDescription>
+            {breakEveryLevels
+              ? `Five minutes off every ${breakEveryLevels} levels. The blinds stay where they are until everyone is back.`
+              : 'You can still stop the table whenever you like.'}
+          </FieldDescription>
+        </Field>
 
         <Field>
           <FieldLabel>House rules</FieldLabel>

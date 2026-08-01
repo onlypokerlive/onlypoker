@@ -498,7 +498,7 @@ def test_host_can_pause_and_resume_dealing(client, clock):
     fold_until_hand_over(client, room_id, ids)
 
     res = client.post(
-        f"/api/rooms/{room_id}/autodeal",
+        f"/api/rooms/{room_id}/table",
         headers=auth(ids[0]),
         json={"playerId": ids[0], "action": "pause"}
     )
@@ -508,10 +508,10 @@ def test_host_can_pause_and_resume_dealing(client, clock):
     clock.advance(60)
     view = state(client, room_id, ids[0])
     assert view["room"]["phase"] == "handover"  # still waiting, as asked
-    assert view["room"]["autoDealPaused"] is True
+    assert view["room"]["paused"] is True
 
     client.post(
-        f"/api/rooms/{room_id}/autodeal",
+        f"/api/rooms/{room_id}/table",
         headers=auth(ids[0]),
         json={"playerId": ids[0], "action": "resume"}
     )
@@ -522,7 +522,7 @@ def test_host_can_pause_and_resume_dealing(client, clock):
 def test_only_the_host_can_pause_dealing(client, clock):
     room_id, ids = table(client, 2)
     res = client.post(
-        f"/api/rooms/{room_id}/autodeal",
+        f"/api/rooms/{room_id}/table",
         headers=auth(ids[1]),
         json={"playerId": ids[1], "action": "pause"}
     )
@@ -2197,6 +2197,176 @@ def test_a_table_from_before_the_credential_split_closes_every_door(client, cloc
 
 
 # --------------------------------------------------------------------------- #
+# Stopping the table
+# --------------------------------------------------------------------------- #
+def control(client, room_id, host, action):
+    return client.post(
+        f"/api/rooms/{room_id}/table",
+        headers=auth(host),
+        json={"playerId": host, "action": action},
+    )
+
+
+def test_pausing_holds_the_blind_clock_still(client, clock):
+    """The whole point of a break, and the thing that was missing.
+
+    There is no counter to stop — the level is projected from when it started,
+    every time anybody asks — so pausing has to hold the clock still rather
+    than stop decrementing something. Done wrong, twenty minutes for a pizza
+    comes back three levels higher, which is the difference between a break and
+    an ambush.
+    """
+    room_id, ids = table(client, 2, levelMinutes=10, actionSeconds=0)
+    start(client, room_id, ids[0])
+    clock.advance(60 * 4)  # four minutes into a ten-minute level
+
+    before = state(client, room_id, ids[0])["level"]
+    assert before["secondsLeft"] == 60 * 6
+    assert control(client, room_id, ids[0], "pause").status_code == 200
+
+    clock.advance(60 * 20)  # the pizza arrives
+    paused = state(client, room_id, ids[0])["level"]
+    assert paused["number"] == before["number"]
+    assert paused["secondsLeft"] == before["secondsLeft"]
+
+    control(client, room_id, ids[0], "resume")
+    back = state(client, room_id, ids[0])["level"]
+    assert back["number"] == before["number"]
+    # Exactly what was left, not a whole level and not none of it.
+    assert back["secondsLeft"] == pytest.approx(before["secondsLeft"], abs=1)
+
+    # And it runs again from there: six more minutes finishes the level.
+    clock.advance(60 * 6 + 1)
+    running = state(client, room_id, ids[0])["level"]
+    assert running["number"] == before["number"], "mid-hand the old level stands"
+    assert running["pending"]["number"] == before["number"] + 1
+
+
+def test_a_scheduled_break_stops_the_table_by_itself(client, clock):
+    room_id, ids = table(
+        client, 3, levelMinutes=1, actionSeconds=0, breakEveryLevels=2, breakMinutes=5
+    )
+    start(client, room_id, ids[0])
+    fold_until_hand_over(client, room_id, ids)
+
+    clock.advance(60 * 2 + 1)  # two levels done: the break falls here
+    view = state(client, room_id, ids[0])
+    assert view["room"]["paused"] is True
+    assert view["breakUntil"] == pytest.approx(clock.now + 5 * 60)
+    assert view["room"]["phase"] == "handover", "a break never interrupts a hand"
+
+    # It ends on its own, without the host having to do anything.
+    clock.advance(5 * 60 + 1)
+    view = state(client, room_id, ids[0])
+    assert view["room"]["paused"] is False
+    assert view["breakUntil"] is None
+
+    clock.advance(main.AUTO_DEAL_SECONDS + 1)
+    assert state(client, room_id, ids[0])["room"]["phase"] == "hand"
+
+
+def test_a_long_gap_does_not_bank_up_two_breaks(client, clock):
+    """Nobody wants two breaks back to back because the pizza arrived late."""
+    room_id, ids = table(
+        client, 3, levelMinutes=1, actionSeconds=0, breakEveryLevels=1, breakMinutes=2
+    )
+    start(client, room_id, ids[0])
+    fold_until_hand_over(client, room_id, ids)
+    clock.advance(60 * 5 + 1)  # five levels' worth of chatting
+
+    state(client, room_id, ids[0])  # the break lands
+    clock.advance(2 * 60 + 1)
+    state(client, room_id, ids[0])  # and ends
+    clock.advance(main.AUTO_DEAL_SECONDS + 1)
+    view = state(client, room_id, ids[0])
+    assert view["room"]["phase"] == "hand", "back to poker, not straight into another"
+    assert view["room"]["paused"] is False
+
+
+def test_the_last_hand_is_the_one_being_played(client, clock):
+    """Called during a hand, "last hand" means this one."""
+    room_id, ids = table(client, 3, actionSeconds=0, levelMinutes=0)
+    start(client, room_id, ids[0])
+    dealt = state(client, room_id, ids[0])["room"]["handNumber"]
+    assert control(client, room_id, ids[0], "last-hand").status_code == 200
+    assert state(client, room_id, ids[0])["room"]["lastHand"] is True
+
+    fold_until_hand_over(client, room_id, ids)
+    clock.advance(main.AUTO_DEAL_SECONDS + 1)
+    view = state(client, room_id, ids[0])
+    assert view["room"]["phase"] == "finished"
+    assert view["room"]["handNumber"] == dealt, "no hand after the last one"
+    # Nobody was knocked out, so the placings come from the stacks.
+    chips = [s["chips"] for s in view["standings"]]
+    assert chips == sorted(chips, reverse=True)
+    assert len(view["standings"]) == 3
+
+
+def test_called_between_hands_there_is_one_more(client, clock):
+    """Which is what a host saying "last hand" at the table means.
+
+    Ending on the pot that just finished would close the night on a hand nobody
+    knew was the final one.
+    """
+    room_id, ids = table(client, 3, actionSeconds=0, levelMinutes=0)
+    start(client, room_id, ids[0])
+    fold_until_hand_over(client, room_id, ids)
+    played = state(client, room_id, ids[0])["room"]["handNumber"]
+    control(client, room_id, ids[0], "last-hand")
+
+    clock.advance(main.AUTO_DEAL_SECONDS + 1)
+    view = state(client, room_id, ids[0])
+    assert view["room"]["phase"] == "hand"
+    assert view["room"]["handNumber"] == played + 1
+
+    fold_until_hand_over(client, room_id, ids)
+    clock.advance(main.AUTO_DEAL_SECONDS + 1)
+    assert state(client, room_id, ids[0])["room"]["phase"] == "finished"
+
+
+def test_the_host_can_take_the_last_hand_back(client, clock):
+    room_id, ids = table(client, 3, actionSeconds=0, levelMinutes=0)
+    start(client, room_id, ids[0])
+    control(client, room_id, ids[0], "last-hand")
+    control(client, room_id, ids[0], "keep-playing")
+    assert state(client, room_id, ids[0])["room"]["lastHand"] is False
+
+    fold_until_hand_over(client, room_id, ids)
+    clock.advance(main.AUTO_DEAL_SECONDS + 1)
+    assert state(client, room_id, ids[0])["room"]["phase"] == "hand"
+
+
+def test_dealing_by_hand_cannot_unsay_the_last_hand(client, clock):
+    """The whole table was told. The Deal button must not quietly undo it."""
+    room_id, ids = table(client, 3, actionSeconds=0, levelMinutes=0)
+    start(client, room_id, ids[0])
+    control(client, room_id, ids[0], "last-hand")
+    fold_until_hand_over(client, room_id, ids)
+
+    res = start(client, room_id, ids[0])
+    assert res.status_code == 400
+    assert "last hand" in res.json()["detail"]
+    assert state(client, room_id, ids[0])["room"]["phase"] == "finished"
+
+
+def test_only_the_host_stops_the_table(client, clock):
+    room_id, ids = table(client, 3)
+    assert control(client, room_id, ids[1], "pause").status_code == 403
+    assert control(client, room_id, ids[1], "last-hand").status_code == 403
+
+
+def test_an_unknown_table_control_is_refused(client, clock):
+    room_id, ids = table(client, 2)
+    res = control(client, room_id, ids[0], "burn-it-down")
+    assert res.status_code == 400
+    assert not _is_paused_in_store(client, room_id)
+
+
+def _is_paused_in_store(client, room_id):
+    return main._is_paused(client.portal.call(main.load_room, room_id))
+
+
+# --------------------------------------------------------------------------- #
 # What the room owes the clock
 # --------------------------------------------------------------------------- #
 def settle_the_schedule(room, rounds=8):
@@ -2246,7 +2416,7 @@ def test_a_paused_table_asks_nothing_of_the_clock(client, clock):
     start(client, room_id, ids[0])
     fold_until_hand_over(client, room_id, ids)
     client.post(
-        f"/api/rooms/{room_id}/autodeal",
+        f"/api/rooms/{room_id}/table",
         headers=auth(ids[0]),
         json={"playerId": ids[0], "action": "pause"},
     )

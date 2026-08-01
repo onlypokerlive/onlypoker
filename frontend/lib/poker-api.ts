@@ -109,8 +109,13 @@ export interface RoomView {
     levelMinutes: number
     /** Pause between hands before the next is dealt automatically. */
     autoDealSeconds: number
-    /** The host stopped automatic dealing. */
-    autoDealPaused: boolean
+    /** The table is stopped: no deals, and the blind clock is held still. */
+    paused: boolean
+    /** Stop the table every N blind levels. 0 turns scheduled breaks off. */
+    breakEveryLevels: number
+    breakMinutes: number
+    /** No hand after this one. Everybody is told, not just the host. */
+    lastHand: boolean
     /** Dead money each hand, already scaled to this level. */
     ante: number
     anteMode: 'off' | 'bb' | 'all'
@@ -140,6 +145,8 @@ export interface RoomView {
   actionDeadline: number | null
   /** Absolute server time (seconds) when the next hand deals itself. */
   autoDealAt: number | null
+  /** When the table starts itself again, or null if it is not on a break. */
+  breakUntil: number | null
   /** Server clock at the moment this view was built, for skew correction. */
   serverTime: number
   /**
@@ -182,7 +189,8 @@ export interface GameView {
   actionSeconds: number
   levelMinutes: number
   autoDealSeconds: number
-  autoDealPaused: boolean
+  paused: boolean
+  lastHand: boolean
   ante: number
   bombPot: boolean
   players: PlayerView[]
@@ -206,6 +214,7 @@ export interface GameView {
   actionDeadlineMs: number | null
   levelEndsAtMs: number | null
   autoDealAtMs: number | null
+  breakEndsAtMs: number | null
   message: string | null
   legal: {
     canFold: boolean
@@ -254,6 +263,7 @@ export function toGameView(v: RoomView, playerId: string | null): GameView {
   const actionDeadlineMs =
     v.actionDeadline != null ? v.actionDeadline * 1000 + skewMs : null
   const autoDealAtMs = v.autoDealAt != null ? v.autoDealAt * 1000 + skewMs : null
+  const breakEndsAtMs = v.breakUntil != null ? v.breakUntil * 1000 + skewMs : null
   const levelEndsAtMs =
     v.level?.secondsLeft != null ? Date.now() + v.level.secondsLeft * 1000 : null
 
@@ -269,7 +279,8 @@ export function toGameView(v: RoomView, playerId: string | null): GameView {
     actionSeconds: v.room.actionSeconds,
     levelMinutes: v.room.levelMinutes,
     autoDealSeconds: v.room.autoDealSeconds,
-    autoDealPaused: v.room.autoDealPaused,
+    paused: v.room.paused,
+    lastHand: v.room.lastHand,
     ante: v.room.ante,
     bombPot: v.room.bombPot,
     players,
@@ -290,6 +301,7 @@ export function toGameView(v: RoomView, playerId: string | null): GameView {
     actionDeadlineMs,
     levelEndsAtMs,
     autoDealAtMs,
+    breakEndsAtMs,
     message: resultsMessage(v.lastResults, players),
     legal,
   }
@@ -359,7 +371,13 @@ export interface CreateRoomInput {
   bombPotEvery: number
   /** Big blinds each player owes whoever wins with 7-2 offsuit. 0 is off. */
   sevenDeuce: number
+  /** Stop the table every N blind levels. 0 turns scheduled breaks off. */
+  breakEveryLevels: number
+  breakMinutes: number
 }
+
+/** What the host can do to the table itself, as opposed to to a hand. */
+export type TableControl = 'pause' | 'resume' | 'last-hand' | 'keep-playing'
 
 /** Blind structures, as a choice of how fast the night should go. */
 export const BLIND_STRUCTURES = [
@@ -533,11 +551,27 @@ export const pokerApi = {
       }),
     }),
 
-  setAutoDeal: (roomId: string, playerId: string, paused: boolean, token?: string) =>
-    req<RoomView>(`/api/rooms/${roomId}/autodeal`, {
+  /**
+   * Host only: stop the table, start it again, or call the last hand.
+   *
+   * Named after the state being asked for and the hand it was asked during, so
+   * a tap repeated because nothing seemed to happen does not undo itself.
+   */
+  controlTable: (
+    roomId: string,
+    playerId: string,
+    action: TableControl,
+    handNumber: number,
+    token?: string,
+  ) =>
+    req<RoomView>(`/api/rooms/${roomId}/table`, {
       method: 'POST',
       headers: auth(token),
-      body: JSON.stringify({ playerId, action: paused ? 'pause' : 'resume' }),
+      body: JSON.stringify({
+        playerId,
+        action,
+        requestId: `t:${handNumber}:${action}`,
+      }),
     }),
 }
 
