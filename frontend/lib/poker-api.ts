@@ -158,6 +158,12 @@ export interface RoomView {
   sevenDeucePending: boolean
   /** The decision on the table is being paid for out of the actor's bank. */
   bankRunning: boolean
+  /**
+   * What *you* have said you will do when your turn arrives, and nobody
+   * else's — a table that could see who has already folded in advance would be
+   * playing a different game.
+   */
+  preAction: PreAction | null
   level: LevelView | null
   /** Absolute server time (seconds) when the current decision expires. */
   actionDeadline: number | null
@@ -214,6 +220,8 @@ export interface GameView {
   addOn: boolean
   /** The countdown on screen is the actor's time bank, not the shot clock. */
   bankRunning: boolean
+  /** What you have already said you will do when your turn comes. */
+  preAction: PreAction | null
   ante: number
   bombPot: boolean
   players: PlayerView[]
@@ -308,6 +316,7 @@ export function toGameView(v: RoomView, playerId: string | null): GameView {
     rebuyOpen: v.room.rebuyOpen,
     addOn: v.room.addOn,
     bankRunning: !!v.bankRunning,
+    preAction: v.preAction ?? null,
     ante: v.room.ante,
     bombPot: v.room.bombPot,
     players,
@@ -415,6 +424,16 @@ export interface CreateRoomInput {
   /** Extra seconds each player gets for the whole tournament. 0 is off. */
   timeBankSeconds: number
 }
+
+/**
+ * What you can decide before your turn arrives.
+ *
+ * None of them names an amount, deliberately: "call 100" would have to be
+ * invalidated the moment somebody raises to 300, and getting that wrong pays a
+ * price the player never accepted. All three are defined against whatever the
+ * situation turns out to be.
+ */
+export type PreAction = 'check' | 'check-fold' | 'call-any'
 
 /** What the host can do to the table itself, as opposed to to a hand. */
 export type TableControl = 'pause' | 'resume' | 'last-hand' | 'keep-playing'
@@ -571,6 +590,28 @@ export const pokerApi = {
         // Named after the purchase and the hand it was made at: tapping twice
         // because nothing seemed to happen must not buy two.
         requestId: `b:${playerId}:${handNumber}:${what}`,
+      }),
+    }),
+
+  /**
+   * Say now what you want to do when your turn arrives, or `clear` to take it
+   * back. Fires once and is then gone.
+   */
+  setPreAction: (
+    roomId: string,
+    playerId: string,
+    action: PreAction | 'clear',
+    handNumber: number,
+    token?: string,
+  ) =>
+    req<RoomView>(`/api/rooms/${roomId}/preaction`, {
+      method: 'POST',
+      headers: auth(token),
+      body: JSON.stringify({
+        playerId,
+        action,
+        handNumber,
+        requestId: `p:${playerId}:${handNumber}:${action}`,
       }),
     }),
 

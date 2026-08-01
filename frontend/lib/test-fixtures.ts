@@ -62,6 +62,7 @@ export function gameView(overrides: Partial<GameView> = {}): GameView {
     rebuyOpen: false,
     addOn: false,
     bankRunning: false,
+    preAction: null,
     ante: 0,
     bombPot: false,
     players: [you, player()],

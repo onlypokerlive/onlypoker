@@ -18,6 +18,7 @@ import { HelpSheet } from "@/components/help-sheet"
 import { HostPanel } from "@/components/host-panel"
 import { TableBreak } from "@/components/table-break"
 import { BuyChips } from "@/components/buy-chips"
+import { PreActions } from "@/components/pre-actions"
 import { TournamentResults } from "@/components/tournament-results"
 import { useSecondsLeft } from "@/lib/use-countdown"
 import { useTableEvents } from "@/lib/use-table-events"
@@ -365,15 +366,26 @@ export function RoomClient({ roomId }: { roomId: string }) {
                 )}
               </>
             ) : (
-              <ActionBar
-                view={view}
-                onAction={handleAction}
-                busy={busy}
-                // Passed whoever is on the clock, not just you: knowing the
-                // player you are waiting on has seven seconds left is the
-                // difference between waiting and wondering.
-                secondsLeft={secondsLeft}
-              />
+              <>
+                {/* Above the buttons, where the decision would have been made
+                    anyway. Renders nothing on your own turn — planning your
+                    turn is not planning, it is acting by a second route. */}
+                <PreActions
+                  view={view}
+                  roomId={roomId}
+                  onDone={refresh}
+                  session={session}
+                />
+                <ActionBar
+                  view={view}
+                  onAction={handleAction}
+                  busy={busy}
+                  // Passed whoever is on the clock, not just you: knowing the
+                  // player you are waiting on has seven seconds left is the
+                  // difference between waiting and wondering.
+                  secondsLeft={secondsLeft}
+                />
+              </>
             )}
           </div>
         </>

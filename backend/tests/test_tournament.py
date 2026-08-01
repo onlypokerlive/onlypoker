@@ -2203,6 +2203,207 @@ def test_a_table_from_before_the_credential_split_closes_every_door(client, cloc
 
 
 # --------------------------------------------------------------------------- #
+# Deciding before your turn
+# --------------------------------------------------------------------------- #
+def plan(client, room_id, player_id, action, hand=None):
+    return client.post(
+        f"/api/rooms/{room_id}/preaction",
+        headers=auth(player_id),
+        json={
+            "playerId": player_id,
+            "action": action,
+            "handNumber": hand_number(client, room_id) if hand is None else hand,
+        },
+    )
+
+
+def waiting_on(client, room_id):
+    return state(client, room_id, client.portal.call(main.load_room, room_id)["hostId"])[
+        "actorId"
+    ]
+
+
+def next_to_act(client, room_id, actor):
+    """Whoever the engine will ask after ``actor``, without asking it twice."""
+    room = client.portal.call(main.load_room, room_id)
+    order = room["handPlayerIds"]
+    return order[(order.index(actor) + 1) % len(order)]
+
+
+def test_a_plan_is_carried_out_on_somebody_elses_poll(client, clock):
+    """Nothing runs in the background, so this is the only way it can work —
+    and it is the same way the shot clock already works."""
+    room_id, ids = table(client, 3, actionSeconds=30, levelMinutes=0)
+    start(client, room_id, ids[0])
+    actor = waiting_on(client, room_id)
+    planner = next_to_act(client, room_id, actor)
+
+    assert plan(client, room_id, planner, "call-any").status_code == 200
+    assert act(client, room_id, actor, "call").status_code == 200
+
+    # No poll from the planner, and no clock expiring: their turn came and went.
+    view = state(client, room_id, ids[0])
+    assert view["actorId"] != planner
+
+
+def test_a_plan_beats_the_shot_clock(client, clock):
+    """A player who has already decided is not out of time. Running the clock
+    first would fold a hand they told us they wanted to play."""
+    room_id, ids = table(client, 3, actionSeconds=20, timeBankSeconds=0)
+    start(client, room_id, ids[0])
+    actor = waiting_on(client, room_id)
+    planner = next_to_act(client, room_id, actor)
+    plan(client, room_id, planner, "call-any")
+
+    clock.advance(60)  # the clock is long gone by the time anybody looks
+    act(client, room_id, actor, "call")
+    room = client.portal.call(main.load_room, room_id)
+    seat = room["handPlayerIds"].index(planner)
+    assert seat not in room["foldedSeats"], "called, not folded"
+    assert seat not in room["timedOutSeats"]
+
+
+def test_a_plain_check_lapses_when_somebody_bets(client, clock):
+    """The instruction was for a free card. This is not that, so the player is
+    asked rather than committed to something they did not agree to."""
+    room_id, ids = table(client, 3, actionSeconds=0, levelMinutes=0)
+    start(client, room_id, ids[0])
+    actor = waiting_on(client, room_id)
+    planner = next_to_act(client, room_id, actor)
+    plan(client, room_id, planner, "check")
+
+    legal = state(client, room_id, actor)["legal"]
+    act(client, room_id, actor, "raise", legal["minRaise"])
+
+    view = state(client, room_id, ids[0])
+    assert view["actorId"] == planner, "asked, not folded and not called"
+    assert state(client, room_id, planner)["preAction"] is None
+
+
+def test_check_fold_folds_into_a_bet_and_checks_when_it_is_free(client, clock):
+    room_id, ids = table(client, 3, actionSeconds=0, levelMinutes=0)
+    start(client, room_id, ids[0])
+    actor = waiting_on(client, room_id)
+    planner = next_to_act(client, room_id, actor)
+    plan(client, room_id, planner, "check-fold")
+
+    legal = state(client, room_id, actor)["legal"]
+    act(client, room_id, actor, "raise", legal["minRaise"])
+
+    room = client.portal.call(main.load_room, room_id)
+    state(client, room_id, ids[0])
+    room = client.portal.call(main.load_room, room_id)
+    assert room["handPlayerIds"].index(planner) in room["foldedSeats"]
+
+
+def test_a_plan_is_for_one_decision_not_for_the_rest_of_the_hand(client, clock):
+    room_id, ids = table(client, 3, actionSeconds=0, levelMinutes=0)
+    start(client, room_id, ids[0])
+    actor = waiting_on(client, room_id)
+    planner = next_to_act(client, room_id, actor)
+    plan(client, room_id, planner, "call-any")
+    act(client, room_id, actor, "call")
+    state(client, room_id, ids[0])
+
+    assert state(client, room_id, planner)["preAction"] is None
+    room = client.portal.call(main.load_room, room_id)
+    assert "preAction" not in room["players"][planner]
+
+
+def test_three_plans_resolve_in_one_go(client, clock):
+    """The whole point is pace. Resolving one per poll would take three and a
+    half seconds to do what should be instant."""
+    # A bomb pot starts on the flop with nobody facing anything, which is the
+    # cleanest way to have three players in a row who can all check.
+    room_id, ids = table(client, 3, actionSeconds=0, levelMinutes=0, bombPotEvery=1)
+    start(client, room_id, ids[0])
+    actor = waiting_on(client, room_id)
+    for pid in ids:
+        if pid != actor:
+            assert plan(client, room_id, pid, "check").status_code == 200
+
+    act(client, room_id, actor, "call")  # a check, in the engine's vocabulary
+    before = client.portal.call(main.load_room, room_id)["turnId"]
+
+    state(client, room_id, ids[0])
+    room = client.portal.call(main.load_room, room_id)
+    # One tick, one saved state — the rest of the street went round inside it.
+    assert room["turnId"] == before + 1
+    assert len(main.poker.board_cards(main.poker.loads(room["stateB64"]))) == 4
+
+
+def test_a_plan_never_carries_into_the_next_hand(client, clock):
+    room_id, ids = table(client, 3, actionSeconds=0, levelMinutes=0)
+    start(client, room_id, ids[0])
+    actor = waiting_on(client, room_id)
+    planner = next_to_act(client, room_id, actor)
+    hand = hand_number(client, room_id)
+    plan(client, room_id, planner, "call-any")
+
+    # A plan made for a hand that ends before it fires is simply gone.
+    fold_until_hand_over(client, room_id, ids)
+    clock.advance(main.AUTO_DEAL_SECONDS + 1)
+    state(client, room_id, ids[0])
+    assert hand_number(client, room_id) == hand + 1
+    assert state(client, room_id, planner)["preAction"] is None
+
+    stale = plan(client, room_id, planner, "call-any", hand=hand)
+    assert stale.status_code == 409
+
+
+def test_a_plan_is_nobody_elses_business(client, clock):
+    """Half the information in poker is what somebody has not decided yet."""
+    room_id, ids = table(client, 3, actionSeconds=0, levelMinutes=0)
+    start(client, room_id, ids[0])
+    actor = waiting_on(client, room_id)
+    planner = next_to_act(client, room_id, actor)
+    plan(client, room_id, planner, "check-fold")
+
+    assert state(client, room_id, planner)["preAction"] == "check-fold"
+    for watcher in ids:
+        if watcher != planner:
+            assert state(client, room_id, watcher)["preAction"] is None
+    body = client.get(
+        f"/api/rooms/{room_id}/state",
+        params={"playerId": actor},
+        headers=auth(actor),
+    ).text
+    assert "check-fold" not in body
+
+
+def test_a_plan_can_be_taken_back(client, clock):
+    room_id, ids = table(client, 3, actionSeconds=0, levelMinutes=0)
+    start(client, room_id, ids[0])
+    actor = waiting_on(client, room_id)
+    planner = next_to_act(client, room_id, actor)
+    plan(client, room_id, planner, "call-any")
+    assert plan(client, room_id, planner, "clear").status_code == 200
+    assert state(client, room_id, planner)["preAction"] is None
+
+    act(client, room_id, actor, "call")
+    assert waiting_on(client, room_id) == planner
+
+
+def test_you_cannot_plan_your_way_through_your_own_turn(client, clock):
+    """That is not a plan, it is an action — and a second way to make the same
+    decision, racing the first."""
+    room_id, ids = table(client, 3, actionSeconds=0, levelMinutes=0)
+    start(client, room_id, ids[0])
+    actor = waiting_on(client, room_id)
+    res = plan(client, room_id, actor, "call-any")
+    assert res.status_code == 409
+    assert "your turn" in res.json()["detail"]
+
+
+def test_an_unknown_plan_is_refused(client, clock):
+    room_id, ids = table(client, 3, actionSeconds=0, levelMinutes=0)
+    start(client, room_id, ids[0])
+    actor = waiting_on(client, room_id)
+    planner = next_to_act(client, room_id, actor)
+    assert plan(client, room_id, planner, "call-100").status_code == 400
+
+
+# --------------------------------------------------------------------------- #
 # The time bank
 # --------------------------------------------------------------------------- #
 def bank_of(client, room_id, player_id):

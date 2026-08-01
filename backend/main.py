@@ -1039,6 +1039,11 @@ def _start_hand(room: dict[str, Any]) -> None:
     # Cards players chose to turn over last hand. Showing is for the hand it
     # belongs to; a new deal takes them back off the table.
     room["shownSeats"] = {}
+    # A plan is for the hand it was made during. New cards, no plans — the
+    # check that reads them enforces this anyway, but leaving them lying about
+    # is a shape somebody will eventually trust.
+    for player in room["players"].values():
+        player.pop("preAction", None)
     room["sevenDeucePaid"] = False
     room["sevenDeuceWin"] = None
     _save_state(room, state)
@@ -1300,6 +1305,45 @@ def _finish_tournament(room: dict[str, Any], by_chips: bool = False) -> None:
     room["autoDealAt"] = None
 
 
+# --------------------------------------------------------------------------- #
+# Deciding before your turn
+# --------------------------------------------------------------------------- #
+# The single biggest thing that can be done for the pace of a hand, and the one
+# place in this system where a bug takes chips off somebody who never agreed to
+# lose them. Both halves of that are worth being careful about.
+#
+# The care is in *what is offered*, not only in how it is stored. A pre-action
+# that names an amount — "call 100" — has to be invalidated the moment somebody
+# raises to 300, and getting that wrong pays a price the player never accepted.
+# So no option here names an amount. All three are defined against whatever the
+# situation turns out to be:
+#
+#   check      I want the next card if it is free. If somebody bets, wake me.
+#   check-fold I want the next card if it is free, and I am done if it is not.
+#   call-any   Whatever it costs. That is the intent, stated by the player.
+#
+# There is nothing left to invalidate, because there is no number to be wrong
+# about. "Call 100" is the option that would need it, and it is the option that
+# is not here.
+#
+# What is still stored is which hand it was set during, because a plan for this
+# hand must never fire in the next one, and which turn, because arming one for
+# a turn that is already yours is a second way to act on the same decision.
+#
+# They fire on somebody else's poll, the same way the shot clock does, and they
+# beat the shot clock: a player who has already decided is not "out of time".
+PRE_ACTIONS = ("check", "check-fold", "call-any")
+
+
+def _pre_action_for(room: dict[str, Any], player_id: str | None) -> str | None:
+    """The standing instruction for this player on this hand, if it still holds."""
+    player = room["players"].get(player_id or "")
+    plan = (player or {}).get("preAction")
+    if not plan or plan.get("handNumber") != room.get("handNumber"):
+        return None
+    return plan.get("action")
+
+
 def _open_the_time_bank(room: dict[str, Any], now: float) -> bool:
     """Spend the actor's bank instead of playing the hand for them.
 
@@ -1456,6 +1500,18 @@ def _scheduled_leaver(room: dict[str, Any]) -> float | None:
     return 0.0 if room["players"].get(actor, {}).get("leaving") else None
 
 
+def _scheduled_preaction(room: dict[str, Any]) -> float | None:
+    """Whether the player to act has already said what they want to do.
+
+    Due at once. Waiting even a second would give back the pace this exists to
+    buy, and there is nothing to wait for: the decision was made before the
+    turn arrived.
+    """
+    if room.get("phase") != "hand" or not room.get("stateB64"):
+        return None
+    return 0.0 if _pre_action_for(room, room.get("actorId")) else None
+
+
 def _scheduled_close(room: dict[str, Any]) -> float | None:
     """When a table that has run out of players finally gives up waiting."""
     return room.get("closeAt") or None
@@ -1494,6 +1550,70 @@ def _run_leaver(room: dict[str, Any]) -> bool:
     else:
         _set_action_deadline(room, state, time.time())
     return True
+
+
+def _run_preaction(room: dict[str, Any]) -> bool:
+    """Carry out standing instructions until somebody has to be asked.
+
+    Deliberately *not* one per request, which is the rule everywhere else in
+    this schedule. Three players who have all said "check" is precisely the
+    situation pre-actions exist for, and resolving one per poll would take
+    three and a half seconds to do what should be instant — giving back the
+    pace the feature is for.
+
+    Bounded at one time round the table, so a request can carry a street and
+    never a whole hand. Whoever is left is picked up by the next poll, a moment
+    later, exactly as before.
+    """
+    state = poker.loads(room["stateB64"])
+    acted = False
+    # Tracked apart from ``acted``: an instruction that lapses changes the room
+    # without moving the hand, and reporting "nothing happened" would leave it
+    # unsaved and due all over again on the next poll — for ever.
+    changed = False
+    for _ in range(len(room.get("handPlayerIds") or [])):
+        if poker.is_hand_over(state) or state.actor_index is None:
+            break
+        seat = state.actor_index
+        player_id = room["handPlayerIds"][seat]
+        plan = _pre_action_for(room, player_id)
+        if not plan:
+            break
+        legal = poker.legal_actions(state)
+        free = legal["canCheckOrCall"] and not legal["callAmount"]
+        if plan == "call-any":
+            action = "call" if legal["canCheckOrCall"] else None
+        elif free:
+            action = "call"  # a check, in the engine's vocabulary
+        elif plan == "check-fold":
+            action = "fold" if legal["canFold"] else "call"
+        else:
+            # Plain "check", and somebody bet. The instruction was for a free
+            # card, not for this, so it lapses and the player is asked.
+            action = None
+        # Used up either way: a standing instruction is for one decision, not a
+        # policy for the rest of the hand. Cleared before acting, so a failure
+        # below cannot leave it armed to fire again.
+        changed = room["players"][player_id].pop("preAction", None) is not None
+        if action is None:
+            break
+        poker.apply_action(state, action, None)
+        if action == "fold":
+            folded = room.setdefault("foldedSeats", [])
+            if seat not in folded:
+                folded.append(seat)
+        # They are at the table — more so than somebody who just answered in
+        # time, in fact. The clock's strikes go with it.
+        room["players"][player_id]["missedTurns"] = 0
+        acted = True
+
+    if acted:
+        _save_state(room, state)
+        if poker.is_hand_over(state):
+            _settle_hand(room, state)
+        else:
+            _set_action_deadline(room, state, time.time())
+    return changed or acted
 
 
 def _run_close(room: dict[str, Any]) -> bool:
@@ -1538,6 +1658,10 @@ def _run_deal(room: dict[str, Any]) -> bool:
 _SCHEDULE = (
     ("break", _scheduled_break_end, _run_break_end),
     ("leaver", _scheduled_leaver, _run_leaver),
+    # Before the clock, deliberately: a player who has already decided is not
+    # out of time, and running the clock first would fold a hand they told us
+    # they wanted to play.
+    ("preaction", _scheduled_preaction, _run_preaction),
     ("clock", _scheduled_clock, _run_clock),
     ("deal", _scheduled_deal, _run_deal),
     ("close", _scheduled_close, _run_close),
@@ -1804,6 +1928,11 @@ def _build_view(room: dict[str, Any], viewer_id: str | None) -> dict[str, Any]:
         "sevenDeuceWin": room.get("sevenDeuceWin"),
         # The bonus is there for the taking but the cards are still down.
         "sevenDeucePending": _seven_deuce_pending(room, viewer_id),
+        # What *this* viewer has said they will do, and nobody else's. A table
+        # that could see who has already folded in advance would be playing a
+        # different game: half the information in poker is what somebody has
+        # not decided yet.
+        "preAction": _pre_action_for(room, viewer_id),
         "level": _level_view(room, now),
         # Every clock is an absolute server timestamp; the client subtracts
         # serverTime to stay correct even when a device's clock is off.
@@ -2543,6 +2672,64 @@ async def take_action(
             _settle_hand(room, state)  # state kept for the showdown reveal
         else:
             _set_action_deadline(room, state, time.time())
+        _keep_receipt(room, body.requestId, {})
+        await save_room(room)
+        return _build_view(room, body.playerId)
+
+
+@app.post("/rooms/{room_id}/preaction")
+async def set_pre_action(
+    room_id: str,
+    body: ActionBody,
+    x_player_token: str | None = fastapi.Header(default=None),
+) -> dict[str, Any]:
+    """Say now what you want to do when it is your turn.
+
+    ``action`` is ``check``, ``check-fold``, ``call-any``, or ``clear`` to take
+    it back. Only for the hand being played, only while it is not already your
+    turn, and only ever until it fires once.
+
+    Read the note above ``PRE_ACTIONS`` for why no option here names an amount.
+    """
+    async with _RoomLock(room_id):
+        room = await load_room(room_id)
+        if not room:
+            raise fastapi.HTTPException(404, "Room not found.")
+        _authenticate(room, body.playerId, x_player_token)
+        if _receipt(room, body.requestId):
+            return _build_view(room, body.playerId)
+        player = room["players"][body.playerId]
+
+        if body.action == "clear":
+            player.pop("preAction", None)
+            _keep_receipt(room, body.requestId, {})
+            await save_room(room)
+            return _build_view(room, body.playerId)
+
+        if body.action not in PRE_ACTIONS:
+            raise fastapi.HTTPException(400, f"Unknown pre-action: {body.action}")
+        if room["phase"] != "hand":
+            raise fastapi.HTTPException(400, "There is no hand to plan for.")
+        if body.playerId not in (room.get("handPlayerIds") or []):
+            raise fastapi.HTTPException(403, "You are not in this hand.")
+        if body.handNumber != room["handNumber"]:
+            raise fastapi.HTTPException(409, "That hand is already over.")
+        if room.get("actorId") == body.playerId:
+            # It is already their turn, so this is not a plan — it is an
+            # action, and letting it in here would be a second way to make the
+            # same decision, racing the first.
+            raise fastapi.HTTPException(
+                409, "It is your turn — play the hand rather than planning it."
+            )
+
+        player["preAction"] = {
+            "action": body.action,
+            "handNumber": room["handNumber"],
+            # The moment it was decided at. Not used to invalidate anything —
+            # none of these instructions can go stale, by construction — but it
+            # is what a client sends back to take back the right one.
+            "turnId": int(room.get("turnId", 0)),
+        }
         _keep_receipt(room, body.requestId, {})
         await save_room(room)
         return _build_view(room, body.playerId)
