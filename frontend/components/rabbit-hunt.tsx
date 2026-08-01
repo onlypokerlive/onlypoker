@@ -5,7 +5,7 @@ import { Rabbit } from "lucide-react"
 
 import { Button } from "@/components/ui/button"
 import { PlayingCard } from "@/components/playing-card"
-import { pokerApi } from "@/lib/poker-api"
+import { pokerApi, type Session } from "@/lib/poker-api"
 
 const STREET_LABEL: Record<string, string> = {
   flop: "Flop",
@@ -27,10 +27,12 @@ export function RabbitHunt({
   roomId,
   handNumber,
   boardLength,
+  session,
 }: {
   roomId: string
   handNumber: number
   boardLength: number
+  session: Session | null
 }) {
   const [streets, setStreets] = useState<{ street: string; cards: string[] }[] | null>(null)
   const [loading, setLoading] = useState(false)
@@ -48,7 +50,7 @@ export function RabbitHunt({
   async function look() {
     setLoading(true)
     try {
-      const res = await pokerApi.rabbitHunt(roomId)
+      const res = await pokerApi.rabbitHunt(roomId, session?.token)
       setStreets(res.streets)
       setError(null)
     } catch (e) {

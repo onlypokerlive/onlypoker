@@ -405,9 +405,10 @@ export const pokerApi = {
     }),
 
   /** The board that would have come, once the hand is safely over. */
-  rabbitHunt: (roomId: string) =>
+  rabbitHunt: (roomId: string, token?: string) =>
     req<{ handNumber: number; streets: { street: string; cards: string[] }[] }>(
       `/api/rooms/${roomId}/rabbit`,
+      { headers: auth(token) },
     ),
 
   toggleSitOut: (roomId: string, playerId: string, token?: string) =>

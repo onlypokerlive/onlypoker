@@ -244,6 +244,7 @@ export function RoomClient({ roomId }: { roomId: string }) {
                 roomId={roomId}
                 handNumber={view.handNumber}
                 boardLength={view.board.length}
+                session={session}
               />
             </div>
           )}

@@ -1490,7 +1490,11 @@ def test_removing_the_second_to_last_player_ends_the_tournament(client, clock):
 # Spectators
 # --------------------------------------------------------------------------- #
 def watch(client, room_id, password="secret"):
-    return client.post(f"/api/rooms/{room_id}/watch", json={"password": password})
+    res = client.post(f"/api/rooms/{room_id}/watch", json={"password": password})
+    if res.status_code == 200:
+        out = res.json()
+        TOKENS[out["playerId"]] = out["token"]
+    return res
 
 
 def test_a_spectator_sees_the_table_but_nobody_s_cards(client, clock):
@@ -1718,7 +1722,7 @@ def test_the_rabbit_hunt_only_covers_the_streets_still_missing(client, clock):
     start(client, room_id, ids[0])
     fold_until_hand_over(client, room_id, ids)
 
-    res = client.get(f"/api/rooms/{room_id}/rabbit")
+    res = client.get(f"/api/rooms/{room_id}/rabbit", headers=auth(ids[0]))
     assert res.status_code == 200, res.text
     board = state(client, room_id, ids[0])["board"]
     expected = {0: 3, 3: 2, 4: 1, 5: 0}[len(board)]
@@ -1733,7 +1737,7 @@ def test_the_rabbit_hunt_refuses_to_run_while_anyone_can_still_act(client, clock
     """
     room_id, ids = table(client, 3, actionSeconds=0, levelMinutes=0)
     start(client, room_id, ids[0])
-    res = client.get(f"/api/rooms/{room_id}/rabbit")
+    res = client.get(f"/api/rooms/{room_id}/rabbit", headers=auth(ids[0]))
     assert res.status_code == 400
     assert "finish" in res.json()["detail"]
 
@@ -1743,7 +1747,7 @@ def test_the_rabbit_hunt_does_not_touch_the_room(client, clock):
     start(client, room_id, ids[0])
     fold_until_hand_over(client, room_id, ids)
     before = client.portal.call(main.load_room, room_id)
-    client.get(f"/api/rooms/{room_id}/rabbit")
+    client.get(f"/api/rooms/{room_id}/rabbit", headers=auth(ids[0]))
     assert client.portal.call(main.load_room, room_id) == before
 
 
@@ -1917,16 +1921,35 @@ def test_naming_a_seat_does_not_get_you_into_it(client, clock):
     room_id, ids = table(client, 3)
     start(client, room_id, ids[0])
 
-    # No password, no session — just the room code.
-    anon = client.get(f"/api/rooms/{room_id}/state").json()
-    stolen = [p["id"] for p in anon["players"]]
+    # The harder case: somebody who legitimately got in as an onlooker. They
+    # have the password, so redaction is the only thing between them and
+    # everybody's cards.
+    ticket = {main.PLAYER_TOKEN_HEADER: watch(client, room_id).json()["token"]}
+    seen = client.get(f"/api/rooms/{room_id}/state", headers=ticket).json()
+    stolen = [p["id"] for p in seen["players"]]
     assert ids[1] in stolen, "ids are public; that is the premise"
 
     impersonated = client.get(
-        f"/api/rooms/{room_id}/state", params={"playerId": ids[1]}
+        f"/api/rooms/{room_id}/state", params={"playerId": ids[1]}, headers=ticket
     ).json()
     assert impersonated["you"] is None
     assert all(p["cards"] is None for p in impersonated["players"])
+
+
+def test_the_room_code_alone_does_not_open_the_table(client, clock):
+    """The code gets forwarded and screenshotted; the password does not.
+
+    Watching through the front door asks for one, so reading the same table
+    over the API has to as well.
+    """
+    room_id, ids = table(client, 3)
+    start(client, room_id, ids[0])
+    assert client.get(f"/api/rooms/{room_id}/state").status_code == 403
+    assert client.get(f"/api/rooms/{room_id}/rabbit").status_code == 403
+    assert client.get(
+        f"/api/rooms/{room_id}/state",
+        headers={main.PLAYER_TOKEN_HEADER: "not-a-real-key"},
+    ).status_code == 403
 
 
 def test_a_borrowed_id_cannot_act(client, clock):

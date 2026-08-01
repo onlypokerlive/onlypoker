@@ -302,6 +302,37 @@ def _authenticate(room: dict[str, Any], player_id: str, token: str | None) -> No
         raise fastapi.HTTPException(403, "That is not your seat.")
 
 
+def _may_watch(room: dict[str, Any], token: str | None) -> bool:
+    """Whether this caller got past the door at all.
+
+    A room code is not a password. It gets forwarded, screenshotted and pasted
+    into group chats, and on its own it used to be enough to read the whole
+    table over the API — who is playing, what everyone has left, the board, the
+    pot. Watching through the front door asks for the password, so reading the
+    same thing through the side door has to as well.
+    """
+    if not token:
+        return False
+    watch = room.get("watchToken")
+    if watch and hmac.compare_digest(watch, token):
+        return True
+    # A seated player's own credential lets them in too, obviously.
+    return any(
+        p.get("token") and hmac.compare_digest(p["token"], token)
+        for p in room["players"].values()
+    )
+
+
+def _require_access(room: dict[str, Any], token: str | None) -> None:
+    if not room.get("watchToken"):
+        raise fastapi.HTTPException(
+            401, "This table was created before the app started checking who is "
+            "who. Start a new one — it only takes a moment."
+        )
+    if not _may_watch(room, token):
+        raise fastapi.HTTPException(403, "This table is private.")
+
+
 def _is_player(room: dict[str, Any], player_id: str | None, token: str | None) -> bool:
     """Whether the caller is a seated player, for reads that also serve guests.
 
@@ -1234,6 +1265,9 @@ async def create_room(body: CreateRoomBody) -> dict[str, Any]:
         "standings": [],
         # Seat holding the button. Advances one seat per hand; see _next_button.
         "buttonId": None,
+        # Handed to anyone who gives the password, seated or not, so that
+        # reading the table needs the same key as sitting at it.
+        "watchToken": _new_token(),
     }
     await save_room(room)
     return {
@@ -1381,6 +1415,7 @@ async def watch_room(room_id: str, body: WatchBody) -> dict[str, Any]:
     return {
         "roomId": room_id,
         "playerId": f"watch-{secrets.token_urlsafe(9)}",
+        "token": room["watchToken"],
         "isHost": False,
         "spectator": True,
     }
@@ -1452,7 +1487,10 @@ async def show_cards(
 
 
 @app.get("/rooms/{room_id}/rabbit")
-async def rabbit_hunt(room_id: str) -> dict[str, Any]:
+async def rabbit_hunt(
+    room_id: str,
+    x_player_token: str | None = fastapi.Header(default=None),
+) -> dict[str, Any]:
     """The board that would have come, once the hand is safely over.
 
     Pure curiosity — knowing the river you folded away changes nothing and is
@@ -1465,6 +1503,7 @@ async def rabbit_hunt(room_id: str) -> dict[str, Any]:
     room = await load_room(room_id)
     if not room:
         raise fastapi.HTTPException(404, "Room not found.")
+    _require_access(room, x_player_token)
     if room["phase"] not in ("handover", "finished") or not room.get("stateB64"):
         raise fastapi.HTTPException(400, "Wait for the hand to finish.")
     state = poker.loads(room["stateB64"])
@@ -1490,6 +1529,7 @@ async def get_state(
     room = await load_room(room_id)
     if not room:
         raise fastapi.HTTPException(404, "Room not found.")
+    _require_access(room, x_player_token)
 
     now = time.time()
     if not _is_player(room, playerId, x_player_token):
