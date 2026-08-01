@@ -2,6 +2,29 @@ import { createServerClient } from '@supabase/ssr'
 import { NextResponse, type NextRequest } from 'next/server'
 
 export async function updateSession(request: NextRequest) {
+  // Depending on the Supabase "Site URL" / redirect config, Google can return
+  // the user to any path (commonly `/`) with the OAuth `?code=` still attached.
+  // Only /auth/callback exchanges that code for a session, so forward any stray
+  // code there. This makes login work regardless of the exact redirect target.
+  const code = request.nextUrl.searchParams.get('code')
+  if (code && request.nextUrl.pathname !== '/auth/callback') {
+    const forwardedHost = request.headers.get('x-forwarded-host')
+    const forwardedProto = request.headers.get('x-forwarded-proto')
+    const base = forwardedHost
+      ? `${forwardedProto ?? 'https'}://${forwardedHost}`
+      : request.nextUrl.origin
+
+    const callbackUrl = new URL('/auth/callback', base)
+    callbackUrl.searchParams.set('code', code)
+    // Preserve where the user was headed (defaults to the current path).
+    const next = request.nextUrl.searchParams.get('next')
+    callbackUrl.searchParams.set(
+      'next',
+      next ?? (request.nextUrl.pathname === '/' ? '/' : request.nextUrl.pathname),
+    )
+    return NextResponse.redirect(callbackUrl)
+  }
+
   let supabaseResponse = NextResponse.next({
     request,
   })
