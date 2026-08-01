@@ -21,6 +21,7 @@ import { useSecondsLeft } from "@/lib/use-countdown"
 import { useTableEvents } from "@/lib/use-table-events"
 import { useRunout } from "@/lib/use-runout"
 import {
+  ApiError,
   pokerApi,
   toGameView,
   loadSession,
@@ -59,10 +60,13 @@ export function RoomClient({ roomId }: { roomId: string }) {
     } catch (e) {
       const msg = e instanceof Error ? e.message : "Connection lost"
       setError(msg)
-      // If the room is gone, drop the stale session.
-      if (msg.toLowerCase().includes("not found")) {
+      // A refusal is not a hiccup. The room is gone, or this device is holding
+      // a credential the table no longer accepts — removed by the host, or
+      // saved before the server started asking for one. Retrying that every
+      // 1.2 seconds shows a spinner forever; the way out is the front door.
+      if (e instanceof ApiError && e.isAuthFailure) {
         clearSession(roomId)
-        router.replace("/")
+        router.replace(e.status === 404 ? "/" : `/join/${roomId}`)
       }
     }
   }, [session, roomId, router])

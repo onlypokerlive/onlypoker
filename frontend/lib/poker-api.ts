@@ -152,8 +152,11 @@ export interface Session {
    * Proof that this seat is yours. Every id at the table is public — clients
    * need them to say whose seat is whose — so the id alone authorises nothing.
    * Never leaves this device except as a request header.
+   *
+   * Required, not optional: every way of getting a session issues one, and a
+   * session without it is refused by every request it could make.
    */
-  token?: string
+  token: string
   isHost: boolean
   /** Watching rather than playing: no seat, no chips, no cards. */
   spectator?: boolean
@@ -286,6 +289,30 @@ export function toGameView(v: RoomView, playerId: string | null): GameView {
 /** The header the backend reads a player's credential from. */
 const TOKEN_HEADER = 'X-Player-Token'
 
+/**
+ * A failed request, with the status kept.
+ *
+ * Callers need to tell "this went wrong" from "you are not allowed in here":
+ * the second one means the session on this device is no good and the player
+ * should be sent back to the door, not left staring at a spinner while the
+ * same rejected request repeats every 1.2 seconds. Matching on the message
+ * text cannot make that distinction.
+ */
+export class ApiError extends Error {
+  constructor(
+    message: string,
+    readonly status: number,
+  ) {
+    super(message)
+    this.name = 'ApiError'
+  }
+
+  /** The server refused this caller, rather than failing to serve them. */
+  get isAuthFailure() {
+    return this.status === 401 || this.status === 403 || this.status === 404
+  }
+}
+
 async function req<T>(url: string, options?: RequestInit): Promise<T> {
   const res = await fetch(url, {
     ...options,
@@ -299,7 +326,7 @@ async function req<T>(url: string, options?: RequestInit): Promise<T> {
     } catch {
       // ignore parse errors
     }
-    throw new Error(message)
+    throw new ApiError(message, res.status)
   }
   return res.json() as Promise<T>
 }
@@ -440,7 +467,14 @@ export function saveSession(session: Session) {
 export function loadSession(roomId: string): Session | null {
   try {
     const raw = localStorage.getItem(sessionKey(roomId))
-    return raw ? (JSON.parse(raw) as Session) : null
+    if (!raw) return null
+    const session = JSON.parse(raw) as Session
+    // A session without a credential is a session from before the server
+    // started asking for one. It will be refused by every request it makes, so
+    // treating it as "signed in" only buys a screen that never loads. Sending
+    // them to the door instead costs one re-join and works.
+    if (!session?.playerId || !session?.token) return null
+    return session
   } catch {
     return null
   }
