@@ -49,8 +49,14 @@ export default function RootLayout({
       className={`dark bg-background ${geistSans.variable} ${geistMono.variable} ${playfair.variable}`}
     >
       <body className="font-sans antialiased">
-        <AuthProvider>{children}</AuthProvider>
-        <Toaster />
+        <AuthProvider>
+          {children}
+          {/* Nothing was rendering these. Every `toast.error` the app has ever
+              raised — a rejected action, a lost connection, a seat that closed
+              — went nowhere, which reads as the tap not registering. Mounted
+              here so it covers every route rather than only the table. */}
+          <Toaster />
+        </AuthProvider>
         {process.env.NODE_ENV === 'production' && <Analytics />}
       </body>
     </html>

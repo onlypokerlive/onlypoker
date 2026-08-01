@@ -33,27 +33,36 @@ export function BlindClock({ view }: { view: GameView }) {
       : 0
 
   return (
-    <div className="relative flex items-center gap-3 overflow-hidden rounded-xl border border-border/60 bg-card/60 py-1.5 pl-3 pr-3">
-      <div className="flex flex-col leading-none">
-        <span className="text-[9px] font-bold uppercase tracking-widest text-muted-foreground">
+    // `shrink-0`, and the two columns inside it too.
+    //
+    // It used to be allowed to shrink, and what happened on a 320px phone is
+    // worth writing down: the right-hand column is `items-end`, so when the box
+    // was squeezed its text overflowed *leftwards* and printed the coming
+    // blinds straight over the current ones. Nothing was clipped and nothing
+    // wrapped — two numbers simply occupied the same pixels, which is the one
+    // failure mode that reads as a rendering bug rather than a tight fit. The
+    // room's name truncates instead; a name is a thing you already know.
+    <div className="relative flex shrink-0 items-center gap-2 overflow-hidden rounded-xl border border-border/60 bg-card/60 px-2 py-1">
+      <div className="flex shrink-0 flex-col leading-none">
+        <span className="whitespace-nowrap text-[8px] font-bold uppercase tracking-wider text-muted-foreground">
           {frozen ? 'Blinds' : `Level ${level.number}`}
         </span>
-        <span className="mt-1 font-mono text-sm font-bold tabular-nums text-primary">
+        <span className="mt-0.5 font-mono text-[13px] font-bold tabular-nums text-primary">
           {level.smallBlind.toLocaleString()}/{level.bigBlind.toLocaleString()}
         </span>
       </div>
 
       {!frozen && (
         <>
-          <div className="h-7 w-px bg-border" aria-hidden />
+          <div className="h-6 w-px shrink-0 bg-border" aria-hidden />
           {level.pending ? (
             // The clock ran out mid-hand: the new level starts on the next deal.
-            <div className="flex flex-col items-end leading-none">
-              <span className="flex items-center gap-1 text-[9px] font-bold uppercase tracking-widest text-primary">
+            <div className="flex shrink-0 flex-col items-end leading-none">
+              <span className="flex items-center gap-1 whitespace-nowrap text-[8px] font-bold uppercase tracking-wider text-primary">
                 <TrendingUp className="size-3" />
-                Up next hand
+                Next hand
               </span>
-              <span className="mt-1 font-mono text-sm font-bold tabular-nums text-primary">
+              <span className="mt-0.5 font-mono text-[13px] font-bold tabular-nums text-primary">
                 {level.pending.smallBlind.toLocaleString()}/
                 {level.pending.bigBlind.toLocaleString()}
               </span>
@@ -64,7 +73,7 @@ export function BlindClock({ view }: { view: GameView }) {
             </span>
           ) : secondsLeft == null ? (
             // Before the first deal there is nothing to count down yet.
-            <div className="flex flex-col items-end leading-none">
+            <div className="flex shrink-0 flex-col items-end leading-none">
               <span className="font-mono text-sm font-bold tabular-nums text-foreground">
                 {view.levelMinutes} min
               </span>
@@ -73,7 +82,7 @@ export function BlindClock({ view }: { view: GameView }) {
               </span>
             </div>
           ) : (
-            <div className="flex flex-col items-end leading-none">
+            <div className="flex shrink-0 flex-col items-end leading-none">
               <span
                 className={cn(
                   'font-mono text-sm font-bold tabular-nums',
@@ -86,7 +95,12 @@ export function BlindClock({ view }: { view: GameView }) {
               >
                 {formatClock(secondsLeft)}
               </span>
-              <span className="mt-1 text-[9px] uppercase tracking-widest text-muted-foreground">
+              {/* What comes after this level is the one thing on this bar a
+                  player can do without. At 320px the clock was the widest
+                  object on the screen and the room's name had been truncated to
+                  a single letter to pay for it — so below 360 this line goes,
+                  and the level, the blinds and the countdown stay. */}
+              <span className="mt-1 hidden text-[9px] uppercase tracking-widest text-muted-foreground min-[360px]:inline">
                 {level.next
                   ? `then ${level.next.smallBlind}/${level.next.bigBlind}`
                   : 'final level'}

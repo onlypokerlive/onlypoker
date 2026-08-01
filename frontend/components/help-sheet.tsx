@@ -19,6 +19,10 @@ const ENTRIES: { title: string; body: string }[] = [
     body: "Your hand only shows while a thumb is on it. Let go and it drops back onto the felt — so the person next to you never gets a look.",
   },
   {
+    title: "Double-tap to check",
+    body: "Anywhere on the felt, on your turn, when checking is free — the same knuckles on the table you would use in person. The buttons still work; this is just faster than finding one.",
+  },
+  {
     title: "Bet sizes",
     body: "The row above the buttons is the sizes you actually use. Preflop they are multiples of the big blind; after the flop they are fractions of the pot. Use + and − to nudge by one big blind.",
   },
@@ -27,8 +31,8 @@ const ENTRIES: { title: string; body: string }[] = [
     body: "When it runs out it checks for you if checking is free, and folds you if it is not. Miss three in a row and you are sat out until you come back.",
   },
   {
-    title: "Sitting out",
-    body: "You keep your seat and your chips, and the blinds stop reaching you. Not available heads-up — there would be nobody left to play.",
+    title: "Stepping away",
+    body: "You keep your seat and nobody waits for you — your hand is checked or folded the moment it comes round. The blinds still reach you, the same as at a real table, so a long break costs chips.",
   },
   {
     title: "After the hand",

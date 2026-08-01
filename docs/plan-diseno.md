@@ -32,6 +32,35 @@ sonidos. Es lo primero que hay que decidir porque es lo único que toca backend 
 
 ---
 
+## 0.0 · Qué se ha ejecutado ya  *(rama `feat/plan-diseno`)*
+
+| Bloque | Estado | Dónde mirarlo |
+|---|---|---|
+| **X1** · `lastAction` | ✅ | `actions[]` en la vista, con `seq` que nunca reinicia. Cinco *kinds* + bandera `allIn` en vez de los cinco del plan — ver nota abajo |
+| **X2** · botes laterales | ✅ | `pots[]` con importe y elegibles; `components/pot-display.tsx` |
+| **V1** · materia | ✅ | Tokens `[data-baize]`/`[data-deck]`, cuatro tapetes y cuatro barajas de punta a punta, `chip-stack.tsx`, naipe por esquina, tacto de botones |
+| **V2** · el refactor | ✅ | `lib/table-layout.ts` + `table-layout.test.ts` (144 aserciones). Ancla/contenido. Anillo 37/38 → **41/41** |
+| **§3** · sonidos | ✅ | 8 voces nuevas, variación ±8 %, interruptor de tres estados |
+| **V5** · turno y voz | ✅ | Anillo que se vacía, tres canales, tic solo tuyo, línea de acción `aria-live` |
+| **V3** · gestos | ◐ | **Solo el doble toque.** Faltan el *peek* por oclusión y el arrastre al descarte |
+| **V4** · movimiento | ◐ | **Solo el board carta a carta** y la rama de `prefers-reduced-motion`. Faltan las fichas en arco, la recogida y el showdown en seis tiempos |
+| **P1–P5, S1, S3–S6** | ✖ | Sin empezar, salvo la mitad de **S5**: no había `<Toaster />` montado, así que *ningún* error se veía nunca |
+
+**Cinco decisiones tomadas al ejecutar que se apartan de lo escrito:**
+
+1. **X1 sirve `kind` + `allIn` como bandera**, no `allIn` como *kind*. Alguien puede estar all-in *y* pagando, y colapsarlo pierde cuál de las dos era. Y hay un sexto *kind*, `bet`, porque «sube a 900» cuando nadie había apostado describe una mano que no ocurrió.
+2. **El anillo pasa de 37/38 a 41/41 y el asiento adelgaza a partir de siete.** No es gusto: a 320 px el anillo viejo ponía los asientos de los costados encima de un board de cinco con tres jugadores, y encima unos de otros con nueve. Lo encontró el test de §1.2 en su primera ejecución, que es exactamente para lo que estaba.
+3. **La mesa conserva su proporción y la página hace scroll.** Se probó a limitar la altura para que el asiento de abajo no quedara bajo la banda: limitarla es justo lo que provoca los solapes —nueve asientos necesitan unos 430 px de mesa— y el test lo dice en voz alta en vez de degradar en silencio. **El asiento de abajo sigue quedando bajo la banda en un móvil corto; es lo único conocido que queda feo.**
+4. **Hay una sola mesa. §1.4 pedía decidir explícitamente qué pasa con `sm:`, y la respuesta es que la mesa ancha no existía por una razón: no puede existir.** Nueve asientos de 112×124 no caben en ninguna elipse 3:2 —la altura de una mesa apaisada es menor que dos asientos apilados, así que la pareja de cada costado siempre se pisa, y los radios que más se acercan ni siquiera caben dentro de la mesa—. Se ha quitado `sm:aspect-[3/2] sm:max-w-3xl` y en pantalla ancha la mesa es *la misma*, más grande (`sm:max-w-lg`). Esto no se veía porque el modelo geométrico solo conocía la mesa vertical, que es exactamente el fallo contra el que avisaba §1.4: **el test garantizaba una invariante de una mesa que no era la que se entregaba.** Lo encontró la revisión de Codex.
+5. **El board crece a 36 px a partir de 430, no de 380.** Cinco cartas a 36 px son un bloque de 196 px y los asientos de los costados tienen que librarlo; a 390 no lo libran. Es `BIG_BOARD_AT` en `table-layout.ts`, y la matriz es quien dice que son 430.
+
+**Y dos correcciones de la revisión:**
+
+- El doble toque **exige dos pulsaciones completas** (`pointerdown` + `pointerup` sin desplazamiento), del puntero primario, sobre el paño y no sobre ninguna pieza, y se olvida al cambiar el turno. Antes bastaban dos `pointerdown` en cualquier sitio de la mesa: el comienzo de un scroll, un segundo dedo o dos toques sobre tus propias cartas pasaban un turno. Es la única acción del producto que se puede tomar sin pulsar nada, así que toda duda se resuelve hacia no disparar.
+- **Los sondeos llevan número y los atrasados se descartan.** Con `setInterval` a 1,2 s hay peticiones solapadas, y una respuesta lenta que aterrizaba después de una rápida devolvía la mesa hacia atrás y hacía que el siguiente sondeo repitiera sonidos ya emitidos. Además el marcador de agua de `seq` vive fuera de la vista anterior, que es lo único monótono de verdad.
+
+---
+
 ## 0 · Correcciones al plan de implementación
 
 Leído el código, tres premisas están desactualizadas. Las tres cambian el trabajo.
@@ -197,6 +226,91 @@ elegancia.
 3. Revisión visual en 320 / 375 / 390 / 430 a 2, 6 y 9 asientos.
 
 **Esfuerzo: M-L.** Menos de lo que temía el plan, porque la mitad ya está escrita.
+
+### 1.6 · Lo que la maqueta ya decide  *(añadido tras afilar el prototipo, v19)*
+
+El prototipo se repasó buscando lo que, copiado tal cual, se convertiría en deuda. Salieron decisiones que
+§1.3–§1.5 dan por hechas pero no concretan. Aquí quedan cerradas, para que el port sea copiar y no traducir.
+
+**(a) El orden es borrar → medir → calcular → escribir.** §1.3 pide un «orden de medición explícito»; falta
+decir que las tres fases no se pueden intercalar. En la maqueta se medía y se colocaba asiento por asiento, y
+cada inserción invalidaba el layout para la medida del siguiente. Separarlo bajó las medidas de layout de
+**97 a 40** al apostar y de **99 a 42** al cambiar de móvil, sin tocar el resultado visual.
+
+En React esto es literal: el `useLayoutEffect` **lee todo primero, en un solo bloque, y escribe después**. Si
+alguna escritura se cuela entre dos lecturas, vuelve el problema y no se nota hasta que hay nueve asientos.
+
+**(b) Las dos funciones puras, con su firma.** No leen del DOM ni escriben en él:
+
+```ts
+chipSpot(sr, pr, angle, stack, estorbos, baize, chipW): { dx, dy }
+betSpot (sr, br, angle, blocks):                        { x, y }
+```
+
+`sr` es la caja del asiento y `pr` la de la **placa** — la pila se cuelga de la placa, no del asiento, porque
+la placa es el jugador y el resto es aire. `betSpot` se llama en cadena, y cada apuesta esquiva a las
+anteriores **en su hueco nuevo**, llevado en memoria. Leerlo del DOM a mitad del recorrido hace que el
+resultado dependa del orden de iteración y de posiciones que están a punto de dejar de ser ciertas.
+
+**(c) El desempate es un coste, no una escalera de `if`.** Cuando ninguna posición candidata cumple, hay que
+elegir la menos mala — y *pisar algo* tiene que pesar más que *rozar el canto de la madera*:
+
+```
+coste = (pisa ? 100 : 0) + max(0, felt − 0.94) × 40
+```
+
+Es la misma forma que `betOffset()` ya usa con su `BOARD_WEIGHT`, así que las dos colocaciones acaban
+hablando el mismo idioma. Sin esto, en un SE con cinco cartas las pilas de los costados caen sobre el board.
+
+**(d) `stackOffset` esquiva tres cosas, no una.** §1.3 dice «nunca por encima de la placa» y eso sigue siendo
+la regla dura, pero no basta: la pila tiene que librar **las apuestas, el centro de la mesa (botes + board +
+montón) y el contenido de los asientos vecinos (placa y cartas)**. Las dos últimas faltaban y se notaba justo
+donde más duele: pantalla corta con el board completo, y manos enseñadas.
+
+**(e) La recolocación tiene un disparador más.** §1.3 lista board 3→5, número de asientos y viewport. Falta
+el que más se olvida: **cuando un asiento cambia de tamaño**. Al enseñarse una mano, las cartas pasan de 14 a
+22 píxeles y el asiento crece — y todo lo que se colocó midiéndolo queda contra una caja que ya no existe.
+Conviene una sola función (`relayout()` en la maqueta) que rehaga apuestas **y** pilas, y llamarla siempre a
+la vez: hacerlo a medias es lo que dejaba apuestas debajo de manos enseñadas.
+
+**(f) Las constantes, en un sitio.** Elipse de asientos `RX 41 / RY 40 / CY 53` (% de la zona de mesa), umbral
+de paño `0.94`, holguras `2` (pila–placa) y `5` (apuesta–asiento), deslizamiento tangencial
+`[0, ±20, ±38, ±56, ±74]` y acercamiento al dueño `[0, 10, 20, 30]`. Sueltas por el código son inencontrables;
+juntas son la mitad de `table-layout.ts`.
+
+**(g) El SE tiene un techo, y es una cesión consciente.** Con nueve asientos en 375 px, una mano enseñada a
+20×28 **choca con la placa del vecino** — los asientos están a menos de treinta píxeles. En el prototipo
+crece solo a 17×24. Es el único punto donde la pantalla obliga a ceder legibilidad; queda escrito para que no
+se redescubra a mitad de implementación.
+
+**(h) Refinamientos al test de §1.2**, que es el entregable:
+
+- La matriz tiene que incluir el estado **«mano enseñada»**, no solo board × asientos × ancho. Es el que
+  rompe, porque cambia el tamaño de las cajas.
+- El detector debe **ignorar lo invisible**. Un elemento con `opacity: 0` no tapa nada; contarlo da falsos
+  positivos y erosiona la confianza en el test. En el prototipo, los únicos solapes que quedan son 300 ms en
+  los que la mano perdedora, ya desvaneciéndose, cruza al vecino camino del muck — eso es la animación.
+- Conviene medir **durante** las transiciones, no solo en reposo. Muestreando cada 150 ms durante el showdown
+  entero salieron dos fallos que en reposo no aparecen.
+
+**(i) Tres reglas de estado que el port no puede perder:**
+
+- **El dibujo no es el estado.** Nunca parsear un número ya formateado para recuperarlo (sacar «1.800» del DOM
+  para deducir `1800`): se rompe con solo cambiar el separador de miles, y es la familia de bug que ya costó
+  una ronda entera.
+- **Una acción se aplica en un solo sitio, y el render no es ese sitio.** Cuando pintar y aplicar se mezclan,
+  o se cobra dos veces o no se cobra ninguna.
+- **Una calle a la vez.** Repartir tiene que rechazar reentradas mientras está en curso, y el control que la
+  dispara tiene que respetar ese rechazo. Sin la guarda, tres toques en «Flop» dejan doce cartas en la mesa.
+
+**(j) Semántica ya decidida, para no inventarla en el componente.** El deslizador de apuesta es
+`role="slider"` con `aria-valuemin/max/now` y un `aria-valuetext` legible («3.650 fichas · 36,5 ciegas
+grandes»), foco visible, y teclado: flechas ±1 ciega grande, Página ±10, Inicio/Fin a los topes. La línea de
+acción es `role="status" aria-live="polite"` — es el único sitio donde se dice lo que pasó mientras mirabas
+tus cartas, y sin eso no se dice a quien no la ve.
+
+Y los **nombres los escribe el jugador**: van escapados o dentro de un nodo de texto. En el repo eso es la
+diferencia entre un `<span>{name}</span>` y un agujero.
 
 ---
 

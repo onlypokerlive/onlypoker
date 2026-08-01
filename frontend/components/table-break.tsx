@@ -34,7 +34,14 @@ export function TableBreak({
 
   const scheduled = view.breakEndsAtMs != null
   return (
-    <div className="flex flex-col items-center gap-2 rounded-xl border border-accent/40 bg-accent/10 px-4 py-3 text-center">
+    // Over the felt. This is an announcement *about* the table, and it used to
+    // be a row above it — which meant the table shrank by a third to make room
+    // for the news that it had stopped. The scrim is what makes it an
+    // announcement rather than a panel: the table is still there behind it,
+    // stacks and all, which is the whole difference between stopped and broken.
+    <div className="absolute inset-0 z-30 flex items-center justify-center p-4">
+      <div className="absolute inset-0 bg-background/70 backdrop-blur-[2px]" aria-hidden />
+      <div className="relative flex w-full max-w-xs flex-col items-center gap-2 rounded-xl border border-accent/40 bg-card px-4 py-3 text-center shadow-2xl">
       <span className="flex items-center gap-2 text-sm font-bold uppercase tracking-widest text-accent">
         <Coffee className="size-4" aria-hidden />
         {scheduled ? "Break" : "Table stopped"}
@@ -57,6 +64,7 @@ export function TableBreak({
           {scheduled ? "Back early" : "Start the table"}
         </Button>
       )}
+      </div>
     </div>
   )
 }

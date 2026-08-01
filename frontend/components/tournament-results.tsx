@@ -1,7 +1,8 @@
 'use client'
 
-import { Trophy } from 'lucide-react'
+import { RotateCcw, Trophy } from 'lucide-react'
 
+import { Button } from '@/components/ui/button'
 import { cn } from '@/lib/utils'
 import type { GameView } from '@/lib/poker-api'
 
@@ -9,6 +10,44 @@ const PLACE_LABEL = ['1st', '2nd', '3rd']
 
 function ordinal(place: number): string {
   return PLACE_LABEL[place - 1] ?? `${place}th`
+}
+
+/**
+ * What to do now the night is over.
+ *
+ * Its own component, and deliberately not part of the podium above: the podium
+ * is as long as the field and scrolls, and an action at the bottom of a
+ * scrolling list is an action most people never find. This one sits below the
+ * scroll, where the app puts every other thing you press.
+ *
+ * The end of a tournament is not the end of an evening — everybody is still in
+ * the room and the chips are still on the table, so "again?" is the only thing
+ * anybody actually says at that moment. It is the one button here because
+ * leaving is what closing the tab already does.
+ */
+export function PlayAgain({
+  onPlayAgain,
+  busy = false,
+}: {
+  /** Host only. Absent for everybody else, who are told to expect it instead. */
+  onPlayAgain?: () => void
+  busy?: boolean
+}) {
+  // A table where nothing can happen and nothing says so is indistinguishable
+  // from one that has broken.
+  if (!onPlayAgain) {
+    return (
+      <p className="text-center text-xs text-muted-foreground">
+        Stay where you are — the host can deal another.
+      </p>
+    )
+  }
+  return (
+    <Button onClick={onPlayAgain} disabled={busy} className="w-full max-w-md">
+      <RotateCcw data-icon="inline-start" />
+      Play again
+    </Button>
+  )
 }
 
 /** Final table: who took the chips, and in what order everyone went out. */

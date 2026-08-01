@@ -2,7 +2,7 @@
 
 import { useEffect, useRef, useState } from 'react'
 
-import { runoutStepMs, runoutSteps } from '@/lib/runout'
+import { runoutPauseSeconds, runoutStepMs, runoutSteps } from '@/lib/runout'
 import type { GameView } from '@/lib/poker-api'
 
 /**
@@ -56,7 +56,10 @@ export function useRunout(view: GameView | null) {
 
     clearTimers()
     setHeldTo(from)
-    const step = runoutStepMs(steps.length, view.autoDealSeconds)
+    const step = runoutStepMs(
+      steps.length,
+      runoutPauseSeconds(view.autoDealAtMs, view.autoDealSeconds),
+    )
     steps.forEach((size, i) => {
       timers.current.push(
         setTimeout(() => setHeldTo(i === steps.length - 1 ? null : size), step * (i + 1)),

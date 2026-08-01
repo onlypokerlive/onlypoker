@@ -4,9 +4,11 @@ import { useRef, useState } from 'react'
 import { useRouter } from 'next/navigation'
 import { Spade, ArrowRight } from 'lucide-react'
 
+import { cn } from '@/lib/utils'
 import { IdentityPhoto } from '@/components/identity-photo'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
+import { PlayingCard } from '@/components/playing-card'
 import {
   Field,
   FieldDescription,
@@ -14,6 +16,14 @@ import {
   FieldLabel,
 } from '@/components/ui/field'
 import { BLIND_STRUCTURES, pokerApi, saveSession } from '@/lib/poker-api'
+import {
+  BAIZES,
+  DECKS,
+  DEFAULT_BAIZE,
+  DEFAULT_DECK,
+  type BaizeId,
+  type DeckId,
+} from '@/lib/table-style'
 
 /** Dead money each hand. The amount follows the big blind, so it climbs on
  *  its own and the host has one fewer number to pick. */
@@ -56,6 +66,8 @@ export function CreateRoomForm() {
   const [lateEntryLevels, setLateEntryLevels] = useState(4)
   const [rebuyLevels, setRebuyLevels] = useState(0)
   const [runItTwice, setRunItTwice] = useState(false)
+  const [baize, setBaize] = useState<BaizeId>(DEFAULT_BAIZE)
+  const [deck, setDeck] = useState<DeckId>(DEFAULT_DECK)
   const [password, setPassword] = useState('')
   const [error, setError] = useState<string | null>(null)
   const [loading, setLoading] = useState(false)
@@ -106,6 +118,8 @@ export function CreateRoomForm() {
         addOn: rebuyLevels > 0,
         timeBankSeconds: Number(actionSeconds) ? 60 : 0,
         runItTwice,
+        baize,
+        deck,
       })
       saveSession(session)
       router.push(`/room/${session.roomId}`)
@@ -403,6 +417,75 @@ export function CreateRoomForm() {
             {rebuyLevels
               ? 'Two rebuys each after busting, plus one top-up for anybody still in. Nobody is knocked out for good while the window is open.'
               : 'Bust once and you are out. The classic.'}
+          </FieldDescription>
+        </Field>
+
+        <Field>
+          <FieldLabel>The table itself</FieldLabel>
+          {/* Cosmetic, and the whole point. A group having their own table is
+              half of why they play at the same one every week — and unlike
+              every other choice on this screen, this one is visible from the
+              first second. */}
+          <div className="grid grid-cols-4 gap-2">
+            {BAIZES.map((b) => (
+              <button
+                key={b.id}
+                type="button"
+                data-baize={b.id}
+                onClick={() => setBaize(b.id)}
+                aria-pressed={baize === b.id}
+                title={b.blurb}
+                className={cn(
+                  'tactile flex flex-col items-center gap-1 rounded-lg border p-1.5',
+                  baize === b.id ? 'border-primary' : 'border-border/60',
+                )}
+              >
+                <span className="baize h-7 w-full rounded" />
+                <span className="text-[10px] text-muted-foreground">{b.label}</span>
+              </button>
+            ))}
+          </div>
+          <FieldDescription>The cloth everybody at this table plays on.</FieldDescription>
+        </Field>
+
+        <Field>
+          <FieldLabel>The deck</FieldLabel>
+          <div className="grid grid-cols-4 gap-2">
+            {DECKS.map((d) => (
+              <button
+                key={d.id}
+                type="button"
+                data-deck={d.id}
+                onClick={() => setDeck(d.id)}
+                aria-pressed={deck === d.id}
+                title={d.blurb}
+                className={cn(
+                  'tactile flex flex-col items-center gap-1 rounded-lg border p-1.5',
+                  deck === d.id ? 'border-primary' : 'border-border/60',
+                )}
+              >
+                {/* Real cards, on a scrap of felt. Comparing four decks from
+                    memory does not work — they have to be seen next to each
+                    other, printed the way they will actually be printed. */}
+                <span
+                  className="flex w-full items-center justify-center gap-0.5 rounded px-1 py-1.5"
+                  style={{
+                    background:
+                      'radial-gradient(ellipse at 50% 30%, #17604B, #08281D 88%)',
+                    boxShadow:
+                      'inset 0 0 0 1px rgba(0,0,0,.4), inset 0 2px 8px rgba(0,0,0,.5)',
+                  }}
+                >
+                  <PlayingCard card="Ah" size="xs" />
+                  <PlayingCard card="Kd" size="xs" />
+                  <PlayingCard card={null} faceDown size="xs" />
+                </span>
+                <span className="text-[10px] text-muted-foreground">{d.label}</span>
+              </button>
+            ))}
+          </div>
+          <FieldDescription>
+            The paper, the ink and the fillet — on every card, all night.
           </FieldDescription>
         </Field>
 
