@@ -1,3 +1,5 @@
+import type { BaizeId, DeckId } from '@/lib/table-style'
+
 // Shared client for the FastAPI poker backend. All requests go to /api/* which
 // Vercel routes to the Python service.
 
@@ -35,6 +37,31 @@ export interface PlayerView {
    * tell you what everyone else can see.
    */
   shownIndices: number[]
+  /**
+   * Cards you folded and asked to show, before the hand was over.
+   *
+   * Yours only, and still face down: showing while the hand is being played
+   * would hand live players a card to work with. They turn over when the pot
+   * is pushed. Until then this is changeable — see `ShowCards`.
+   */
+  pendingShowIndices?: number[]
+  /**
+   * Whether the showdown itself turned this hand face up.
+   *
+   * Not the same as "the hand was shown down". The last aggressor shows first
+   * and after that a hand only has to be shown to beat what is already face
+   * up, so a player who was beaten and speaks after the winner throws theirs
+   * away unseen — and is offered the choice to show it anyway.
+   */
+  showedDown?: boolean
+  /**
+   * What you have made against the board as it stands, in words.
+   *
+   * Yours and nobody else's — the server only fills it in for the player it is
+   * answering, because it is the one piece of private information a table would
+   * never say out loud. Null before you are dealt in, and for everybody else.
+   */
+  handName?: string | null
   /** The shot clock played this hand for them at least once. */
   timedOut: boolean
   /** Out of chips — eliminated from the tournament. */
@@ -89,10 +116,67 @@ export interface LegalActions {
   maxRaise: number
 }
 
+/**
+ * One decision, as the table would call it out.
+ *
+ * Written down by the server rather than worked out from two polled views,
+ * because one of these cannot be worked out at all: a check moves no chips,
+ * folds nobody and grows no board, so the picture before it and the picture
+ * after it differ only in whose turn it is — which is also what a street
+ * closing, a deal and an expired clock look like.
+ */
+export interface TableAction {
+  /**
+   * Never restarts, not even on a new deal. It is how a client knows which of
+   * these it has already played, which matters because polling means the same
+   * action arrives several times and two fast actions arrive together.
+   */
+  seq: number
+  handNumber: number
+  playerId: string
+  /**
+   * Five, where the engine has three. Checking and calling are one move to the
+   * engine and opposite moves to everyone watching, and opening a street is
+   * not raising somebody.
+   */
+  kind: 'check' | 'call' | 'bet' | 'raise' | 'fold'
+  /** What the decision cost them. */
+  amount: number
+  /** Where it left their bet for the street — the number a raise is named by. */
+  to: number
+  /**
+   * Their whole stack went in. Deliberately a flag and not a kind: somebody
+   * can be all in *and* calling, and collapsing the two loses which it was.
+   */
+  allIn: boolean
+  street: string
+  /** Nobody chose it — the clock did, or somebody who had already left. */
+  auto: boolean
+}
+
+/** One pot, and who is playing for it. */
+export interface PotView {
+  amount: number
+  playerIds: string[]
+}
+
 export interface HandResult {
   playerId: string
   name: string
+  /**
+   * What the hand left them, net. How they *finished*, not what they won.
+   *
+   * Sort a results list by this. Do not ask it who won: a player who put in
+   * 100 and took a side pot of 20 finished at -80 and won a pot, and a chop
+   * returns exactly what both players put in and reads as nobody winning
+   * anything. Both are ordinary hands, and on both of them this number says no.
+   */
   delta: number
+  /**
+   * What the engine actually pushed to them out of the pots. Zero for
+   * everybody who won nothing, and the only honest answer to "did they win".
+   */
+  won: number
   /** What they held, e.g. "Two pair, queens and sixes". Showdowns only. */
   handName?: string
   /** The five cards that made it. */
@@ -141,6 +225,9 @@ export interface RoomView {
     bombPot: boolean
     /** Big blinds each player owes a 7-2 winner. 0 is off. */
     sevenDeuce: number
+    /** What the table is made of. Chosen once, by whoever set it up. */
+    baize: string
+    deck: string
   }
   players: PlayerView[]
   board: string[]
@@ -149,13 +236,37 @@ export interface RoomView {
   /** What each board came to, once the hand is over. */
   boardResults: { cards: string[]; winners: string[] }[]
   pot: number
+  /**
+   * The pot broken out, main first, and who can win each. Sums to `pot`.
+   * Empty between hands.
+   */
+  pots: PotView[]
   street: string
   actorId: string | null
   legal: LegalActions | null
+  /** What everybody did this hand, oldest first. */
+  actions: TableAction[]
   lastResults: HandResult[]
   standings: Standing[]
   /** The finished hand was actually shown down (not won by everyone folding). */
   wentToShowdown: boolean
+  /**
+   * The hands that have to be turned over, in the order they turn over.
+   *
+   * The showdown rule, decided in one place — the server — because it is a
+   * rule about the hand and not about the drawing. Empty on every hand that
+   * did not reach a showdown.
+   */
+  showOrder: string[]
+  /**
+   * What the pot came to, on a hand that is over. Zero while one is running.
+   *
+   * `pot` is chips that have left the stacks and are not on the felt, so the
+   * instant the engine pushes them it is correctly zero — and the table still
+   * has two things left to draw with them: the last street being raked in, and
+   * the middle sitting there until it is paid out.
+   */
+  potAtEnd: number
   /** Who collected the 7-2 bonus this hand, and what it came to. */
   sevenDeuceWin: { playerId: string; name: string; amount: number } | null
   /** The bonus is there for the taking, but the cards are still face down. */
@@ -232,6 +343,9 @@ export interface GameView {
   preAction: PreAction | null
   ante: number
   bombPot: boolean
+  /** What the table is made of — see `lib/table-style.ts`. */
+  baize: string
+  deck: string
   players: PlayerView[]
   board: string[]
   boards: string[][]
@@ -241,6 +355,10 @@ export interface GameView {
   /** You are one of them. */
   askedAboutRunout: boolean
   pot: number
+  /** The pot broken out, main first. One entry is the ordinary case. */
+  pots: PotView[]
+  /** What everybody did this hand, oldest first. */
+  actions: TableAction[]
   street: string
   actorId: string | null
   isHost: boolean
@@ -249,6 +367,10 @@ export interface GameView {
   lastResults: HandResult[]
   standings: Standing[]
   wentToShowdown: boolean
+  /** Who has to turn their hand over, in the order they do it. See `RoomView`. */
+  showOrder: string[]
+  /** What the pot came to on a hand that is over. See `RoomView`. */
+  potAtEnd: number
   sevenDeuceWin: { playerId: string; name: string; amount: number } | null
   sevenDeucePending: boolean
   level: LevelView | null
@@ -272,11 +394,31 @@ export interface GameView {
   } | null
 }
 
-function resultsMessage(results: HandResult[]): string | null {
+/**
+ * What the table says a hand did, in the line above the pot.
+ *
+ * Exported because it is the app's voice at the one moment everybody is
+ * looking at the same thing, and a voice is worth testing.
+ */
+export function resultsMessage(results: HandResult[]): string | null {
   if (!results.length) return null
-  const winners = results.filter((r) => r.delta > 0)
+  // Who took chips out of the middle. Asked as `delta > 0` this line went
+  // silent on the two hands most worth a line: a chop, where both players get
+  // back exactly what they put in, and a side pot won by somebody who still
+  // finished the hand down. The table said nothing at all about either.
+  const winners = results.filter((r) => r.won > 0)
   if (!winners.length) return null
+  // A chop is not two people each winning something, and printing "(+0)" twice
+  // says it is. What everybody wants to know there is that it was shared.
+  const chopped = winners.length > 1 && winners.every((w) => w.delta <= 0)
+  if (chopped) {
+    return `${winners.map((w) => w.name).join(" and ")} split the pot`
+  }
   const names = winners.map((w) => `${w.name} (+${w.delta.toLocaleString()})`)
+  // Who and how much, and nothing else. What the hand was *won with* used to
+  // be spelled out here too, and it was said twice: the winner's own plate
+  // names it at the moment their five cards light up, an inch from the cards
+  // themselves. This line is over the pot, so it says what the pot did.
   return `${names.join(", ")} won the pot`
 }
 
@@ -340,9 +482,16 @@ export function toGameView(v: RoomView, playerId: string | null): GameView {
     askedAboutRunout: !!playerId && (v.runoutSeats ?? []).includes(playerId),
     ante: v.room.ante,
     bombPot: v.room.bombPot,
+    baize: v.room.baize,
+    deck: v.room.deck,
     players,
     board: v.board,
     pot: v.pot,
+    // A table that runs no all-ins never sees more than one, so the fallback
+    // is the whole pot as a single unnamed one rather than an empty list —
+    // otherwise every renderer has to special-case an older server.
+    pots: v.pots?.length ? v.pots : v.pot > 0 ? [{ amount: v.pot, playerIds: [] }] : [],
+    actions: v.actions ?? [],
     street: v.street,
     actorId: v.actorId,
     isHost: !!you?.isHost,
@@ -351,6 +500,8 @@ export function toGameView(v: RoomView, playerId: string | null): GameView {
     lastResults: v.lastResults,
     standings: v.standings ?? [],
     wentToShowdown: !!v.wentToShowdown,
+    showOrder: v.showOrder ?? [],
+    potAtEnd: v.potAtEnd ?? 0,
     sevenDeuceWin: v.sevenDeuceWin ?? null,
     sevenDeucePending: !!v.sevenDeucePending,
     level: v.level,
@@ -443,6 +594,9 @@ export interface CreateRoomInput {
   bombPotEvery: number
   /** Big blinds each player owes whoever wins with 7-2 offsuit. 0 is off. */
   sevenDeuce: number
+  /** What the table is made of. Cosmetic, shared, and chosen once. */
+  baize: BaizeId
+  deck: DeckId
   /** Stop the table every N blind levels. 0 turns scheduled breaks off. */
   breakEveryLevels: number
   breakMinutes: number
@@ -488,18 +642,20 @@ function auth(token?: string): Record<string, string> {
 }
 
 /**
- * A name for one attempt at doing something, so a retry is recognised as one.
+ * One fresh name, for a caller that is going to hold on to it.
  *
- * The server answers a name it has already seen instead of doing the thing
- * twice — which matters most where doing it twice is silent: two seats for one
- * person, a sit-out toggled back in, a rebuy charged again.
+ * This is the raw generator and not the pattern. The server answers a name it
+ * has already seen instead of doing the thing twice, which only works if the
+ * name **survives the retry** — so every id that guards something has to be
+ * derived from the decision rather than made up when the request goes out.
+ * That is what the call sites do: `a:player:hand:turn` for an action,
+ * `b:player:hand:kind:ordinal` for a purchase. A name generated per send is a
+ * different name for the same decision and catches nothing.
  *
- * These names are **derived from the intent, not generated per call**, which is
- * the only version that works. A fresh random id on every send is a different
- * name for the same decision, so the retry it was meant to catch sails
- * straight past it. `turnId` makes that easy: it already identifies the exact
- * moment a decision was made, so "fold, at this turn, in this hand" names
- * itself and stays the same however many times it is sent.
+ * The one case with nothing to derive from is joining a room, where there is
+ * no player id yet and no turn to point at. That is what this is for: called
+ * once, kept in storage, and sent again unchanged on every attempt — the
+ * randomness is stored, not repeated.
  */
 export function newRequestId(): string {
   if (typeof crypto !== 'undefined' && 'randomUUID' in crypto) return crypto.randomUUID()
@@ -569,6 +725,25 @@ export const pokerApi = {
       body: JSON.stringify({ playerId, action: 'start' }),
     }),
 
+  /**
+   * Another tournament, same table, same people, same rules.
+   *
+   * Named after the tournament it is ending rather than after the tap, so the
+   * second tap on a button that already worked is recognised as the same
+   * decision — and it has to be, because by then the room is a lobby and there
+   * is no finished tournament left to refuse.
+   */
+  playAgain: (roomId: string, playerId: string, endedAt: number, token?: string) =>
+    req<RoomView>(`/api/rooms/${roomId}/again`, {
+      method: 'POST',
+      headers: auth(token),
+      body: JSON.stringify({
+        playerId,
+        action: 'again',
+        requestId: `again:${roomId}:${endedAt}`,
+      }),
+    }),
+
   action: (
     roomId: string,
     playerId: string,
@@ -617,6 +792,18 @@ export const pokerApi = {
     playerId: string,
     what: 'rebuy' | 'add-on',
     handNumber: number,
+    /**
+     * How many of this kind have already been bought — the purchase's ordinal.
+     *
+     * Without it the name was the player, the hand and the kind, and two
+     * *different* rebuys can share all three: bust, buy back in, and lose the
+     * new stack before the next deal — the 7-2 bonus is settled after the pot
+     * and takes it in one go — and the second purchase asks under the first
+     * one's name. The server finds the receipt, answers 200, and hands over no
+     * chips. A retry keeps the old count and is still caught; a real second
+     * purchase has a different ordinal and gets through.
+     */
+    taken: number,
     token?: string,
   ) =>
     req<RoomView>(`/api/rooms/${roomId}/rebuy`, {
@@ -625,9 +812,10 @@ export const pokerApi = {
       body: JSON.stringify({
         playerId,
         action: what,
-        // Named after the purchase and the hand it was made at: tapping twice
-        // because nothing seemed to happen must not buy two.
-        requestId: `b:${playerId}:${handNumber}:${what}`,
+        // Named after the purchase, the hand it was made at and which one it
+        // is: tapping twice because nothing seemed to happen must not buy two,
+        // and buying twice must not be mistaken for tapping twice.
+        requestId: `b:${playerId}:${handNumber}:${what}:${taken}`,
       }),
     }),
 
@@ -681,7 +869,13 @@ export const pokerApi = {
       body: JSON.stringify({ playerId, targetId }),
     }),
 
-  /** Turn your own cards face up after the hand. There is no way back. */
+  /**
+   * Turn your own cards face up after the hand. There is no way back.
+   *
+   * Sent during the hand by a player who has folded it is a plan instead:
+   * nothing appears until the pot is pushed, the set replaces whatever was
+   * planned before, and an empty list cancels.
+   */
   showCards: (
     roomId: string,
     playerId: string,

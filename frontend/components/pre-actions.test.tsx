@@ -41,6 +41,42 @@ describe('deciding before your turn', () => {
     expect(set).toHaveBeenCalledWith('ABC123', 'me', 'clear', 1, 'secret')
   })
 
+  it('shows the choice the instant it is tapped, not when the poll comes back', async () => {
+    // The whole complaint. The row was drawn straight from the view, which
+    // arrives up to 1.2 seconds later, so tapping "Check / fold" looked like
+    // nothing had happened — and the natural response to that is to tap it
+    // again, which is the gesture that cancels it.
+    let resolve: () => void = () => {}
+    vi.spyOn(pokerApi, 'setPreAction').mockReturnValue(
+      new Promise<never>((r) => {
+        resolve = r as () => void
+      }),
+    )
+    show()
+    const button = screen.getByRole('button', { name: 'Check / fold' })
+    await userEvent.click(button)
+    expect(button.getAttribute('aria-pressed')).toBe('true')
+    expect(screen.getByText(/tap again to cancel/i)).toBeTruthy()
+    resolve()
+  })
+
+  it('lets go of the guess again if the server refuses', async () => {
+    // A fold somebody believes is armed and is not, or believes is cancelled
+    // and is not, is the worst thing this control can do.
+    vi.spyOn(pokerApi, 'setPreAction').mockRejectedValue(new Error('nope'))
+    show()
+    const button = screen.getByRole('button', { name: 'Check / fold' })
+    await userEvent.click(button)
+    expect(button.getAttribute('aria-pressed')).toBe('false')
+  })
+
+  it('switches between choices rather than needing to clear first', async () => {
+    const set = vi.spyOn(pokerApi, 'setPreAction').mockResolvedValue({} as never)
+    show({ preAction: 'check' })
+    await userEvent.click(screen.getByRole('button', { name: 'Call any' }))
+    expect(set).toHaveBeenCalledWith('ABC123', 'me', 'call-any', 1, 'secret')
+  })
+
   it('shows which one is armed, and says what it will do', () => {
     show({ preAction: 'check-fold' })
     expect(

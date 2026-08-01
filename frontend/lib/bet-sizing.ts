@@ -46,6 +46,26 @@ const BB_MULTIPLES: [string, number][] = [
   ['3x', 3],
 ]
 
+/**
+ * What to offer when the pot has outgrown the stack.
+ *
+ * Shares of what you have left, not of what is in the middle. A third of a
+ * 25,200 pot is 8,400, and a player sitting behind 7,200 cannot make that bet
+ * or any of the three above it — so every pot fraction clamped to the maximum,
+ * collapsed into one another, and the row offered a single button reading
+ * "All-in". Which was arithmetically true and useless: there were perfectly
+ * good bets at 2,400 and 3,600 that nothing offered a way to reach except
+ * dragging a slider across a whole stack.
+ *
+ * This is the case that decides tournaments, so it gets sizes of its own. Below
+ * a third they stop being bets and start being change, hence no smaller entry.
+ */
+const STACK_FRACTIONS: [string, number][] = [
+  ['⅓', 1 / 3],
+  ['½', 1 / 2],
+  ['¾', 3 / 4],
+]
+
 export function sizingContext(view: GameView): SizingContext | null {
   const legal = view.legal
   if (!legal) return null
@@ -100,15 +120,35 @@ export function presets(c: SizingContext): Preset[] {
     ? BB_MULTIPLES.map(([label, m]) => ({ label, amount: raiseToForMultiple(c, m) }))
     : POT_FRACTIONS.map(([label, f]) => ({ label, amount: raiseToForFraction(c, f) }))
 
-  const out: Preset[] = []
-  const seen = new Set<number>()
-  for (const p of raw) {
-    if (p.amount < c.minRaise) continue
-    const amount = Math.min(p.amount, c.maxRaise)
-    if (seen.has(amount)) continue
-    seen.add(amount)
-    out.push({ ...p, amount })
+  const keep = (list: Preset[]) => {
+    const out: Preset[] = []
+    const seen = new Set<number>()
+    for (const p of list) {
+      if (p.amount < c.minRaise) continue
+      const amount = Math.min(p.amount, c.maxRaise)
+      if (seen.has(amount)) continue
+      seen.add(amount)
+      out.push({ ...p, amount })
+    }
+    return out
   }
+
+  let out = keep(raw)
+  // Everything the pot suggested was more than there is behind, so the sizes
+  // that survived are one size wearing four labels. Measure against the stack
+  // instead — those bets exist, and this is the spot where choosing between
+  // them matters most.
+  if (out.length <= 1) {
+    const byStack = keep(
+      STACK_FRACTIONS.map(([label, f]) => ({
+        label,
+        amount: Math.round(c.myBet + c.callAmount + f * (c.maxRaise - c.myBet - c.callAmount)),
+      })),
+    )
+    if (byStack.length > out.length) out = byStack
+  }
+
+  const seen = new Set(out.map((p) => p.amount))
   if (!seen.has(c.maxRaise)) out.push({ label: 'All-in', amount: c.maxRaise })
   else out[out.length - 1] = { label: 'All-in', amount: c.maxRaise }
   return out
