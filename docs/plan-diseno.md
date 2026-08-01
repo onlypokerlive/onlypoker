@@ -32,6 +32,28 @@ sonidos. Es lo primero que hay que decidir porque es lo único que toca backend 
 
 ---
 
+## 0.0 · Qué se ha ejecutado ya  *(rama `feat/plan-diseno`)*
+
+| Bloque | Estado | Dónde mirarlo |
+|---|---|---|
+| **X1** · `lastAction` | ✅ | `actions[]` en la vista, con `seq` que nunca reinicia. Cinco *kinds* + bandera `allIn` en vez de los cinco del plan — ver nota abajo |
+| **X2** · botes laterales | ✅ | `pots[]` con importe y elegibles; `components/pot-display.tsx` |
+| **V1** · materia | ✅ | Tokens `[data-baize]`/`[data-deck]`, cuatro tapetes y cuatro barajas de punta a punta, `chip-stack.tsx`, naipe por esquina, tacto de botones |
+| **V2** · el refactor | ✅ | `lib/table-layout.ts` + `table-layout.test.ts` (144 aserciones). Ancla/contenido. Anillo 37/38 → **41/41** |
+| **§3** · sonidos | ✅ | 8 voces nuevas, variación ±8 %, interruptor de tres estados |
+| **V5** · turno y voz | ✅ | Anillo que se vacía, tres canales, tic solo tuyo, línea de acción `aria-live` |
+| **V3** · gestos | ◐ | **Solo el doble toque.** Faltan el *peek* por oclusión y el arrastre al descarte |
+| **V4** · movimiento | ◐ | **Solo el board carta a carta** y la rama de `prefers-reduced-motion`. Faltan las fichas en arco, la recogida y el showdown en seis tiempos |
+| **P1–P5, S1, S3–S6** | ✖ | Sin empezar, salvo la mitad de **S5**: no había `<Toaster />` montado, así que *ningún* error se veía nunca |
+
+**Tres decisiones tomadas al ejecutar que se apartan de lo escrito:**
+
+1. **X1 sirve `kind` + `allIn` como bandera**, no `allIn` como *kind*. Alguien puede estar all-in *y* pagando, y colapsarlo pierde cuál de las dos era. Y hay un sexto *kind*, `bet`, porque «sube a 900» cuando nadie había apostado describe una mano que no ocurrió.
+2. **El anillo pasa de 37/38 a 41/41 y el asiento adelgaza a partir de siete.** No es gusto: a 320 px el anillo viejo ponía los asientos de los costados encima de un board de cinco con tres jugadores, y encima unos de otros con nueve. Lo encontró el test de §1.2 en su primera ejecución, que es exactamente para lo que estaba.
+3. **La mesa conserva su proporción y la página hace scroll.** Se probó a limitar la altura para que el asiento de abajo no quedara bajo la banda: limitarla es justo lo que provoca los solapes —nueve asientos necesitan unos 450 px de mesa— y el test lo dice en voz alta en vez de degradar en silencio. **El asiento de abajo sigue quedando bajo la banda en un móvil corto; es lo único conocido que queda feo.**
+
+---
+
 ## 0 · Correcciones al plan de implementación
 
 Leído el código, tres premisas están desactualizadas. Las tres cambian el trabajo.
