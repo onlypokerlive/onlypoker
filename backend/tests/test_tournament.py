@@ -116,7 +116,12 @@ def hand_number(client, room_id):
     return client.portal.call(main.load_room, room_id)["handNumber"]
 
 
-def act(client, room_id, player_id, action, amount=None, hand=None):
+def turn_id(client, room_id):
+    """The moment the room is at, read straight from the store. See ``hand_number``."""
+    return client.portal.call(main.load_room, room_id).get("turnId", 0)
+
+
+def act(client, room_id, player_id, action, amount=None, hand=None, turn=None):
     return client.post(
         f"/api/rooms/{room_id}/action",
         headers=auth(player_id),
@@ -124,9 +129,11 @@ def act(client, room_id, player_id, action, amount=None, hand=None):
             "playerId": player_id,
             "action": action,
             "amount": amount,
-            # Every real client stamps its hand; the helper does the same so the
-            # tests exercise the path players actually take.
+            # Every real client stamps its hand and the moment it was looking
+            # at; the helper does the same so the tests exercise the path
+            # players actually take.
             "handNumber": hand_number(client, room_id) if hand is None else hand,
+            "turnId": turn_id(client, room_id) if turn is None else turn,
         },
     )
 
@@ -316,11 +323,7 @@ def test_an_action_cannot_land_on_a_later_hand(client, clock):
     assert view["room"]["handNumber"] == stale_hand + 1
 
     actor = view["actorId"]
-    res = client.post(
-        f"/api/rooms/{room_id}/action",
-        headers=auth(actor),
-        json={"playerId": actor, "action": "call", "handNumber": stale_hand},
-    )
+    res = act(client, room_id, actor, "call", hand=stale_hand)
     assert res.status_code == 409
     assert "already over" in res.json()["detail"]
     # The new hand is untouched: it is still that player's turn.
@@ -2080,19 +2083,20 @@ def test_a_borrowed_id_cannot_act(client, clock):
     room_id, ids = table(client, 3)
     start(client, room_id, ids[0])
     actor = state(client, room_id, ids[0])["actorId"]
-    hand = hand_number(client, room_id)
+    stamped = {
+        "playerId": actor,
+        "action": "fold",
+        "amount": None,
+        "handNumber": hand_number(client, room_id),
+        "turnId": turn_id(client, room_id),
+    }
 
-    res = client.post(
-        f"/api/rooms/{room_id}/action",
-        json={"playerId": actor, "action": "fold", "amount": None, "handNumber": hand},
-    )
+    res = client.post(f"/api/rooms/{room_id}/action", json=stamped)
     assert res.status_code == 403
     # Somebody else's credential is no better than none at all.
     other = next(p for p in ids if p != actor)
     res = client.post(
-        f"/api/rooms/{room_id}/action",
-        headers=auth(other),
-        json={"playerId": actor, "action": "fold", "amount": None, "handNumber": hand},
+        f"/api/rooms/{room_id}/action", headers=auth(other), json=stamped
     )
     assert res.status_code == 403
     assert state(client, room_id, ids[0])["actorId"] == actor
@@ -2190,6 +2194,216 @@ def test_a_table_from_before_the_credential_split_closes_every_door(client, cloc
     assert all("Start a new one" in d.json()["detail"] for d in doors)
     # And the refused join really did not seat anybody.
     assert len(client.portal.call(main.load_room, room_id)["order"]) == 2
+
+
+# --------------------------------------------------------------------------- #
+# Doing a thing once
+# --------------------------------------------------------------------------- #
+def test_a_join_that_is_retried_takes_the_same_seat(client, clock):
+    """The response went missing, not the seat.
+
+    Without a name for the attempt, the retry creates a second player — and the
+    first one can never be recovered, because the only proof it belonged to
+    anybody went missing with the response.
+    """
+    room_id, ids = table(client, 2)
+    body = {"name": "Marcos", "password": "secret", "requestId": "attempt-1"}
+
+    first = client.post(f"/api/rooms/{room_id}/join", json=body).json()
+    again = client.post(f"/api/rooms/{room_id}/join", json=body).json()
+    assert again["playerId"] == first["playerId"]
+    assert again["token"] == first["token"]
+
+    room = client.portal.call(main.load_room, room_id)
+    assert len(room["order"]) == 3
+    assert sum(p["name"] == "Marcos" for p in room["players"].values()) == 1
+
+
+def test_two_people_with_the_same_name_both_get_a_seat(client, clock):
+    """The guard is against a repeated *request*, not a repeated name."""
+    room_id, _ = table(client, 2)
+    one = client.post(
+        f"/api/rooms/{room_id}/join",
+        json={"name": "Marcos", "password": "secret", "requestId": "his-phone"},
+    ).json()
+    two = client.post(
+        f"/api/rooms/{room_id}/join",
+        json={"name": "Marcos", "password": "secret", "requestId": "her-phone"},
+    ).json()
+    assert one["playerId"] != two["playerId"]
+    assert len(client.portal.call(main.load_room, room_id)["order"]) == 4
+
+
+def test_a_device_that_already_has_a_key_is_somebody_coming_back(client, clock):
+    """Identity here is the credential, not the name typed into the box.
+
+    It is what tells "Marcos is back" from "another Marcos has arrived", which
+    is the question every way back into a table has to answer.
+    """
+    room_id, ids = table(client, 3)
+    res = client.post(
+        f"/api/rooms/{room_id}/join",
+        headers=auth(ids[1]),
+        json={"name": "Someone Else", "password": "secret"},
+    )
+    assert res.status_code == 200
+    assert res.json()["playerId"] == ids[1]
+
+    room = client.portal.call(main.load_room, room_id)
+    assert room["order"] == ids  # no new chair
+    assert room["players"][ids[1]]["name"] == "P1"  # and no rename
+
+
+def test_a_returning_host_is_still_the_host(client, clock):
+    room_id, ids = table(client, 2)
+    res = client.post(
+        f"/api/rooms/{room_id}/join",
+        headers=auth(ids[0]),
+        json={"name": "Host", "password": "secret"},
+    )
+    assert res.json()["isHost"] is True
+
+
+def test_asking_twice_to_sit_out_does_not_sit_you_back_in(client, clock):
+    """A toggle is the one shape where a retry undoes itself.
+
+    The player asks to sit out, nothing appears to happen, they tap again — and
+    they are sitting in, with nothing on screen explaining why.
+    """
+    room_id, ids = table(client, 3)
+    body = {"playerId": ids[1], "action": "sit", "requestId": "sit-me-out"}
+    for _ in range(2):
+        res = client.post(f"/api/rooms/{room_id}/sit", headers=auth(ids[1]), json=body)
+        assert res.status_code == 200
+    assert client.portal.call(main.load_room, room_id)["players"][ids[1]]["sittingOut"]
+
+    # Genuinely changing their mind later is a different request, and works.
+    client.post(
+        f"/api/rooms/{room_id}/sit",
+        headers=auth(ids[1]),
+        json={"playerId": ids[1], "action": "sit", "requestId": "sit-me-back-in"},
+    )
+    assert not client.portal.call(main.load_room, room_id)["players"][ids[1]]["sittingOut"]
+
+
+def test_the_receipts_do_not_grow_without_end(client, clock):
+    """The room is one document that every poll reads whole.
+
+    An unbounded log of everything anybody ever did is a slow leak into every
+    request at the table.
+    """
+    room_id, ids = table(client, 3)
+    for i in range(main.MAX_RECEIPTS * 2):
+        client.post(
+            f"/api/rooms/{room_id}/sit",
+            headers=auth(ids[1]),
+            json={"playerId": ids[1], "action": "sit", "requestId": f"toggle-{i}"},
+        )
+        clock.advance(1)
+    room = client.portal.call(main.load_room, room_id)
+    assert len(room["receipts"]) == main.MAX_RECEIPTS
+    # The ones kept are the recent ones.
+    assert f"toggle-{main.MAX_RECEIPTS * 2 - 1}" in room["receipts"]
+    assert "toggle-0" not in room["receipts"]
+
+
+# --------------------------------------------------------------------------- #
+# Which moment a decision was made at
+# --------------------------------------------------------------------------- #
+def test_a_stale_decision_cannot_land_when_the_action_comes_back_round(client, clock):
+    """The hand stamp is not enough on its own.
+
+    It stops a decision landing on a *later* hand. It does nothing about the
+    same one: a raise brings the action back round to a player who has already
+    acted, and at that point a duplicate of their earlier request — a double
+    tap, a retry after a stall — is legal all over again and gets applied. They
+    call a bet they never saw.
+    """
+    room_id, ids = table(client, 3, actionSeconds=0, levelMinutes=0)
+    start(client, room_id, ids[0])
+
+    view = state(client, room_id, ids[0])
+    first = view["actorId"]
+    stale_turn = view["turnId"]
+    hand = view["room"]["handNumber"]
+    # They call. The turn moves on.
+    assert act(client, room_id, first, "call").status_code == 200
+
+    # Somebody raises, and the action comes back round to them.
+    for _ in range(6):
+        view = state(client, room_id, ids[0])
+        if view["actorId"] == first:
+            break
+        legal = view["legal"] or state(client, room_id, view["actorId"])["legal"]
+        if legal and legal["canRaise"]:
+            act(client, room_id, view["actorId"], "raise", legal["minRaise"])
+        else:
+            act(client, room_id, view["actorId"], "call")
+    assert state(client, room_id, ids[0])["actorId"] == first, "back round to them"
+
+    # The duplicate of their earlier call arrives now. It is their turn, the
+    # hand number still matches — and it must not be applied.
+    res = act(client, room_id, first, "call", hand=hand, turn=stale_turn)
+    assert res.status_code == 409
+    assert "moved on" in res.json()["detail"]
+    assert state(client, room_id, ids[0])["actorId"] == first
+
+
+def test_a_repeated_decision_is_answered_rather_than_refused(client, clock):
+    """The action worked; only the answer went missing.
+
+    Sending it again should say so, not report a conflict for something that
+    succeeded.
+    """
+    room_id, ids = table(client, 3, actionSeconds=0, levelMinutes=0)
+    start(client, room_id, ids[0])
+    view = state(client, room_id, ids[0])
+    actor = view["actorId"]
+    body = {
+        "playerId": actor,
+        "action": "call",
+        "amount": None,
+        "handNumber": view["room"]["handNumber"],
+        "turnId": view["turnId"],
+        "requestId": "one-tap",
+    }
+    first = client.post(f"/api/rooms/{room_id}/action", headers=auth(actor), json=body)
+    again = client.post(f"/api/rooms/{room_id}/action", headers=auth(actor), json=body)
+    assert first.status_code == 200
+    assert again.status_code == 200
+    # And it was applied once: the action has not gone round twice.
+    assert again.json()["turnId"] == first.json()["turnId"]
+
+
+def test_the_turn_counter_never_goes_backwards(client, clock):
+    """It has to keep meaning "which moment", including across a new deal."""
+    room_id, ids = table(client, 2, actionSeconds=0, levelMinutes=0)
+    seen = [state(client, room_id, ids[0])["turnId"]]
+    start(client, room_id, ids[0])
+    seen.append(state(client, room_id, ids[0])["turnId"])
+    fold_until_hand_over(client, room_id, ids)
+    seen.append(state(client, room_id, ids[0])["turnId"])
+    clock.advance(main.AUTO_DEAL_SECONDS + 1)
+    seen.append(state(client, room_id, ids[0])["turnId"])
+    assert seen == sorted(seen)
+    assert seen[-1] > seen[0]
+
+
+def test_an_action_must_say_which_moment_it_was_decided_at(client, clock):
+    room_id, ids = table(client, 2)
+    start(client, room_id, ids[0])
+    actor = state(client, room_id, ids[0])["actorId"]
+    res = client.post(
+        f"/api/rooms/{room_id}/action",
+        headers=auth(actor),
+        json={
+            "playerId": actor,
+            "action": "call",
+            "handNumber": hand_number(client, room_id),
+        },
+    )
+    assert res.status_code == 400
+    assert "Reload" in res.json()["detail"]
 
 
 # --------------------------------------------------------------------------- #

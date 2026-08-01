@@ -142,6 +142,12 @@ export interface RoomView {
   autoDealAt: number | null
   /** Server clock at the moment this view was built, for skew correction. */
   serverTime: number
+  /**
+   * The moment this view describes. Sent back with a decision so the server can
+   * refuse an order about a moment that has already passed — a double tap, or a
+   * retry that arrives after the action came back round.
+   */
+  turnId: number
   you: PlayerView | null
 }
 
@@ -193,6 +199,8 @@ export interface GameView {
   sevenDeuceWin: { playerId: string; name: string; amount: number } | null
   sevenDeucePending: boolean
   level: LevelView | null
+  /** The moment this view describes; travels back with every decision. */
+  turnId: number
   /** Both deadlines are rebased onto the browser's clock at fetch time, so a
    *  phone with the wrong time still counts down correctly. */
   actionDeadlineMs: number | null
@@ -278,6 +286,7 @@ export function toGameView(v: RoomView, playerId: string | null): GameView {
     sevenDeuceWin: v.sevenDeuceWin ?? null,
     sevenDeucePending: !!v.sevenDeucePending,
     level: v.level,
+    turnId: v.turnId ?? 0,
     actionDeadlineMs,
     levelEndsAtMs,
     autoDealAtMs,
@@ -363,14 +372,66 @@ function auth(token?: string): Record<string, string> {
   return token ? { [TOKEN_HEADER]: token } : {}
 }
 
+/**
+ * A name for one attempt at doing something, so a retry is recognised as one.
+ *
+ * The server answers a name it has already seen instead of doing the thing
+ * twice — which matters most where doing it twice is silent: two seats for one
+ * person, a sit-out toggled back in, a rebuy charged again.
+ *
+ * These names are **derived from the intent, not generated per call**, which is
+ * the only version that works. A fresh random id on every send is a different
+ * name for the same decision, so the retry it was meant to catch sails
+ * straight past it. `turnId` makes that easy: it already identifies the exact
+ * moment a decision was made, so "fold, at this turn, in this hand" names
+ * itself and stays the same however many times it is sent.
+ */
+export function newRequestId(): string {
+  if (typeof crypto !== 'undefined' && 'randomUUID' in crypto) return crypto.randomUUID()
+  return `${Date.now()}-${Math.random().toString(36).slice(2)}`
+}
+
+/**
+ * The id for *this device's* attempt to join *this room*, kept until it works.
+ *
+ * Held in storage rather than in a component so that a reload halfway through
+ * — the phone locking, the tab being restored — is still the same attempt. The
+ * case being closed is a join whose response never arrives: without a stable
+ * name the retry takes a second seat, and the first one is unrecoverable,
+ * because the only proof it belonged to anybody went missing with the response.
+ */
+export function joinAttemptId(roomId: string): string {
+  const key = `holdem:join:${roomId}`
+  try {
+    const existing = localStorage.getItem(key)
+    if (existing) return existing
+    const fresh = newRequestId()
+    localStorage.setItem(key, fresh)
+    return fresh
+  } catch {
+    return newRequestId()
+  }
+}
+
+export function clearJoinAttempt(roomId: string) {
+  try {
+    localStorage.removeItem(`holdem:join:${roomId}`)
+  } catch {
+    // ignore
+  }
+}
+
 export const pokerApi = {
   createRoom: (input: CreateRoomInput) =>
     req<Session>('/api/rooms', { method: 'POST', body: JSON.stringify(input) }),
 
-  joinRoom: (roomId: string, name: string, password: string) =>
+  joinRoom: (roomId: string, name: string, password: string, token?: string) =>
     req<Session>(`/api/rooms/${roomId}/join`, {
       method: 'POST',
-      body: JSON.stringify({ name, password }),
+      // The credential, when this device already has one, says "the person who
+      // sat here is back" rather than "somebody new called the same thing".
+      headers: auth(token),
+      body: JSON.stringify({ name, password, requestId: joinAttemptId(roomId) }),
     }),
 
   /** Watch without taking a seat. Still needs the password. */
@@ -398,15 +459,25 @@ export const pokerApi = {
     playerId: string,
     action: string,
     amount?: number,
-    // Stamps the decision with the hand it was made for, so a slow or retried
-    // request can't be applied to whatever hand is running when it lands.
+    // Stamps the decision with the hand *and the moment* it was made for, so a
+    // slow or retried request can't be applied to whatever is on the table when
+    // it lands — not even later in the same hand, once the action comes back
+    // round to the same player.
     handNumber?: number,
+    turnId?: number,
     token?: string,
   ) =>
     req<RoomView>(`/api/rooms/${roomId}/action`, {
       method: 'POST',
       headers: auth(token),
-      body: JSON.stringify({ playerId, action, amount, handNumber }),
+      body: JSON.stringify({
+        playerId,
+        action,
+        amount,
+        handNumber,
+        turnId,
+        requestId: `a:${handNumber}:${turnId}:${action}:${amount ?? ''}`,
+      }),
     }),
 
   /** Host only: show a player the door. Between hands. */
@@ -438,11 +509,28 @@ export const pokerApi = {
       { headers: auth(token) },
     ),
 
-  toggleSitOut: (roomId: string, playerId: string, token?: string) =>
+  /**
+   * Sit out, or come back. `sittingOut` is the state being asked for, not the
+   * one in effect — a toggle is the one shape where a retry undoes itself, so
+   * the request is named after where the player wants to end up. Asking twice
+   * for the same thing is answered once; genuinely changing their mind later
+   * is a different name and goes through.
+   */
+  toggleSitOut: (
+    roomId: string,
+    playerId: string,
+    sittingOut: boolean,
+    handNumber: number,
+    token?: string,
+  ) =>
     req<RoomView>(`/api/rooms/${roomId}/sit`, {
       method: 'POST',
       headers: auth(token),
-      body: JSON.stringify({ playerId, action: 'sit' }),
+      body: JSON.stringify({
+        playerId,
+        action: 'sit',
+        requestId: `s:${playerId}:${handNumber}:${sittingOut ? 'out' : 'in'}`,
+      }),
     }),
 
   setAutoDeal: (roomId: string, playerId: string, paused: boolean, token?: string) =>

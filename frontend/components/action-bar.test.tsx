@@ -45,6 +45,7 @@ function gameView(overrides: Partial<GameView> = {}): GameView {
     bigBlind: 10,
     startingChips: 1000,
     handNumber: 1,
+    turnId: 1,
     maxSeats: 9,
     actionSeconds: 20,
     levelMinutes: 10,

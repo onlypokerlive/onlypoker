@@ -395,6 +395,67 @@ def _free_seat(room: dict[str, Any]) -> int:
 
 
 # --------------------------------------------------------------------------- #
+# Doing a thing once
+# --------------------------------------------------------------------------- #
+# The lock makes two simultaneous requests take turns. It does not make the
+# second one a no-op, and for anything that *creates* something that is the
+# whole problem: two joins run one after the other and the table gains two
+# seats for one person. The same shape is waiting in rebuys (charged twice) and
+# in the sit-out toggle (flipped twice, back to where it started).
+#
+# A phone on a train does not need two taps to get there. It needs one request
+# whose response never arrives, and a retry.
+#
+# So every mutating request may name itself, and a name the room has already
+# seen is answered rather than replayed. Kept on the room because that is what
+# the lock protects: a receipt in some other store is a receipt that can
+# disagree with the thing it is vouching for.
+MAX_RECEIPTS = 32
+
+
+def _receipt(room: dict[str, Any], key: str | None) -> dict[str, Any] | None:
+    """What this exact request was answered with last time, if it has been."""
+    if not key:
+        return None
+    return (room.get("receipts") or {}).get(key)
+
+
+def _keep_receipt(room: dict[str, Any], key: str | None, payload: dict[str, Any]) -> None:
+    """Record that this request has been carried out.
+
+    Bounded on purpose: the room is one document that every poll reads whole,
+    so an unbounded log of everything anybody ever did is a slow leak into
+    every request at the table. The oldest go first; a retry that arrives after
+    thirty-two other operations is not a retry.
+    """
+    if not key:
+        return
+    receipts = room.setdefault("receipts", {})
+    receipts[key] = {"at": time.time(), **payload}
+    while len(receipts) > MAX_RECEIPTS:
+        oldest = min(receipts, key=lambda k: receipts[k].get("at", 0))
+        receipts.pop(oldest, None)
+
+
+def _player_by_token(room: dict[str, Any], token: str | None) -> str | None:
+    """Which seat this credential belongs to, if any.
+
+    This is what identity *is* here: not a name typed into a box — two people
+    at the same table can both be Marcos — but the secret the device has been
+    holding since it first sat down. It is what tells "Marcos is back" from
+    "another Marcos has arrived", which is the question every way back into a
+    running tournament has to answer.
+    """
+    if not token:
+        return None
+    for pid, player in room["players"].items():
+        stored = player.get("token")
+        if stored and hmac.compare_digest(stored, token):
+            return pid
+    return None
+
+
+# --------------------------------------------------------------------------- #
 # Request models
 # --------------------------------------------------------------------------- #
 class CreateRoomBody(BaseModel):
@@ -424,6 +485,9 @@ class CreateRoomBody(BaseModel):
 class JoinBody(BaseModel):
     name: str = Field(min_length=1, max_length=20)
     password: str = Field(min_length=1, max_length=64)
+    # Names this attempt, so a retry after a lost response takes the same seat
+    # back instead of a second one. See "Doing a thing once" above.
+    requestId: str | None = Field(default=None, max_length=64)
 
 
 class ActionBody(BaseModel):
@@ -434,6 +498,10 @@ class ActionBody(BaseModel):
     # ``take_action``. Declared optional here only so the field can be rejected
     # with a readable message instead of a validation dump.
     handNumber: int | None = None
+    # Which moment in the hand the decision was made at. Enforced on /action
+    # for the same reason as handNumber, one level finer: see ``_save_state``.
+    turnId: int | None = None
+    requestId: str | None = Field(default=None, max_length=64)
 
 
 # --------------------------------------------------------------------------- #
@@ -546,6 +614,25 @@ def _eligible_player_ids(room: dict[str, Any]) -> list[str]:
         if room["players"][pid]["chips"] > 0
         and not room["players"][pid].get("sittingOut")
     ]
+
+
+def _save_state(room: dict[str, Any], state) -> None:
+    """Write the engine state back, and count the turn it just passed.
+
+    ``handNumber`` stops a delayed request landing on a *later* hand. It does
+    nothing about the same one: if a raise comes back round, the turn returns
+    to a player who has already acted, and a duplicate of their earlier request
+    — a double tap, a retry after a stall — is legal all over again and gets
+    applied. They call a bet they never saw.
+
+    So every advance of the engine gets a number, the client sends back the one
+    it was looking at, and an order about a moment that has passed is refused.
+    Monotonic for the life of the room, never reset by a new hand, so it can
+    also say "the situation this was decided under" for anything saved ahead of
+    time.
+    """
+    room["stateB64"] = poker.dumps(state)
+    room["turnId"] = int(room.get("turnId", 0)) + 1
 
 
 def _set_action_deadline(room: dict[str, Any], state, now: float) -> None:
@@ -720,7 +807,7 @@ def _start_hand(room: dict[str, Any]) -> None:
     room["shownSeats"] = {}
     room["sevenDeucePaid"] = False
     room["sevenDeuceWin"] = None
-    room["stateB64"] = poker.dumps(state)
+    _save_state(room, state)
     room["phase"] = "hand"
     room["lastResults"] = []
     room["handNumber"] += 1
@@ -1002,7 +1089,7 @@ def _apply_timeouts(room: dict[str, Any]) -> dict[str, Any] | None:
             player["sittingOut"] = True
             player["autoSatOut"] = True
 
-    room["stateB64"] = poker.dumps(state)
+    _save_state(room, state)
     if poker.is_hand_over(state):
         _settle_hand(room, state)
     else:
@@ -1241,6 +1328,9 @@ def _build_view(room: dict[str, Any], viewer_id: str | None) -> dict[str, Any]:
         # serverTime to stay correct even when a device's clock is off.
         "actionDeadline": room.get("actionDeadline"),
         "autoDealAt": room.get("autoDealAt"),
+        # The moment this view describes. Sent back with a decision so an order
+        # about a moment that has passed can be refused rather than applied.
+        "turnId": int(room.get("turnId", 0)),
         "serverTime": now,
         "you": next((p for p in players_out if p["id"] == viewer_id), None),
     }
@@ -1346,7 +1436,25 @@ async def create_room(body: CreateRoomBody) -> dict[str, Any]:
 
 
 @app.post("/rooms/{room_id}/join")
-async def join_room(room_id: str, body: JoinBody) -> dict[str, Any]:
+async def join_room(
+    room_id: str,
+    body: JoinBody,
+    x_player_token: str | None = fastapi.Header(default=None),
+) -> dict[str, Any]:
+    """Take a seat.
+
+    Three ways this can be called and only one of them creates anything:
+
+      * a device that already holds a credential for this table is somebody
+        coming back, and gets the seat it already has;
+      * a request whose name the room has already answered is a retry after a
+        lost response, and gets the same answer again;
+      * anything else is a new player, and gets a chair.
+
+    Without the first two, a response lost on the way home costs the retry a
+    second seat — and the first seat is unrecoverable, because the only proof
+    it belonged to anybody went missing with the response.
+    """
     async with _RoomLock(room_id):
         room = await load_room(room_id)
         if not room:
@@ -1356,8 +1464,28 @@ async def join_room(room_id: str, body: JoinBody) -> dict[str, Any]:
         # rejects a moment later. Fail here, in one shape, like every other
         # door into a legacy room.
         _reject_legacy(room)
+
+        returning = _player_by_token(room, x_player_token)
+        if returning and _has_seat(room["players"][returning]):
+            return {
+                "roomId": room_id,
+                "playerId": returning,
+                "token": room["players"][returning]["token"],
+                "isHost": returning == room["hostId"],
+            }
+
         if not _verify_password(body.password, room["passwordHash"]):
             raise fastapi.HTTPException(403, "Incorrect room password.")
+
+        seen = _receipt(room, body.requestId)
+        if seen:
+            return {
+                "roomId": room_id,
+                "playerId": seen["playerId"],
+                "token": seen["token"],
+                "isHost": False,
+            }
+
         if room["phase"] != "lobby":
             raise fastapi.HTTPException(
                 400, "This tournament has already started. Ask the host for a new table."
@@ -1378,6 +1506,7 @@ async def join_room(room_id: str, body: JoinBody) -> dict[str, Any]:
             "lastSeen": time.time(),
         }
         room["order"].append(player_id)
+        _keep_receipt(room, body.requestId, {"playerId": player_id, "token": token})
         await save_room(room)
     return {
         "roomId": room_id,
@@ -1681,7 +1810,7 @@ async def take_action(
     # not name its hand cannot be shown to belong to the one in progress. It is
     # rejected before anything is read or written, so a client on an old bundle
     # gets a clear error instead of playing somebody else's cards.
-    if body.handNumber is None:
+    if body.handNumber is None or body.turnId is None:
         raise fastapi.HTTPException(
             400,
             "This action did not say which hand it was for. Reload the table and "
@@ -1692,6 +1821,9 @@ async def take_action(
         if not room:
             raise fastapi.HTTPException(404, "Room not found.")
         _authenticate(room, body.playerId, x_player_token)
+        # A retry of something already done is answered, not done again.
+        if _receipt(room, body.requestId):
+            return _build_view(room, body.playerId)
         # Settle any expired shot clock first, so a late action can't jump the
         # queue ahead of the fold it already earned.
         timeout = _apply_timeouts(room)
@@ -1721,6 +1853,17 @@ async def take_action(
                 )
             raise fastapi.HTTPException(409, "It is not your turn.")
 
+        # It is their turn — but is it the *same* turn they decided on? A raise
+        # can bring the action back round to a player who has already acted,
+        # and at that point a duplicate of their earlier request is legal all
+        # over again. Checked here rather than higher up so that a decision
+        # sent after the shot clock already played it still gets told so,
+        # instead of this more general answer. See ``_save_state``.
+        if body.turnId != int(room.get("turnId", 0)):
+            raise fastapi.HTTPException(
+                409, "The action moved on while that was on its way."
+            )
+
         try:
             poker.apply_action(state, body.action, body.amount)
         except poker.ActionError as exc:
@@ -1739,11 +1882,12 @@ async def take_action(
             actor_player["autoSatOut"] = False
             actor_player["sittingOut"] = False
 
-        room["stateB64"] = poker.dumps(state)
+        _save_state(room, state)
         if poker.is_hand_over(state):
             _settle_hand(room, state)  # state kept for the showdown reveal
         else:
             _set_action_deadline(room, state, time.time())
+        _keep_receipt(room, body.requestId, {})
         await save_room(room)
         return _build_view(room, body.playerId)
 
@@ -1763,6 +1907,11 @@ async def toggle_sit_out(
         p = room["players"].get(body.playerId)
         if not p:
             raise fastapi.HTTPException(404, "Player not found.")
+        # A toggle is the one shape where a retry is worse than useless: it
+        # undoes itself, so the player ends up sitting in when they asked to sit
+        # out and nothing on screen explains why.
+        if _receipt(room, body.requestId):
+            return _build_view(room, body.playerId)
         going_out = not p.get("sittingOut")
         # The same rule the shot clock obeys when it benches somebody: a table
         # left with one eligible player and two live stacks can neither deal nor
@@ -1789,6 +1938,7 @@ async def toggle_sit_out(
                 and len(_eligible_player_ids(room)) >= 2
             ):
                 _arm_auto_deal(room)
+        _keep_receipt(room, body.requestId, {})
         await save_room(room)
         return _build_view(room, body.playerId)
 

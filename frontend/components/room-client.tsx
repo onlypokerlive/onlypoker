@@ -136,6 +136,7 @@ export function RoomClient({ roomId }: { roomId: string }) {
         backendAction,
         amount,
         view.handNumber,
+        view.turnId,
         session.token,
       )
       setView(toGameView(raw, session.playerId))
@@ -143,8 +144,14 @@ export function RoomClient({ roomId }: { roomId: string }) {
 
   const handleSitToggle = () =>
     withBusy(async () => {
-      if (!session) return
-      const raw = await pokerApi.toggleSitOut(roomId, session.playerId, session.token)
+      if (!session || !view) return
+      const raw = await pokerApi.toggleSitOut(
+        roomId,
+        session.playerId,
+        !view.you?.sittingOut,
+        view.handNumber,
+        session.token,
+      )
       setView(toGameView(raw, session.playerId))
     })
 

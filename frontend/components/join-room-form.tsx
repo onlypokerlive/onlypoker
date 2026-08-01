@@ -7,7 +7,7 @@ import { Eye, LogIn } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Field, FieldLabel } from '@/components/ui/field'
-import { pokerApi, saveSession } from '@/lib/poker-api'
+import { clearJoinAttempt, loadSession, pokerApi, saveSession } from '@/lib/poker-api'
 
 export function JoinRoomForm({ roomId }: { roomId: string }) {
   const router = useRouter()
@@ -25,9 +25,19 @@ export function JoinRoomForm({ roomId }: { roomId: string }) {
     try {
       const session =
         as === 'player'
-          ? await pokerApi.joinRoom(roomId, name.trim(), password.trim())
+          ? await pokerApi.joinRoom(
+              roomId,
+              name.trim(),
+              password.trim(),
+              // If this device still holds a credential for this table, it is
+              // the same person coming back to it, not a new arrival.
+              loadSession(roomId)?.token,
+            )
           : await pokerApi.watchRoom(roomId, password.trim())
       saveSession(session)
+      // The seat is confirmed and saved, so the attempt is over. Keeping the
+      // name would make every later join from this device a "retry" of it.
+      clearJoinAttempt(roomId)
       router.push(`/room/${session.roomId}`)
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Could not join the room.')
