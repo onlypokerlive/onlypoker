@@ -524,6 +524,11 @@ def _player_by_token(room: dict[str, Any], token: str | None) -> str | None:
 class CreateRoomBody(BaseModel):
     name: str = Field(min_length=1, max_length=40)
     hostName: str = Field(min_length=1, max_length=20)
+    # Optional signed photo URL, prefilled from a signed-in player's profile or
+    # a guest's uploaded selfie. Rendered as an <img src> at the table.
+    hostAvatarUrl: str | None = Field(
+        default=None, max_length=1000, pattern=r"^https://.+"
+    )
     startingChips: int = Field(ge=1)
     smallBlind: int = Field(ge=1)
     bigBlind: int = Field(ge=1)
@@ -576,6 +581,11 @@ class JoinBody(BaseModel):
     # Names this attempt, so a retry after a lost response takes the same seat
     # back instead of a second one. See "Doing a thing once" above.
     requestId: str | None = Field(default=None, max_length=64)
+    # Optional signed photo URL, prefilled from a signed-in player's profile or
+    # a guest's uploaded selfie. Rendered as an <img src> at the table.
+    avatarUrl: str | None = Field(
+        default=None, max_length=1000, pattern=r"^https://.+"
+    )
 
 
 class ActionBody(BaseModel):
@@ -1431,6 +1441,7 @@ def _finish_tournament(room: dict[str, Any], by_chips: bool = False) -> None:
             "place": place,
             "playerId": pid,
             "name": room["players"][pid]["name"],
+            "avatarUrl": room["players"][pid].get("avatarUrl"),
             "chips": room["players"][pid]["chips"],
         }
         for place, pid in enumerate(ranking, start=1)
@@ -2026,6 +2037,7 @@ def _build_view(room: dict[str, Any], viewer_id: str | None) -> dict[str, Any]:
         entry = {
             "id": pid,
             "name": p["name"],
+            "avatarUrl": p.get("avatarUrl"),
             "seat": p["seat"],
             "chips": p["chips"],
             "isHost": pid == room["hostId"],
@@ -2206,6 +2218,7 @@ async def create_room(body: CreateRoomBody) -> dict[str, Any]:
             host_id: {
                 "id": host_id,
                 "name": body.hostName,
+                "avatarUrl": body.hostAvatarUrl,
                 "seat": 0,
                 "chips": body.startingChips,
                 "token": host_token,
@@ -2366,6 +2379,7 @@ async def join_room(
         room["players"][player_id] = {
             "id": player_id,
             "name": body.name,
+            "avatarUrl": body.avatarUrl,
             "seat": seat,
             "chips": 0,
             "token": token,

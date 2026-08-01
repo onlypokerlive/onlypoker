@@ -2,6 +2,8 @@ import { Spade, Users, Link2, ShieldCheck } from 'lucide-react'
 
 import { CreateRoomForm } from '@/components/create-room-form'
 import { PlayingCard } from '@/components/playing-card'
+import { SiteHeader } from '@/components/site-header'
+import { SignedOutCta } from '@/components/signed-out-cta'
 import {
   Card,
   CardContent,
@@ -31,7 +33,8 @@ const STEPS = [
 export default function HomePage() {
   return (
     <main className="min-h-dvh">
-      <div className="mx-auto flex min-h-dvh max-w-6xl flex-col gap-10 px-5 py-10 lg:flex-row lg:items-center lg:gap-16 lg:py-16">
+      <SiteHeader />
+      <div className="mx-auto flex max-w-6xl flex-col gap-10 px-5 py-10 lg:flex-row lg:items-center lg:gap-16 lg:py-16">
         {/* Hero / pitch */}
         <section className="flex-1">
           <div className="inline-flex items-center gap-2 rounded-full border border-primary/30 bg-primary/10 px-3 py-1 text-xs font-medium text-primary">
@@ -88,6 +91,7 @@ export default function HomePage() {
               <CreateRoomForm />
             </CardContent>
           </Card>
+          <SignedOutCta />
         </section>
       </div>
     </main>
