@@ -351,7 +351,10 @@ export function RoomClient({ roomId }: { roomId: string }) {
                         : "Dealing the next hand…"}
                   </div>
                 )}
-                {!spectating && !you?.sittingOut && (
+                {/* Not to somebody with no chips: they are already out of the
+                    next hand, and "sit out" next to "buy back in" reads as two
+                    ways of doing the same thing. */}
+                {!spectating && !you?.sittingOut && !you?.out && (
                   <Button
                     variant="ghost"
                     size="sm"

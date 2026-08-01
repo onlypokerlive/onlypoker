@@ -16,8 +16,11 @@ export function HandResults({
 }) {
   if (!view.lastResults.length) return null
   const sorted = [...view.lastResults].sort((a, b) => b.delta - a.delta)
-  // Hands are only named when they were actually shown down.
-  const shown = sorted.some((r) => r.handName)
+  // Whether the cards went face up, asked of the server rather than inferred
+  // from a hand having been named. Those came apart when a pot run twice
+  // stopped naming hands — the same player usually has two different ones —
+  // and every all-in showdown started claiming it was won without showing.
+  const shown = view.wentToShowdown
 
   return (
     <div

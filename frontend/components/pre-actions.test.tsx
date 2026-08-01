@@ -78,3 +78,21 @@ describe('deciding before your turn', () => {
     expect(screen.queryByRole('button')).toBeNull()
   })
 })
+
+describe('when there is no turn coming', () => {
+  it('says nothing while everybody is all-in', () => {
+    // Found by watching a real all-in: the row sat there offering to pre-fold
+    // a hand that was already dealing itself out.
+    show({
+      actorId: null,
+      runoutSeats: ['me', 'p1'],
+      you: player({ id: 'me', isYou: true, chips: 0 }),
+    })
+    expect(screen.queryByRole('button')).toBeNull()
+  })
+
+  it('says nothing between streets, when nobody is on the spot', () => {
+    show({ actorId: null })
+    expect(screen.queryByRole('button')).toBeNull()
+  })
+})

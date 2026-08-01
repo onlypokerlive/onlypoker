@@ -47,6 +47,10 @@ export function PreActions({
   // Planning your own turn is not planning — it is acting, by a second route.
   if (!you || view.phase !== "hand" || !you.inHand || you.folded) return null
   if (view.isYourTurn || view.actorId === you.id) return null
+  // And only while a turn is actually coming. All-in there are no decisions
+  // left to plan, and between streets nobody is on the spot — offering to
+  // pre-fold a hand that is already dealing itself out is offering nonsense.
+  if (!view.actorId || you.chips <= 0) return null
 
   async function choose(action: PreAction) {
     setBusy(true)
