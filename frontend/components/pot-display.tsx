@@ -29,7 +29,10 @@ export function PotDisplay({
         <span className="text-[10px] uppercase tracking-widest text-muted-foreground">
           Pot
         </span>
-        <div className="font-mono text-lg font-bold tabular-nums text-accent">
+        {/* Gold, not the green accent: this number is read across a dim room
+            at a glance, and green on green is the one pairing the felt makes
+            impossible. */}
+        <div className="font-mono text-lg font-bold tabular-nums text-primary">
           {total.toLocaleString()}
         </div>
       </div>
@@ -60,7 +63,7 @@ export function PotDisplay({
             </span>
             <span
               className={cn(
-                "font-mono font-bold tabular-nums text-accent",
+                "font-mono font-bold tabular-nums text-primary",
                 i === 0 ? "text-base" : "text-sm",
               )}
             >

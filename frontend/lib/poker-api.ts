@@ -1,3 +1,5 @@
+import type { BaizeId, DeckId } from '@/lib/table-style'
+
 // Shared client for the FastAPI poker backend. All requests go to /api/* which
 // Vercel routes to the Python service.
 
@@ -185,6 +187,9 @@ export interface RoomView {
     bombPot: boolean
     /** Big blinds each player owes a 7-2 winner. 0 is off. */
     sevenDeuce: number
+    /** What the table is made of. Chosen once, by whoever set it up. */
+    baize: string
+    deck: string
   }
   players: PlayerView[]
   board: string[]
@@ -283,6 +288,9 @@ export interface GameView {
   preAction: PreAction | null
   ante: number
   bombPot: boolean
+  /** What the table is made of — see `lib/table-style.ts`. */
+  baize: string
+  deck: string
   players: PlayerView[]
   board: string[]
   boards: string[][]
@@ -395,6 +403,8 @@ export function toGameView(v: RoomView, playerId: string | null): GameView {
     askedAboutRunout: !!playerId && (v.runoutSeats ?? []).includes(playerId),
     ante: v.room.ante,
     bombPot: v.room.bombPot,
+    baize: v.room.baize,
+    deck: v.room.deck,
     players,
     board: v.board,
     pot: v.pot,
@@ -503,6 +513,9 @@ export interface CreateRoomInput {
   bombPotEvery: number
   /** Big blinds each player owes whoever wins with 7-2 offsuit. 0 is off. */
   sevenDeuce: number
+  /** What the table is made of. Cosmetic, shared, and chosen once. */
+  baize: BaizeId
+  deck: DeckId
   /** Stop the table every N blind levels. 0 turns scheduled breaks off. */
   breakEveryLevels: number
   breakMinutes: number

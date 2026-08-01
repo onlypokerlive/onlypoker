@@ -5,230 +5,112 @@ import { useLayoutEffect, useRef, useState } from "react"
 import { PlayingCard } from "@/components/playing-card"
 import { PlayerSeat } from "@/components/player-seat"
 import { PotDisplay } from "@/components/pot-display"
+import { ChipStack } from "@/components/chip-stack"
 import { latestLine } from "@/lib/action-line"
+import { baizeOf, deckOf } from "@/lib/table-style"
+import {
+  betLabel,
+  betSpot,
+  boxAt,
+  crowded,
+  estimateBetSize,
+  estimateSeatSize,
+  estimateStackSize,
+  seatBox,
+  seatCentre,
+  stackOffset,
+  type Box,
+  type Point,
+  type Size,
+  type TableSize,
+} from "@/lib/table-layout"
 import type { GameView, PlayerView } from "@/lib/poker-api"
 
-// Seats ride an ellipse with "you" at the bottom. Computing the ring beats
-// hand-tuning a layout per table size: the spacing stays even from two players
-// to nine, and nothing creeps into the middle where the board lives.
-//
-// The radii are percentages but a seat is measured in pixels, so they are set
-// for the narrowest phone we support (320px). Anything wider only gains slack.
-const SEAT_RX = 37
-const SEAT_RY = 38
-
-// Fallback half-size of a seat box, used only until one has been measured. The
-// real thing is measured because the seat grows on wider screens, and a chip
-// stepped off a stale size lands inside the box.
-const SEAT_HALF_W = 34
-const SEAT_HALF_H = 46
-// Starting half-size of a bet chip, used only for the frame before the real one
-// is measured. It has to be measured: the pill is as wide as the number inside
-// it, so a five-figure raise is half again as wide as a blind, and a chip
-// stepped off a guessed width sits on the seat it was meant to clear.
-const CHIP_HALF_W = 22
-const CHIP_HALF_H = 8
-const CHIP_GAP = 8
-
-function seatAngle(index: number, total: number) {
-  // Start at the bottom (you) and work around the table.
-  return Math.PI / 2 + (index * 2 * Math.PI) / total
-}
-
-function seatPosition(index: number, total: number) {
-  const angle = seatAngle(index, total)
-  return {
-    left: `${50 + SEAT_RX * Math.cos(angle)}%`,
-    top: `${50 + SEAT_RY * Math.sin(angle)}%`,
-  }
-}
-
-// How far the chip may be walked in towards the middle, and slid sideways
-// along the ring, while looking for a gap between the seats it has to clear.
-const PUSH_STEP = 3
-const MAX_PUSH = 90
-const SLIDE_STEP = 4
-// Generous, because on a three-handed 320px table the lane between a flank
-// seat and the board is around 15px wide — nothing fits in it, and the only
-// free felt is a good way along the ring. Small slides are still tried first.
-const MAX_SLIDE = 72
-
-interface Box {
-  left: number
-  top: number
-  right: number
-  bottom: number
-}
-
-interface SeatSize {
-  halfW: number
-  halfH: number
-}
-
-function expand(box: Box, px: number): Box {
-  return {
-    left: box.left - px,
-    top: box.top - px,
-    right: box.right + px,
-    bottom: box.bottom + px,
-  }
-}
-
-function seatCentre(index: number, total: number, table: { w: number; h: number }) {
-  const angle = seatAngle(index, total)
-  return {
-    x: table.w / 2 + (SEAT_RX / 100) * table.w * Math.cos(angle),
-    y: table.h / 2 + (SEAT_RY / 100) * table.h * Math.sin(angle),
-  }
-}
-
-function seatBox(
-  index: number,
-  total: number,
-  table: { w: number; h: number },
-  size: SeatSize,
-): Box {
-  const c = seatCentre(index, total, table)
-  return {
-    left: c.x - size.halfW,
-    top: c.y - size.halfH,
-    right: c.x + size.halfW,
-    bottom: c.y + size.halfH,
-  }
-}
-
-function chipBox(x: number, y: number, chip: SeatSize): Box {
-  return {
-    left: x - chip.halfW,
-    top: y - chip.halfH,
-    right: x + chip.halfW,
-    bottom: y + chip.halfH,
-  }
-}
-
-function overlapArea(a: Box, b: Box) {
-  const x = Math.min(a.right, b.right) - Math.max(a.left, b.left)
-  const y = Math.min(a.bottom, b.bottom) - Math.max(a.top, b.top)
-  return x > 0 && y > 0 ? x * y : 0
-}
-
-// A chip over the board costs far more than a chip over a seat: the community
-// cards and the pot are what everybody at the table is reading, and a seat has
-// room to spare around its edge. High enough to be a rule rather than a
-// trade-off, but still a weight, so a hopeless table degrades instead of
-// snapping to some arbitrary corner.
-const BOARD_WEIGHT = 200
-
 /**
- * Where a player's wagered chips go: walked in from their seat towards the
- * middle, and slid along the ring, until the chip covers neither another seat
- * nor the pot and board.
+ * How many chips are drawn beside a seat.
  *
- * This works in pixels against the measured table, because the things it has to
- * avoid are sized in pixels while the seat ring is a percentage. On a 320px
- * phone seating nine, the lane between a flank seat and the community cards is
- * only a few pixels wide — guessing at percentages puts chips on top of a seat.
- *
- * It searches rather than solving in one shot because the obstacles are boxes
- * on a ring, not a single edge: past its own seat the chip can still be inside
- * a neighbour's, and every pixel further in opens that gap up, since the seats
- * are all centred on the ring it is leaving.
- *
- * Some tables have no clean answer at all — a five-figure raise is a wide pill,
- * and a narrow phone leaves nothing between a seat and the board. So the search
- * keeps the least-bad spot it saw rather than falling back on a fixed one: an
- * overlap of a few pixels is worth having when the alternative is a chip parked
- * squarely on somebody's stack.
+ * Not the player's whole stack — that is what the number under their name is
+ * for, and a hundred chips beside every seat is a table you cannot read. This
+ * is the handful that says "they have chips", sized so a short stack visibly
+ * *is* a short stack.
  */
-function betOffset(
-  index: number,
-  total: number,
-  table: { w: number; h: number },
-  centre: Box | null,
-  seats: Box[],
-  chip: SeatSize,
-) {
-  const angle = seatAngle(index, total)
-  const cos = Math.cos(angle)
-  const sin = Math.sin(angle)
-  const c = seatCentre(index, total, table)
-
-  const own = seats[index]
-  const halfW = (own.right - own.left) / 2
-  const halfH = (own.bottom - own.top) / 2
-  // Distance at which the chip's *box* clears its own seat's box on at least
-  // one axis. Stepping off the seat edge and adding a fixed gap falls short on
-  // the diagonals, where clearing one axis is what the geometry actually asks
-  // for and the shortfall lands the chip inside the seat it came from.
-  const needX =
-    Math.abs(cos) < 1e-6 ? Infinity : (halfW + chip.halfW + CHIP_GAP) / Math.abs(cos)
-  const needY =
-    Math.abs(sin) < 1e-6 ? Infinity : (halfH + chip.halfH + CHIP_GAP) / Math.abs(sin)
-  const start = Math.min(needX, needY)
-
-  const reserved = centre ? expand(centre, CHIP_GAP) : null
-  const blocked = seats.map((s) => expand(s, CHIP_GAP))
-  // What this spot costs, in pixels of covered content. Everything is padded by
-  // the gap, so grazing the breathing room around a seat is cheap and actually
-  // covering it is not.
-  const cost = (cx: number, cy: number) => {
-    const box = chipBox(cx, cy, chip)
-    let total = reserved ? BOARD_WEIGHT * overlapArea(box, reserved) : 0
-    for (const s of blocked) total += overlapArea(box, s)
-    return total
-  }
-
-  // Sideways along the ring, for the tables where there is no room straight in.
-  const tanX = -sin
-  const tanY = cos
-  // Never search past the middle of the table: the far side belongs to the
-  // players sitting there.
-  const toMiddle = Math.hypot(c.x - table.w / 2, c.y - table.h / 2)
-
-  let best = { x: c.x - cos * start, y: c.y - sin * start, cost: Infinity }
-
-  for (let pushed = 0; start + pushed <= Math.min(start + MAX_PUSH, toMiddle); pushed += PUSH_STEP) {
-    const cx = c.x - cos * (start + pushed)
-    const cy = c.y - sin * (start + pushed)
-    for (let slide = 0; slide <= MAX_SLIDE; slide += SLIDE_STEP) {
-      for (const dir of slide === 0 ? [1] : [1, -1]) {
-        const sx = cx + tanX * slide * dir
-        const sy = cy + tanY * slide * dir
-        const spent = cost(sx, sy)
-        if (spent === 0) return { left: `${sx}px`, top: `${sy}px` }
-        if (spent < best.cost) best = { x: sx, y: sy, cost: spent }
-      }
-    }
-  }
-
-  return { left: `${best.x}px`, top: `${best.y}px` }
+function stackHeight(chips: number, startingChips: number) {
+  if (chips <= 0) return 0
+  const share = startingChips > 0 ? chips / startingChips : 1
+  return Math.max(2, Math.min(9, Math.round(share * 5) + 2))
 }
 
 /**
- * Deep stacks in full are wider than the lane they have to sit in: "24,500" is
- * a 68px pill, and on a 320px phone that is most of the gap between a seat and
- * the board. Shortening past five figures is what a real table does with a
- * stack of chips anyway — you read the colour, not the count.
+ * An anchor.
+ *
+ * The split that makes movement possible later. Every positioned element used
+ * to carry `-translate-x-1/2 -translate-y-1/2`, which *is* its transform — so
+ * animating a chip from a seat to the pot would have meant rewriting that
+ * transform on every frame, and `left`/`top` lay the page out again each time
+ * where a transform goes straight to the compositor.
+ *
+ * So the anchor places, in corner coordinates, and the content inside it is
+ * free to be animated without touching where it sits. Corner rather than
+ * centre because the box has already been measured, which is what made the
+ * centring translate necessary in the first place.
  */
-function betLabel(amount: number) {
-  if (amount < 10_000) return amount.toLocaleString()
-  const thousands = amount / 1000
-  const rounded = thousands < 100 ? thousands.toFixed(1).replace(/\.0$/, "") : Math.round(thousands)
-  return `${rounded}k`
+function Anchor({
+  at,
+  size,
+  z,
+  piece,
+  children,
+  innerRef,
+}: {
+  at: Point
+  size: Size
+  z?: string
+  /**
+   * What this is, in one word. Not styling — it is how a check running in a
+   * real browser can ask "does anything cover anything" without guessing from
+   * class names, which is the check the pure test cannot make.
+   */
+  piece: string
+  children: React.ReactNode
+  innerRef?: (el: HTMLDivElement | null) => void
+}) {
+  return (
+    <div
+      ref={innerRef}
+      data-piece={piece}
+      className={`absolute left-0 top-0 ${z ?? ""}`}
+      style={{
+        // `translate` and not `translate3d`: nine seats' worth of compositor
+        // layers is real GPU memory on an old phone, and nothing here is
+        // moving yet. The layer goes on the pieces that animate, when they do.
+        transform: `translate(${at.x - size.w / 2}px, ${at.y - size.h / 2}px)`,
+      }}
+    >
+      {children}
+    </div>
+  )
 }
 
 function BetChip({ amount }: { amount: number }) {
   return (
-    <div className="flex items-center gap-1 rounded-full bg-background/85 px-2 py-0.5 shadow-md ring-1 ring-primary/30 backdrop-blur">
-      <span className="size-2 shrink-0 rounded-full bg-primary" aria-hidden />
+    <div className="flex items-center gap-1 rounded-full bg-background/80 px-1.5 py-0.5 shadow-md ring-1 ring-primary/25 backdrop-blur">
+      <ChipStack amount={amount} className="scale-90" />
       <span
-        className="font-mono text-[11px] font-bold leading-none text-primary"
+        className="font-mono text-[11px] font-bold leading-none tabular-nums text-primary"
         title={amount.toLocaleString()}
       >
         {betLabel(amount)}
       </span>
     </div>
   )
+}
+
+interface Geometry {
+  table: TableSize
+  centre: Box | null
+  seats: Size[]
+  bets: (Size | undefined)[]
+  stacks: (Size | undefined)[]
 }
 
 export function PokerTable({
@@ -247,82 +129,144 @@ export function PokerTable({
   const youIdx = players.findIndex((p) => p.isYou)
   const ordered: PlayerView[] =
     youIdx >= 0 ? [...players.slice(youIdx), ...players.slice(0, youIdx)] : players
+  const total = ordered.length
 
-  // Measure the table and the pot/board block so chips can be kept off them.
   const tableRef = useRef<HTMLDivElement>(null)
   const centreRef = useRef<HTMLDivElement>(null)
   // Every seat is measured, not one of them: the blind and to-act badges make
   // some seats taller than others, and a chip stepped off the wrong size lands
   // on the seat next door.
   const seatRefs = useRef<(HTMLDivElement | null)[]>([])
-  const chipRefs = useRef<(HTMLDivElement | null)[]>([])
-  const [geometry, setGeometry] = useState<{
-    table: { w: number; h: number }
-    centre: Box | null
-    seats: SeatSize[]
-    chips: (SeatSize | undefined)[]
-  }>({ table: { w: 0, h: 0 }, centre: null, seats: [], chips: [] })
+  const betRefs = useRef<(HTMLDivElement | null)[]>([])
+  const stackRefs = useRef<(HTMLDivElement | null)[]>([])
+  const [geometry, setGeometry] = useState<Geometry>({
+    table: { w: 0, h: 0 },
+    centre: null,
+    seats: [],
+    bets: [],
+    stacks: [],
+  })
 
-  // The seats have to be measured before a chip can be placed, and a chip has
-  // to be on screen before it can be measured — so the first pass sizes the
-  // seats, the second sizes the chips it just drew.
-  const measured = geometry.seats.length === ordered.length
+  const measured = geometry.seats.length === total
   const bets = ordered.map((p) => p.bet).join(",")
+  // Turning a hand over grows a seat, and everything placed against that seat
+  // was placed against a box that has just stopped existing. This is the
+  // relayout trigger that gets forgotten, and the one that actually breaks
+  // things — the other three are obvious enough to remember.
+  const shown = ordered.map((p) => (p.cards ? p.cards.length : 0)).join(",")
 
   useLayoutEffect(() => {
+    /**
+     * Read everything, then write once.
+     *
+     * The order is the point. Measuring a seat, placing its chip, then
+     * measuring the next seat makes the browser lay the whole page out again
+     * to answer the second question, and it does that once per seat. Reading
+     * the whole table in one pass and only then calling `setGeometry` took the
+     * measured layout count from 97 to 40 on a bet and 99 to 42 on a resize,
+     * with an identical result on screen.
+     */
     const measure = () => {
       const table = tableRef.current
       if (!table) return
       const t = table.getBoundingClientRect()
-      let centre: Box | null = null
-      if (centreRef.current) {
-        const c = centreRef.current.getBoundingClientRect()
-        centre = {
-          left: c.left - t.left,
-          top: c.top - t.top,
-          right: c.right - t.left,
-          bottom: c.bottom - t.top,
+      const relative = (el: Element | null): Box | null => {
+        if (!el) return null
+        const r = el.getBoundingClientRect()
+        return {
+          left: r.left - t.left,
+          top: r.top - t.top,
+          right: r.right - t.left,
+          bottom: r.bottom - t.top,
         }
       }
-      setGeometry({
+      const sizeOf = (el: Element | null): Size | undefined => {
+        if (!el) return undefined
+        const r = el.getBoundingClientRect()
+        return { w: r.width, h: r.height }
+      }
+
+      // Every read happens here, before a single write.
+      const next: Geometry = {
         table: { w: t.width, h: t.height },
-        centre,
-        seats: ordered.map((_, i) => {
-          const s = seatRefs.current[i]?.getBoundingClientRect()
-          return s
-            ? { halfW: s.width / 2, halfH: s.height / 2 }
-            : { halfW: SEAT_HALF_W, halfH: SEAT_HALF_H }
-        }),
-        chips: ordered.map((_, i) => {
-          const c = chipRefs.current[i]?.getBoundingClientRect()
-          return c ? { halfW: c.width / 2, halfH: c.height / 2 } : undefined
-        }),
-      })
+        centre: relative(centreRef.current),
+        seats: ordered.map(
+          (_, i) =>
+            sizeOf(seatRefs.current[i]) ??
+            estimateSeatSize({ width: t.width, seats: total, revealed }),
+        ),
+        bets: ordered.map((_, i) => sizeOf(betRefs.current[i])),
+        stacks: ordered.map((_, i) => sizeOf(stackRefs.current[i])),
+      }
+      setGeometry(next)
     }
+
     measure()
     const observer = new ResizeObserver(measure)
     const watched = [
       tableRef.current,
       centreRef.current,
       ...seatRefs.current,
-      ...chipRefs.current,
+      ...betRefs.current,
+      ...stackRefs.current,
     ]
     for (const el of watched) {
       if (el) observer.observe(el)
     }
     return () => observer.disconnect()
-    // The centre block resizes as cards land, so re-measure on every street;
-    // `bets` catches a chip growing a digit, `measured` the pass that first
-    // put the chips on screen.
+    // The four things that move everything: the board growing, the table
+    // emptying, a bet changing width — and a seat changing size, which is the
+    // one that gets left out.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [view.board.length, ordered.length, bets, measured])
+  }, [view.board.length, total, bets, shown, measured])
 
-  // Seat boxes in the same pixel space as the chips, so a chip can be tested
-  // against the ones it must not cover.
-  const seatBoxes =
-    geometry.table.w > 0 && measured
-      ? ordered.map((_, i) => seatBox(i, ordered.length, geometry.table, geometry.seats[i]))
-      : null
+  const table = geometry.table
+  const live = table.w > 0 && measured
+
+  // ---- Compute. Pure, from the measurements above, and nothing is written
+  // to the document until React renders the result. ----
+  const seatSizes = geometry.seats
+  const seatBoxes = live
+    ? ordered.map((_, i) => seatBox(i, total, table, seatSizes[i]))
+    : null
+
+  const betPlacements: (Point | null)[] = []
+  const stackPlacements: (Point | null)[] = []
+  if (seatBoxes) {
+    const placedBets: Box[] = []
+    for (let i = 0; i < total; i++) {
+      if (ordered[i].bet <= 0) {
+        betPlacements.push(null)
+        continue
+      }
+      const size = geometry.bets[i] ?? estimateBetSize(ordered[i].bet)
+      const at = betSpot(i, total, table, seatBoxes, size, geometry.centre, placedBets)
+      placedBets.push(boxAt(at, size))
+      betPlacements.push(at)
+    }
+
+    // Stacks last, and against the bets that were just placed rather than
+    // against whatever the document still says — a chain that reads its own
+    // half-finished output back out of the DOM gives an answer that depends on
+    // the order it happened to run in.
+    const placedStacks: Box[] = []
+    for (let i = 0; i < total; i++) {
+      const discs = stackHeight(ordered[i].chips, view.startingChips)
+      if (discs <= 0) {
+        stackPlacements.push(null)
+        continue
+      }
+      const size = geometry.stacks[i] ?? estimateStackSize(discs)
+      const at = stackOffset(i, total, table, seatBoxes, size, [
+        ...(geometry.centre ? [geometry.centre] : []),
+        ...placedBets,
+        ...placedStacks,
+      ])
+      placedStacks.push(boxAt(at, size))
+      stackPlacements.push(at)
+    }
+  }
+
   // Only a real showdown puts hands on the table. A pot won by folding ends in
   // "handover" too, and inferring from the phase would flip the winner's own
   // cards face up for whoever is sitting next to them.
@@ -340,49 +284,62 @@ export function PokerTable({
     // the pairs flanking the top corners run into each other.
     <div
       ref={tableRef}
+      data-baize={baizeOf(view.baize)}
+      data-deck={deckOf(view.deck)}
+      // The aspect ratio is not decoration and it is not negotiable: nine
+      // seats need about 450px of table before adjacent boxes start touching,
+      // and squashing the box to fit a short phone is what makes them touch.
+      // Measured, not guessed — see the layout test, which walks the heights.
+      // So the page scrolls on a short phone, as it already did, and the
+      // buttons stay pinned.
       className="relative mx-auto aspect-[3/4.4] w-full max-w-sm sm:aspect-[3/2] sm:max-w-3xl"
     >
-      {/* Felt */}
-      <div className="absolute inset-4 rounded-[45%] border-8 border-[#4a2c17] bg-[radial-gradient(ellipse_at_center,hsl(150_45%_22%),hsl(150_50%_14%))] shadow-[inset_0_0_60px_rgba(0,0,0,0.6)]">
-        <div className="absolute inset-6 rounded-[45%] border border-accent/20" />
+      {/* The rail, and the cloth inside it. Two boxes rather than a border,
+          because wood and felt are different materials and a border can only
+          be one colour. */}
+      <div className="rail absolute inset-0 rounded-[46%] shadow-[0_10px_30px_rgba(0,0,0,0.55)]">
+        <div className="baize absolute inset-3 rounded-[45%]">
+          {/* The gold fillet. Inside the cloth, not on the wood — it is the
+              line inlaid at the edge of the playing surface. */}
+          <div
+            className="absolute inset-5 rounded-[45%] border"
+            style={{ borderColor: "color-mix(in oklab, var(--fillet) 30%, transparent)" }}
+          />
+        </div>
       </div>
 
       {/* Center: pot + board. */}
       <div className="absolute left-1/2 top-[42%] flex w-full -translate-x-1/2 -translate-y-1/2 flex-col items-center gap-2 px-2">
         {/* Measured as the reserved middle of the table, so it hugs its
             contents rather than spanning the full width. */}
-        <div ref={centreRef} className="flex w-fit flex-col items-center gap-2">
+        <div ref={centreRef} data-piece="centre" className="flex w-fit flex-col items-center gap-2">
           <PotDisplay pots={view.pots} total={view.pot} youId={view.you?.id} />
           <div
             data-testid="board"
             data-cards={view.board.length}
             className="flex min-h-[3rem] flex-wrap items-center justify-center gap-1"
           >
-          {view.board.length > 0 ? (
-            // Small on narrow phones: five cards at the sm size leave a
-            // nine-handed table no room between the board and the seats.
-            view.board.map((c, i) => (
-              <PlayingCard
-                key={i}
-                card={c}
-                size="xs"
-                className="min-[380px]:h-12 min-[380px]:w-9 min-[380px]:text-xs"
-              />
-            ))
-          ) : (
-            <span className="text-xs text-muted-foreground/70">
-              {view.phase === "hand" ? "Community cards" : "Waiting for next hand"}
-            </span>
-          )}
+            {view.board.length > 0 ? (
+              // Small on narrow phones: five cards at the sm size leave a
+              // nine-handed table no room between the board and the seats.
+              view.board.map((c, i) => (
+                <PlayingCard
+                  key={i}
+                  card={c}
+                  size="xs"
+                  className="min-[380px]:h-12 min-[380px]:w-9 min-[380px]:text-xs"
+                />
+              ))
+            ) : (
+              <span className="text-xs text-muted-foreground/70">
+                {view.phase === "hand" ? "Community cards" : "Waiting for next hand"}
+              </span>
+            )}
           </div>
         </div>
-        {/* What the table would have said out loud. While a hand is live that
-            is the last decision; once it is over it is who won, which is the
-            only thing anybody wants said then.
-
-            One region, announced politely, and never two: a screen reader
-            given two live regions in the middle of the table reads them in
-            whichever order it feels like. */}
+        {/* What the table would have said out loud. One region, announced
+            politely, and never two: a screen reader given two live regions in
+            the middle of the table reads them in whichever order it likes. */}
         <div
           role="status"
           aria-live="polite"
@@ -396,51 +353,81 @@ export function PokerTable({
         </div>
       </div>
 
-      {/* Chips wagered this street, out on the felt in front of each player.
-          Held back until the table has been measured, since their position is
-          derived from it. */}
+      {/* The chips each player still has, beside their seat — never above it,
+          which is where their cards are. Drawn before the bets so a bet that
+          has nowhere else to go sits on top of a stack rather than under it. */}
       {ordered.map((p, i) =>
-        p.bet > 0 && seatBoxes ? (
-          <div
-            key={`bet-${p.id}`}
-            ref={(el) => {
-              chipRefs.current[i] = el
+        stackPlacements[i] ? (
+          <Anchor
+            key={`stack-${p.id}`}
+            piece="stack"
+            at={stackPlacements[i]!}
+            size={geometry.stacks[i] ?? estimateStackSize(stackHeight(p.chips, view.startingChips))}
+            innerRef={(el) => {
+              stackRefs.current[i] = el
             }}
-            className="absolute z-10 -translate-x-1/2 -translate-y-1/2"
-            style={betOffset(
-              i,
-              ordered.length,
-              geometry.table,
-              geometry.centre,
-              seatBoxes,
-              geometry.chips[i] ?? { halfW: CHIP_HALF_W, halfH: CHIP_HALF_H },
-            )}
+          >
+            <ChipStack amount={chipsShown(p.chips, view.startingChips)} />
+          </Anchor>
+        ) : null,
+      )}
+
+      {/* Chips wagered this street, out on the felt in front of each player. */}
+      {ordered.map((p, i) =>
+        betPlacements[i] ? (
+          <Anchor
+            key={`bet-${p.id}`}
+            piece="bet"
+            at={betPlacements[i]!}
+            size={geometry.bets[i] ?? estimateBetSize(p.bet)}
+            z="z-10"
+            innerRef={(el) => {
+              betRefs.current[i] = el
+            }}
           >
             <BetChip amount={p.bet} />
-          </div>
+          </Anchor>
         ) : null,
       )}
 
       {/* Seats */}
       {ordered.map((p, i) => (
-        <div
+        <Anchor
           key={p.id}
-          // Measured so chips know how far to step around this seat.
-          ref={(el) => {
+          piece="seat"
+          at={seatCentre(i, total, table)}
+          size={seatSizes[i] ?? estimateSeatSize({ width: table.w, seats: total, revealed })}
+          z="z-20"
+          innerRef={(el) => {
             seatRefs.current[i] = el
           }}
-          className="absolute -translate-x-1/2 -translate-y-1/2"
-          style={seatPosition(i, ordered.length)}
         >
           <PlayerSeat
             player={p}
             showdown={showdown}
             revealed={revealed}
+            compact={crowded(total)}
             secondsLeft={p.isActor ? secondsLeft : null}
             actionSeconds={view.actionSeconds}
           />
-        </div>
+        </Anchor>
       ))}
     </div>
   )
+}
+
+/**
+ * The amount the drawn stack represents.
+ *
+ * Not their chip count — see {@link stackHeight}. The number under their name
+ * is the truth; this is scaled so the *colours* say roughly how deep they are,
+ * which is what a stack across a table tells you.
+ */
+function chipsShown(chips: number, startingChips: number) {
+  const discs = stackHeight(chips, startingChips)
+  if (discs <= 0) return 0
+  // Enough that the breakdown reaches into the higher denominations for a big
+  // stack and stays low for a short one.
+  const step = Math.max(1, Math.round(startingChips / 20))
+  return step * discs
 }

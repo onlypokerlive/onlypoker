@@ -528,6 +528,13 @@ class CreateRoomBody(BaseModel):
     smallBlind: int = Field(ge=1)
     bigBlind: int = Field(ge=1)
     password: str = Field(min_length=1, max_length=64)
+    # What the table is made of. Cosmetic and shared: a poker table is one
+    # object everybody is sitting at, so this belongs to the room and not to
+    # each player's settings. Validated against a list rather than taken as
+    # free text — it ends up in a `data-` attribute that selects a stylesheet
+    # rule, and an unknown value there is a table with no surface.
+    baize: str = Field(default="emerald", pattern="^(emerald|claret|midnight|slate)$")
+    deck: str = Field(default="claret", pattern="^(claret|navy|forest|bone)$")
     # 0 disables the blind clock (blinds stay where they started).
     levelMinutes: int = Field(default=10, ge=0, le=120)
     # 0 disables the shot clock.
@@ -2172,6 +2179,10 @@ def _build_view(room: dict[str, Any], viewer_id: str | None) -> dict[str, Any]:
             # Whether the hand on the table right now is a bomb pot.
             "bombPot": bool(room.get("bombPot")),
             "sevenDeuce": int(room.get("sevenDeuce") or 0),
+            # What this table is made of. Rooms made before there was a
+            # choice get the default, which is the table everybody already had.
+            "baize": room.get("baize") or "emerald",
+            "deck": room.get("deck") or "claret",
             "levelMinutes": int(room.get("levelMinutes") or 0),
             "autoDealSeconds": int(room.get("autoDealSeconds") or 0),
             # The table is stopped: no deals, and the blind clock is held still.
@@ -2339,6 +2350,8 @@ async def create_room(body: CreateRoomBody) -> dict[str, Any]:
         "straddle": body.straddle,
         "bombPotEvery": body.bombPotEvery,
         "sevenDeuce": body.sevenDeuce,
+        "baize": body.baize,
+        "deck": body.deck,
         "actionDeadline": None,
         "autoDealSeconds": AUTO_DEAL_SECONDS,
         "autoDealAt": None,

@@ -61,6 +61,8 @@ function view(overrides: Partial<GameView> = {}): GameView {
     preAction: null,
     ante: 0,
     bombPot: false,
+    baize: 'emerald',
+    deck: 'claret',
     players: [you, player()],
     board: [],
     boards: [[]],

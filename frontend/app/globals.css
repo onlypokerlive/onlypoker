@@ -92,16 +92,252 @@
   }
 }
 
-/* Green felt table surface */
+/* ------------------------------------------------------------------------ *
+ * The table's materials
+ *
+ * Cloth and wood are a *choice the host makes*, so they are variables rather
+ * than classes — the components stay in Tailwind and only ever read
+ * `var(--…)`, and nothing has to be rewritten to plain CSS to make a second
+ * table possible.
+ *
+ * The variables hang off `[data-baize]` and `[data-deck]` rather than off the
+ * table itself, deliberately. The picker on the create-room screen has to draw
+ * a swatch of each one *next to each other*, and tokens that only exist inside
+ * the table can only ever paint the table.
+ * ------------------------------------------------------------------------ */
+[data-baize='emerald'],
+:root {
+  --baize-lit: oklch(0.48 0.1 158);
+  --baize-mid: oklch(0.4 0.09 158);
+  --baize-dim: oklch(0.31 0.07 158);
+  --rail-lit: oklch(0.42 0.06 55);
+  --rail-dim: oklch(0.26 0.04 45);
+  --fillet: oklch(0.8 0.13 85);
+}
+
+[data-baize='claret'] {
+  --baize-lit: oklch(0.42 0.13 20);
+  --baize-mid: oklch(0.34 0.12 20);
+  --baize-dim: oklch(0.26 0.09 18);
+  --rail-lit: oklch(0.38 0.05 40);
+  --rail-dim: oklch(0.22 0.03 35);
+  --fillet: oklch(0.82 0.11 90);
+}
+
+[data-baize='midnight'] {
+  --baize-lit: oklch(0.4 0.09 250);
+  --baize-mid: oklch(0.32 0.08 252);
+  --baize-dim: oklch(0.24 0.06 254);
+  --rail-lit: oklch(0.36 0.04 60);
+  --rail-dim: oklch(0.21 0.025 50);
+  --fillet: oklch(0.85 0.09 95);
+}
+
+[data-baize='slate'] {
+  --baize-lit: oklch(0.46 0.02 200);
+  --baize-mid: oklch(0.38 0.02 200);
+  --baize-dim: oklch(0.29 0.015 200);
+  --rail-lit: oklch(0.34 0.02 250);
+  --rail-dim: oklch(0.2 0.015 250);
+  --fillet: oklch(0.72 0.03 220);
+}
+
+[data-deck='claret'],
+:root {
+  --back-lit: oklch(0.44 0.14 20);
+  --back-dim: oklch(0.33 0.12 20);
+  --back-ink: oklch(0.88 0.06 60);
+}
+
+[data-deck='navy'] {
+  --back-lit: oklch(0.38 0.09 262);
+  --back-dim: oklch(0.29 0.08 265);
+  --back-ink: oklch(0.85 0.05 250);
+}
+
+[data-deck='forest'] {
+  --back-lit: oklch(0.36 0.07 160);
+  --back-dim: oklch(0.27 0.06 162);
+  --back-ink: oklch(0.86 0.06 120);
+}
+
+[data-deck='bone'] {
+  --back-lit: oklch(0.84 0.03 85);
+  --back-dim: oklch(0.72 0.04 70);
+  --back-ink: oklch(0.32 0.04 40);
+}
+
+/*
+ * Woven cloth, not a gradient.
+ *
+ * Two hairline weaves crossing at right angles, under the light. Individually
+ * invisible; together they are the difference between a green shape and a
+ * surface — which is the whole of V1. Kept in the background stack rather than
+ * as a pseudo-element so the felt can still be a plain sized box.
+ */
+.baize {
+  background-image:
+    repeating-linear-gradient(
+      0deg,
+      oklch(0 0 0 / 0.05) 0 1px,
+      transparent 1px 3px
+    ),
+    repeating-linear-gradient(
+      90deg,
+      oklch(1 0 0 / 0.035) 0 1px,
+      transparent 1px 3px
+    ),
+    radial-gradient(
+      ellipse 62% 52% at 50% 38%,
+      var(--baize-lit) 0%,
+      var(--baize-mid) 58%,
+      var(--baize-dim) 100%
+    );
+  box-shadow:
+    /* The rail casting onto the cloth. Most of what reads as "a table" is
+       this: a flat surface has no shadow at its own edge. */
+    inset 0 0 44px oklch(0 0 0 / 0.55),
+    inset 0 6px 12px oklch(0 0 0 / 0.35);
+}
+
+/*
+ * The rail. Grain runs around the ring, so the bands are angular rather than
+ * linear — a straight grain on a curved rail reads as a printed photograph of
+ * wood laid over a ring.
+ */
+.rail {
+  background-image:
+    repeating-conic-gradient(
+      from 0deg at 50% 50%,
+      oklch(0 0 0 / 0.16) 0deg 1.1deg,
+      transparent 1.1deg 3.3deg,
+      oklch(1 0 0 / 0.05) 3.3deg 3.9deg,
+      transparent 3.9deg 7deg
+    ),
+    linear-gradient(160deg, var(--rail-lit) 0%, var(--rail-dim) 62%, var(--rail-lit) 100%);
+}
+
+/* Legacy name, kept so nothing that still asks for it loses its surface. */
 .table-felt {
   background:
     radial-gradient(
       ellipse at center,
-      oklch(0.48 0.1 158) 0%,
-      oklch(0.4 0.09 158) 55%,
-      oklch(0.33 0.07 158) 100%
+      var(--baize-lit) 0%,
+      var(--baize-mid) 55%,
+      var(--baize-dim) 100%
     );
   box-shadow:
-    inset 0 0 60px oklch(0.2 0.05 158 / 0.7),
-    inset 0 0 0 2px oklch(0.55 0.1 90 / 0.25);
+    inset 0 0 60px oklch(0 0 0 / 0.6),
+    inset 0 0 0 2px var(--fillet);
+}
+
+/*
+ * The back of a card, from the deck the host chose.
+ *
+ * A lattice rather than stripes: stripes are the one pattern that reads as
+ * "placeholder", and nine face-down hands is a lot of pattern to be looking at.
+ */
+.card-back {
+  background-image:
+    repeating-linear-gradient(
+      45deg,
+      var(--back-ink) 0 0.5px,
+      transparent 0.5px 4px
+    ),
+    repeating-linear-gradient(
+      -45deg,
+      var(--back-ink) 0 0.5px,
+      transparent 0.5px 4px
+    ),
+    linear-gradient(150deg, var(--back-lit) 0%, var(--back-dim) 100%);
+  /* The lattice stops short of the edge, the way a printed back does. */
+  background-clip: content-box, content-box, border-box;
+}
+
+/*
+ * Paper, and an edge.
+ *
+ * A card in a photograph is not a white rectangle: it is a slightly warm
+ * surface with a hard bright edge on the lit side and its own thickness on the
+ * other. Two inset shadows, no extra elements.
+ */
+.card-face {
+  background-image:
+    repeating-linear-gradient(
+      92deg,
+      oklch(0 0 0 / 0.022) 0 1px,
+      transparent 1px 2px
+    ),
+    linear-gradient(155deg, oklch(0.99 0.004 95) 0%, oklch(0.955 0.008 90) 100%);
+  box-shadow:
+    inset 0 1px 0 oklch(1 0 0 / 0.9),
+    inset 0 -1px 0 oklch(0.55 0.02 70 / 0.35),
+    0 1px 2px oklch(0 0 0 / 0.45);
+}
+
+/*
+ * A chip sitting on cloth rather than floating over it.
+ *
+ * The shadow is an ellipse wider than the chip and squashed flat, offset down
+ * — which is what a disc lying on a surface lit from above actually casts, and
+ * the single cheapest thing that makes chips look like objects.
+ */
+.chip-shadow {
+  filter: drop-shadow(0 2px 1.5px oklch(0 0 0 / 0.5));
+}
+
+/*
+ * A control that answers back.
+ *
+ * The press is 60ms and 1px — below what anybody notices as an animation and
+ * exactly what stops an irreversible action being tapped twice, because the
+ * finger gets an answer before the network does.
+ */
+.tactile {
+  transition:
+    transform 60ms ease-out,
+    filter 60ms ease-out;
+}
+
+.tactile:active:not(:disabled) {
+  transform: translateY(1px) scale(0.985);
+  filter: brightness(1.12);
+}
+
+/*
+ * And a flash from wherever the finger actually landed.
+ *
+ * From the touch point rather than the middle, because that is what makes it
+ * read as "this registered *your* tap" instead of "something lit up". On a
+ * control that folds a hand, that acknowledgement is the difference between
+ * waiting and tapping again.
+ */
+.tactile::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  background: radial-gradient(
+    circle at var(--tap-x, 50%) var(--tap-y, 50%),
+    oklch(1 0 0 / 0.4) 0%,
+    transparent 55%
+  );
+  opacity: 0;
+  transition: opacity 340ms ease-out;
+  pointer-events: none;
+}
+
+.tactile[data-tapped='true']::after {
+  opacity: 1;
+  /* Snaps on, fades off — the reverse reads as a delay. */
+  transition: none;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .tactile:active:not(:disabled) {
+    transform: none;
+  }
+  .tactile::after {
+    display: none;
+  }
 }

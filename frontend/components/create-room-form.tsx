@@ -4,6 +4,7 @@ import { useState } from 'react'
 import { useRouter } from 'next/navigation'
 import { Spade, ArrowRight } from 'lucide-react'
 
+import { cn } from '@/lib/utils'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import {
@@ -13,6 +14,14 @@ import {
   FieldLabel,
 } from '@/components/ui/field'
 import { BLIND_STRUCTURES, pokerApi, saveSession } from '@/lib/poker-api'
+import {
+  BAIZES,
+  DECKS,
+  DEFAULT_BAIZE,
+  DEFAULT_DECK,
+  type BaizeId,
+  type DeckId,
+} from '@/lib/table-style'
 
 /** Dead money each hand. The amount follows the big blind, so it climbs on
  *  its own and the host has one fewer number to pick. */
@@ -52,6 +61,8 @@ export function CreateRoomForm() {
   const [lateEntryLevels, setLateEntryLevels] = useState(4)
   const [rebuyLevels, setRebuyLevels] = useState(0)
   const [runItTwice, setRunItTwice] = useState(false)
+  const [baize, setBaize] = useState<BaizeId>(DEFAULT_BAIZE)
+  const [deck, setDeck] = useState<DeckId>(DEFAULT_DECK)
   const [password, setPassword] = useState('')
   const [error, setError] = useState<string | null>(null)
   const [loading, setLoading] = useState(false)
@@ -99,6 +110,8 @@ export function CreateRoomForm() {
         addOn: rebuyLevels > 0,
         timeBankSeconds: Number(actionSeconds) ? 60 : 0,
         runItTwice,
+        baize,
+        deck,
       })
       saveSession(session)
       router.push(`/room/${session.roomId}`)
@@ -385,6 +398,58 @@ export function CreateRoomForm() {
               ? 'Two rebuys each after busting, plus one top-up for anybody still in. Nobody is knocked out for good while the window is open.'
               : 'Bust once and you are out. The classic.'}
           </FieldDescription>
+        </Field>
+
+        <Field>
+          <FieldLabel>The table itself</FieldLabel>
+          {/* Cosmetic, and the whole point. A group having their own table is
+              half of why they play at the same one every week — and unlike
+              every other choice on this screen, this one is visible from the
+              first second. */}
+          <div className="grid grid-cols-4 gap-2">
+            {BAIZES.map((b) => (
+              <button
+                key={b.id}
+                type="button"
+                data-baize={b.id}
+                onClick={() => setBaize(b.id)}
+                aria-pressed={baize === b.id}
+                title={b.blurb}
+                className={cn(
+                  'tactile flex flex-col items-center gap-1 rounded-lg border p-1.5',
+                  baize === b.id ? 'border-primary' : 'border-border/60',
+                )}
+              >
+                <span className="baize h-7 w-full rounded" />
+                <span className="text-[10px] text-muted-foreground">{b.label}</span>
+              </button>
+            ))}
+          </div>
+          <FieldDescription>The cloth everybody at this table plays on.</FieldDescription>
+        </Field>
+
+        <Field>
+          <FieldLabel>The deck</FieldLabel>
+          <div className="grid grid-cols-4 gap-2">
+            {DECKS.map((d) => (
+              <button
+                key={d.id}
+                type="button"
+                data-deck={d.id}
+                onClick={() => setDeck(d.id)}
+                aria-pressed={deck === d.id}
+                title={d.blurb}
+                className={cn(
+                  'tactile flex flex-col items-center gap-1 rounded-lg border p-1.5',
+                  deck === d.id ? 'border-primary' : 'border-border/60',
+                )}
+              >
+                <span className="card-back h-7 w-full rounded border border-black/25 p-[2px]" />
+                <span className="text-[10px] text-muted-foreground">{d.label}</span>
+              </button>
+            ))}
+          </div>
+          <FieldDescription>What the backs look like when they land.</FieldDescription>
         </Field>
 
         <Field>

@@ -6,6 +6,7 @@ import { Button } from "@/components/ui/button"
 import { Slider } from "@/components/ui/slider"
 import { cn } from "@/lib/utils"
 import { inBigBlinds, presets, sizingContext, snapToPreset } from "@/lib/bet-sizing"
+import { useTactile } from "@/lib/use-tactile"
 import type { GameView } from "@/lib/poker-api"
 
 /**
@@ -48,6 +49,11 @@ export function ActionBar({
   useEffect(() => {
     setRaiseTo(min)
   }, [min, max, view.handNumber, view.street])
+
+  // Every decision button gets it. It is the cheapest guard there is against
+  // an irreversible action being tapped twice, because the answer arrives
+  // before the network's does.
+  const tactile = useTactile()
 
   const sizing = useMemo(() => sizingContext(view), [view])
   const sizes = useMemo(() => (sizing ? presets(sizing) : []), [sizing])
@@ -215,25 +221,40 @@ export function ActionBar({
 
       <div className="grid grid-cols-3 gap-2">
         {legal.canFold && (
-          <Button variant="destructive" disabled={busy} onClick={() => onAction("fold")}>
+          <Button
+            {...tactile}
+            variant="destructive"
+            disabled={busy}
+            onClick={() => onAction("fold")}
+          >
             Fold
           </Button>
         )}
         {legal.canCheck ? (
-          <Button variant="secondary" disabled={busy} onClick={() => onAction("check")}>
+          <Button
+            {...tactile}
+            variant="secondary"
+            disabled={busy}
+            onClick={() => onAction("check")}
+          >
             Check
           </Button>
         ) : (
-          <Button variant="secondary" disabled={busy} onClick={() => onAction("call")}>
+          <Button
+            {...tactile}
+            variant="secondary"
+            disabled={busy}
+            onClick={() => onAction("call")}
+          >
             Call {callAmt.toLocaleString()}
           </Button>
         )}
         {canRaise ? (
-          <Button disabled={busy} onClick={() => sendRaise(raiseTo)}>
+          <Button {...tactile} disabled={busy} onClick={() => sendRaise(raiseTo)}>
             {clamp(raiseTo) >= max ? "All-in" : "Raise"}
           </Button>
         ) : raiseIsAllInOnly ? (
-          <Button disabled={busy} onClick={() => sendRaise(max)}>
+          <Button {...tactile} disabled={busy} onClick={() => sendRaise(max)}>
             All-in {max.toLocaleString()}
           </Button>
         ) : (
