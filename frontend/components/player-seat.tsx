@@ -3,6 +3,7 @@
 import { WifiOff } from "lucide-react"
 
 import { cn } from "@/lib/utils"
+import { PlayerAvatar } from "@/components/player-avatar"
 import { PlayingCard } from "@/components/playing-card"
 import type { PlayerView } from "@/lib/poker-api"
 
@@ -83,6 +84,12 @@ export function PlayerSeat({
       {/* Name + chips */}
       <div className="flex w-full flex-col items-center">
         <div className="flex w-full items-center justify-center gap-0.5">
+          <PlayerAvatar
+            src={player.avatarUrl}
+            name={player.name}
+            size="xs"
+            className="shrink-0"
+          />
           {/* The table needs to know who wandered off, not just who is slow. */}
           {!player.connected && !player.out && (
             <WifiOff

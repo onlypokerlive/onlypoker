@@ -1,9 +1,10 @@
 'use client'
 
-import { useState } from 'react'
+import { useRef, useState } from 'react'
 import { useRouter } from 'next/navigation'
 import { Eye, LogIn } from 'lucide-react'
 
+import { IdentityPhoto } from '@/components/identity-photo'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Field, FieldLabel } from '@/components/ui/field'
@@ -13,6 +14,8 @@ export function JoinRoomForm({ roomId }: { roomId: string }) {
   const router = useRouter()
   const [name, setName] = useState('')
   const [password, setPassword] = useState('')
+  const [avatarUrl, setAvatarUrl] = useState<string | null>(null)
+  const rememberGuestNickname = useRef<((n: string) => void) | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [loading, setLoading] = useState(false)
 
@@ -20,6 +23,8 @@ export function JoinRoomForm({ roomId }: { roomId: string }) {
     setError(null)
     if (as === 'player' && !name.trim()) return setError('Enter a display name.')
     if (!password.trim()) return setError('Enter the room password.')
+
+    if (as === 'player') rememberGuestNickname.current?.(name.trim())
 
     setLoading(true)
     try {
@@ -32,6 +37,7 @@ export function JoinRoomForm({ roomId }: { roomId: string }) {
               // If this device still holds a credential for this table, it is
               // the same person coming back to it, not a new arrival.
               loadSession(roomId)?.token,
+              avatarUrl,
             )
           : await pokerApi.watchRoom(roomId, password.trim())
       saveSession(session)
@@ -52,6 +58,17 @@ export function JoinRoomForm({ roomId }: { roomId: string }) {
 
   return (
     <form onSubmit={handleSubmit} className="flex flex-col gap-5">
+      <Field>
+        <FieldLabel>Your photo</FieldLabel>
+        <IdentityPhoto
+          name={name}
+          onNameChange={setName}
+          onAvatarUrlChange={setAvatarUrl}
+          onRememberGuestNickname={(setter) => {
+            rememberGuestNickname.current = setter
+          }}
+        />
+      </Field>
       <Field>
         <FieldLabel htmlFor="name">Your name</FieldLabel>
         <Input

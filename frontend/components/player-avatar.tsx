@@ -41,7 +41,6 @@ export function PlayerAvatar({
           src={src || '/placeholder.svg'}
           alt={name ? `${name}'s profile photo` : 'Profile photo'}
           className="size-full object-cover"
-          crossOrigin="anonymous"
         />
       ) : (
         <span>{initialsFrom(name)}</span>

@@ -6,6 +6,8 @@ export type Phase = 'lobby' | 'hand' | 'handover' | 'finished'
 export interface PlayerView {
   id: string
   name: string
+  /** Signed photo URL from a signed-in player's profile or a guest selfie. */
+  avatarUrl?: string | null
   seat: number
   chips: number
   isHost: boolean
@@ -77,6 +79,7 @@ export interface Standing {
   place: number
   playerId: string
   name: string
+  avatarUrl?: string | null
   chips: number
 }
 
@@ -427,6 +430,8 @@ async function req<T>(url: string, options?: RequestInit): Promise<T> {
 export interface CreateRoomInput {
   name: string
   hostName: string
+  /** Signed photo URL for the host, from their profile or a guest selfie. */
+  hostAvatarUrl?: string | null
   startingChips: number
   smallBlind: number
   bigBlind: number
@@ -540,13 +545,24 @@ export const pokerApi = {
   createRoom: (input: CreateRoomInput) =>
     req<Session>('/api/rooms', { method: 'POST', body: JSON.stringify(input) }),
 
-  joinRoom: (roomId: string, name: string, password: string, token?: string) =>
+  joinRoom: (
+    roomId: string,
+    name: string,
+    password: string,
+    token?: string,
+    avatarUrl?: string | null,
+  ) =>
     req<Session>(`/api/rooms/${roomId}/join`, {
       method: 'POST',
       // The credential, when this device already has one, says "the person who
       // sat here is back" rather than "somebody new called the same thing".
       headers: auth(token),
-      body: JSON.stringify({ name, password, requestId: joinAttemptId(roomId) }),
+      body: JSON.stringify({
+        name,
+        password,
+        requestId: joinAttemptId(roomId),
+        avatarUrl: avatarUrl ?? null,
+      }),
     }),
 
   /** Watch without taking a seat. Still needs the password. */

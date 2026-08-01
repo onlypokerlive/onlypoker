@@ -21,6 +21,7 @@ import { BuyChips } from "@/components/buy-chips"
 import { PreActions } from "@/components/pre-actions"
 import { RunoutOffer } from "@/components/runout-offer"
 import { TournamentResults } from "@/components/tournament-results"
+import { HistoryRecorder } from "@/components/history-recorder"
 import { useSecondsLeft } from "@/lib/use-countdown"
 import { useTableEvents } from "@/lib/use-table-events"
 import { useRunout } from "@/lib/use-runout"
@@ -249,6 +250,7 @@ export function RoomClient({ roomId }: { roomId: string }) {
         <div className="flex flex-1 flex-col items-center justify-center gap-3 overflow-y-auto py-2">
           <HandResults view={view} title="The final hand" className="shrink-0" />
           <TournamentResults view={view} />
+          <HistoryRecorder view={view} session={session} />
         </div>
       ) : (
         <>
