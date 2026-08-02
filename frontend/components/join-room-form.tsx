@@ -132,17 +132,6 @@ export function JoinRoomForm({
 
   return (
     <form onSubmit={handleSubmit} className="flex flex-col gap-5" aria-busy={loading} noValidate>
-      <Field>
-        <FieldLabel>Your photo</FieldLabel>
-        <IdentityPhoto
-          name={name}
-          onNameChange={setName}
-          onAvatarUrlChange={setAvatarUrl}
-          onRememberGuestNickname={(setter) => {
-            rememberGuestNickname.current = setter
-          }}
-        />
-      </Field>
       <Field data-invalid={issue?.field === 'name'}>
         <FieldLabel htmlFor="name">Your name (for a seat)</FieldLabel>
         <Input
@@ -178,6 +167,18 @@ export function JoinRoomForm({
           aria-describedby={issue?.field === 'password' ? 'join-password-error' : undefined}
         />
         {issue?.field === 'password' ? <FieldError id="join-password-error">{issue.message}</FieldError> : null}
+      </Field>
+
+      <Field>
+        <FieldLabel>Your photo <span className="text-muted-foreground font-normal">(optional)</span></FieldLabel>
+        <IdentityPhoto
+          name={name}
+          onNameChange={setName}
+          onAvatarUrlChange={setAvatarUrl}
+          onRememberGuestNickname={(setter) => {
+            rememberGuestNickname.current = setter
+          }}
+        />
       </Field>
 
       {issue?.field === null && (

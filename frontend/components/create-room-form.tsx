@@ -270,18 +270,6 @@ export function CreateRoomForm({
           {issue?.field === 'roomName' ? <FieldError id="roomName-error">{issue.message}</FieldError> : null}
         </Field>
 
-        <Field>
-          <FieldLabel>Your photo</FieldLabel>
-          <IdentityPhoto
-            name={hostName}
-            onNameChange={setHostName}
-            onAvatarUrlChange={setHostAvatarUrl}
-            onRememberGuestNickname={(setter) => {
-              rememberGuestNickname.current = setter
-            }}
-          />
-        </Field>
-
         <div className="grid gap-3 sm:grid-cols-2">
           <Field data-invalid={issue?.field === 'hostName'}>
             <FieldLabel htmlFor="hostName">Your name</FieldLabel>
@@ -323,6 +311,18 @@ export function CreateRoomForm({
             {issue?.field === 'password' ? <FieldError id="password-error">{issue.message}</FieldError> : null}
           </Field>
         </div>
+
+        <Field>
+          <FieldLabel>Your photo <span className="text-muted-foreground font-normal">(optional)</span></FieldLabel>
+          <IdentityPhoto
+            name={hostName}
+            onNameChange={setHostName}
+            onAvatarUrlChange={setHostAvatarUrl}
+            onRememberGuestNickname={(setter) => {
+              rememberGuestNickname.current = setter
+            }}
+          />
+        </Field>
 
         {issue?.field === null ? (
           <p ref={formErrorRef} tabIndex={-1} className="text-sm text-destructive outline-none" role="alert">

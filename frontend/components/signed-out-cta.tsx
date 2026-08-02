@@ -40,28 +40,20 @@ export function SignedOutCta() {
   }
 
   return (
-    <div className="mt-4 rounded-xl border border-primary/20 bg-primary/5 px-4 py-4">
-      <div className="flex items-start gap-3">
-        <span className="mt-0.5 flex size-8 shrink-0 items-center justify-center rounded-lg bg-primary/15 text-primary">
-          <Sparkles className="size-4" />
-        </span>
-        <div className="flex-1">
-          <p className="text-sm font-semibold">Save your games (optional)</p>
-          <p className="mt-1 text-sm leading-relaxed text-muted-foreground">
-            Sign in to keep a nickname and photo across tables and review your
-            game history. You can always keep playing as a guest.
-          </p>
-          <Button
-            variant="outline"
-            size="sm"
-            className="mt-3"
-            onClick={() => signInWithGoogle()}
-          >
-            <GoogleMark />
-            Sign in with Google
-          </Button>
-        </div>
-      </div>
+    <div className="mt-3 flex items-center justify-between gap-3 px-1">
+      <p className="text-xs text-muted-foreground">
+        <Sparkles className="mb-0.5 mr-1 inline size-3" aria-hidden />
+        Save history &amp; nickname across tables
+      </p>
+      <Button
+        variant="ghost"
+        size="sm"
+        className="h-7 shrink-0 text-xs"
+        onClick={() => signInWithGoogle()}
+      >
+        <GoogleMark />
+        Sign in
+      </Button>
     </div>
   )
 }
