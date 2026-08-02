@@ -142,7 +142,11 @@ export function ActionBar({
       {timed && (
         <div
           className="absolute inset-x-0 top-0 h-[3px] overflow-hidden rounded-t-xl bg-border/60"
-          aria-hidden
+          role="progressbar"
+          aria-label={view.bankRunning ? "Time bank remaining" : "Action time remaining"}
+          aria-valuemin={0}
+          aria-valuemax={100}
+          aria-valuenow={Math.round(timePct)}
         >
           {/* `scaleX`, not `width` — the same way the blind clock's hairline
               drains. A width that eases lays the page out again on every frame
@@ -179,11 +183,22 @@ export function ActionBar({
                   variant={clamp(raiseTo) === p.amount ? "secondary" : "outline"}
                   disabled={busy}
                   onClick={() => setRaiseTo(p.amount)}
-                  // Six pixels shorter than the default `sm`, and the reason is
-                  // the table: this band is the table's ceiling, and a preset
-                  // is a 44px-wide target whose height was never what made it
-                  // hittable.
-                  className="h-[calc(28px*var(--zu,1))] px-1 text-xs font-semibold tabular-nums"
+                  // Thirty pixels of box and forty-six of target.
+                  //
+                  // These went to a flat 44 in a pass that raised every button
+                  // in the app to the touch-target guidance, and it is the one
+                  // place in the app where that arithmetic does not hold: this
+                  // band is the table's ceiling, so fourteen pixels here are
+                  // fourteen pixels of felt — and the zone they overflowed was
+                  // clipping your own cards to pay for them.
+                  //
+                  // What made a preset hittable was never its height. Four of
+                  // them across a phone is ninety-seven pixels of width each,
+                  // and the rest of the target is bought back with a
+                  // pseudo-element that reaches eight pixels above and below
+                  // into the gaps either side — which the layout does not pay
+                  // for, because a pseudo-element has no height of its own.
+                  className="relative h-[calc(30px*var(--zu,1))] min-h-0 px-1 text-xs font-semibold tabular-nums after:absolute after:inset-x-0 after:-inset-y-2 after:content-['']"
                   // "Set raise to", not "Raise to": this button moves the
                   // slider, it does not commit chips — and the button that
                   // *does* commit them is three inches below with almost the
@@ -196,9 +211,26 @@ export function ActionBar({
             </div>
           )}
 
-          {/* One row, not two: every pixel this bar takes comes off the table
-              above it, and on a short phone the bottom seat is the first thing
-              to go under it. */}
+          {/* One row, not two — and out in the open, not behind a disclosure.
+              Every pixel this bar takes comes off the table above it, and on a
+              short phone the bottom seat is the first thing to go under it.
+
+              It spent a while as a `<details>` labelled "Fine tune", collapsed
+              to a summary that showed the number and hid the control. Three
+              things were wrong with that and only the third is about pixels.
+
+              A slider you cannot see is a slider nobody knows is there: the
+              row read as a static caption, and the only visible way to a size
+              the presets do not offer was gone. Opening it then cost 65px in a
+              zone with 150 — measured at 231.8px of controls in a 210px zone,
+              which clipped the peek band 81.7px and took your own cards off
+              the screen entirely to show you a slider. And the amount, which
+              is the number you are about to commit chips against, sat where
+              the disclosure's label goes rather than at the end of the control
+              that sets it.
+
+              So: the slider, on the felt, to the left of the number it
+              moves. */}
           <div className="flex items-center gap-[calc(6px*var(--zu,1))]">
             <Button
               type="button"
@@ -207,7 +239,9 @@ export function ActionBar({
               disabled={busy || clamp(raiseTo) <= min}
               onClick={() => setRaiseTo(clamp(raiseTo - step))}
               aria-label={`Lower by ${step}`}
-              className="size-[calc(32px*var(--zu,1))] shrink-0"
+              // Same trade as the presets above: a 32px box reaching 48px of
+              // target through a pseudo-element the layout never pays for.
+              className="relative size-[calc(32px*var(--zu,1))] shrink-0 after:absolute after:-inset-2 after:content-['']"
             >
               <Minus />
             </Button>
@@ -241,7 +275,7 @@ export function ActionBar({
               disabled={busy || clamp(raiseTo) >= max}
               onClick={() => setRaiseTo(clamp(raiseTo + step))}
               aria-label={`Raise by ${step}`}
-              className="size-[calc(32px*var(--zu,1))] shrink-0"
+              className="relative size-[calc(32px*var(--zu,1))] shrink-0 after:absolute after:-inset-2 after:content-['']"
             >
               <Plus />
             </Button>

@@ -20,6 +20,11 @@ and play from your phones — no accounts, no downloads.
 Both clocks are enforced by the server, so every phone agrees on the time and a
 closed tab cannot dodge the shot clock.
 
+The table remains accountless. The host receives a one-time recovery code that,
+together with the room password, can move host authority to a new device. A host
+can also hand control directly to a seated player. Recovery rotates both the
+host credential and backup code; the old device and old code stop working.
+
 ## Layout
 
 | Path        | What it is                                                        |
@@ -63,6 +68,34 @@ Bet sizing, the events derived from polling, the card-by-card runout, and the
 components where getting a condition wrong shows somebody something they should
 not see. `pnpm lint` is green; the React Compiler rules are left as warnings on
 purpose — see the note in `frontend/eslint.config.mjs`.
+
+```bash
+cd frontend && pnpm test:e2e
+```
+
+The Playwright journey starts the local stack and checks compact-phone creation,
+host and guest play through results and next-table actions, accountless host
+recovery and handoff, and expired-invite recovery in Chrome.
+
+## Growth measurement and invitations
+
+Production uses Vercel Analytics custom events for the complete creation,
+invitation, join, start, finish, results-share, and guest-to-host funnel. Both
+success milestones and privacy-safe attempt/failure outcomes are recorded so a
+conversion drop can be distinguished from validation, authentication, network,
+or share cancellation friction. Event properties are limited to roles, sources,
+methods, phases, viewport bands, booleans, coarse failure categories, and counts;
+room codes, player IDs/names, passwords, recovery codes, tokens, cards, action
+amounts, and game state are never sent as custom properties. Guest-to-host
+attribution is stored only on that device and expires after 30 days. The event
+dictionary, hypotheses, experiments, and moderated-test protocol live in
+[`docs/ux-validation-plan.md`](docs/ux-validation-plan.md).
+
+Room invitation pages and Open Graph images use the public
+`GET /api/rooms/:roomId/preview` projection. It exposes only the table name,
+phase, seat count, capacity, blinds, and hand count. Set `NEXT_PUBLIC_SITE_URL`
+when a deployment needs invitation metadata to use a custom canonical origin;
+Vercel deployment URLs are detected automatically.
 
 ## Deploying
 

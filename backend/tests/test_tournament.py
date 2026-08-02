@@ -546,10 +546,13 @@ def test_two_taps_on_play_again_are_one_tournament(client, clock):
     start(client, room_id, ids[0])
     play_to_the_end(client, clock, room_id, ids)
     assert again(client, room_id, ids[0], "again:room:41").status_code == 200
+    assert state(client, room_id, ids[0])["room"]["tournamentNumber"] == 2
     assert start(client, room_id, ids[0]).status_code == 200
     # The same tap arriving late, with a hand on the table.
     assert again(client, room_id, ids[0], "again:room:41").status_code == 200
-    assert state(client, room_id, ids[0])["room"]["phase"] == "hand"
+    current = state(client, room_id, ids[0])
+    assert current["room"]["phase"] == "hand"
+    assert current["room"]["tournamentNumber"] == 2
     assert books_balance(client, room_id)
 
 
@@ -2279,6 +2282,134 @@ def test_spectators_do_not_use_up_seats(client, clock):
 
 
 # --------------------------------------------------------------------------- #
+# Private-door hardening and accountless host continuity
+# --------------------------------------------------------------------------- #
+def test_new_tables_require_a_nontrivial_password(client, clock):
+    body = {
+        "name": "Test table",
+        "hostName": "Host",
+        "startingChips": 1000,
+        "smallBlind": 5,
+        "bigBlind": 10,
+        "password": "abc",
+    }
+    assert client.post("/api/rooms", json=body).status_code == 422
+
+
+def test_host_recovery_rotates_the_device_and_the_backup(client, clock):
+    host = create_room(client)
+    room_id = host["roomId"]
+    original_token = host["token"]
+    original_backup = host["recoveryCode"]
+
+    recovered = client.post(
+        f"/api/rooms/{room_id}/host/recover",
+        json={"password": "secret", "recoveryCode": original_backup},
+    )
+    assert recovered.status_code == 200, recovered.text
+    next_session = recovered.json()
+    assert next_session["playerId"] == host["playerId"]
+    assert next_session["token"] != original_token
+    assert next_session["recoveryCode"] != original_backup
+
+    old_device = client.get(
+        f"/api/rooms/{room_id}/state",
+        params={"playerId": host["playerId"]},
+        headers={main.PLAYER_TOKEN_HEADER: original_token},
+    )
+    assert old_device.status_code == 403
+
+    replay = client.post(
+        f"/api/rooms/{room_id}/host/recover",
+        json={"password": "secret", "recoveryCode": original_backup},
+    )
+    assert replay.status_code == 403
+
+    TOKENS[host["playerId"]] = next_session["token"]
+    assert state(client, room_id, host["playerId"])["room"]["phase"] == "lobby"
+
+
+def test_host_transfer_needs_the_current_host_and_invalidates_the_old_backup(
+    client, clock
+):
+    host = create_room(client)
+    guest = join(client, host["roomId"], "Guest")
+    room_id = host["roomId"]
+
+    refused = client.post(
+        f"/api/rooms/{room_id}/host/transfer",
+        headers=auth(guest["playerId"]),
+        json={"playerId": guest["playerId"], "targetId": host["playerId"]},
+    )
+    assert refused.status_code == 403
+
+    handed_over = client.post(
+        f"/api/rooms/{room_id}/host/transfer",
+        headers=auth(host["playerId"]),
+        json={"playerId": host["playerId"], "targetId": guest["playerId"]},
+    )
+    assert handed_over.status_code == 200, handed_over.text
+    guest_view = state(client, room_id, guest["playerId"])
+    assert next(p for p in guest_view["players"] if p["id"] == guest["playerId"])[
+        "isHost"
+    ] is True
+
+    stale_backup = client.post(
+        f"/api/rooms/{room_id}/host/recover",
+        json={"password": "secret", "recoveryCode": host["recoveryCode"]},
+    )
+    assert stale_backup.status_code == 403
+
+    fresh_backup = client.post(
+        f"/api/rooms/{room_id}/host/backup",
+        headers=auth(guest["playerId"]),
+        json={"playerId": guest["playerId"]},
+    )
+    assert fresh_backup.status_code == 200
+    assert len(fresh_backup.json()["recoveryCode"]) >= 12
+
+
+def test_repeated_bad_door_attempts_are_throttled_without_storing_an_address(
+    client, clock
+):
+    host = create_room(client)
+    room_id = host["roomId"]
+
+    for _ in range(main.AUTH_MAX_FAILURES):
+        response = client.post(
+            f"/api/rooms/{room_id}/host/recover",
+            json={"password": "secret", "recoveryCode": "wrong-code-000"},
+        )
+        assert response.status_code == 403
+
+    limited = client.post(
+        f"/api/rooms/{room_id}/host/recover",
+        json={"password": "secret", "recoveryCode": "wrong-code-000"},
+    )
+    assert limited.status_code == 429
+    assert "Retry-After" in limited.headers
+    assert all("127.0.0.1" not in key for key in main.redis._data)
+
+
+def test_the_shared_join_and_watch_door_uses_the_same_throttle(client, clock):
+    host = create_room(client)
+    room_id = host["roomId"]
+
+    for _ in range(main.AUTH_MAX_FAILURES):
+        refused = client.post(
+            f"/api/rooms/{room_id}/join",
+            json={"name": "Guess", "password": "wrong"},
+        )
+        assert refused.status_code == 403
+
+    limited = client.post(
+        f"/api/rooms/{room_id}/watch",
+        json={"password": "wrong"},
+    )
+    assert limited.status_code == 429
+
+
+# --------------------------------------------------------------------------- #
 # Showing cards
 # --------------------------------------------------------------------------- #
 def show(client, room_id, player_id, indices, hand=None):
@@ -2824,6 +2955,39 @@ def test_the_room_code_alone_does_not_open_the_table(client, clock):
         f"/api/rooms/{room_id}/state",
         headers={main.PLAYER_TOKEN_HEADER: "not-a-real-key"},
     ).status_code == 403
+
+
+def test_invite_preview_is_public_but_reveals_no_people_or_secrets(client, clock):
+    host = create_room(
+        client,
+        name="The Thursday Game",
+        smallBlind=10,
+        bigBlind=20,
+    )
+    join(client, host["roomId"], "A Friend")
+
+    res = client.get(f"/api/rooms/{host['roomId']}/preview")
+
+    assert res.status_code == 200
+    assert res.json() == {
+        "roomId": host["roomId"],
+        "name": "The Thursday Game",
+        "phase": "lobby",
+        "playerCount": 2,
+        "maxSeats": main.MAX_SEATS,
+        "smallBlind": 10,
+        "bigBlind": 20,
+        "handNumber": 0,
+    }
+    exposed = res.text
+    assert "Host" not in exposed
+    assert "A Friend" not in exposed
+    assert "secret" not in exposed
+    assert host["token"] not in exposed
+
+
+def test_invite_preview_for_a_missing_room_is_not_found(client, clock):
+    assert client.get("/api/rooms/NOPE99/preview").status_code == 404
 
 
 def test_a_borrowed_id_cannot_act(client, clock):

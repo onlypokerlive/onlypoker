@@ -82,6 +82,8 @@ else:
 
 ROOM_TTL = 60 * 60 * 24  # 24h
 MAX_SEATS = 9
+AUTH_WINDOW_SECONDS = 10 * 60
+AUTH_MAX_FAILURES = 8
 
 # Blind ladder expressed as multipliers of the table's opening blinds, so the
 # host only picks the starting stakes and how long a level lasts. The ratio the
@@ -154,6 +156,65 @@ def _room_key(room_id: str) -> str:
 
 def _lock_key(room_id: str) -> str:
     return f"holdem:lock:{room_id}"
+
+
+def _auth_attempt_key(request: fastapi.Request, room_id: str) -> str:
+    """Privacy-preserving key for repeated door failures.
+
+    The raw network address is never stored. The room id scopes the limit so a
+    typo at one table cannot lock somebody out of another, and hashing keeps
+    the store free of IP addresses while still slowing repeated guesses.
+    """
+    forwarded = request.headers.get("x-forwarded-for", "").split(",", 1)[0].strip()
+    address = forwarded or (request.client.host if request.client else "unknown")
+    digest = hashlib.sha256(f"{room_id}:{address}".encode()).hexdigest()[:24]
+    return f"holdem:auth:{digest}"
+
+
+async def _check_auth_limit(request: fastapi.Request, room_id: str) -> None:
+    raw = await redis.get(_auth_attempt_key(request, room_id))
+    if not raw:
+        return
+    try:
+        attempts = json.loads(raw)
+    except (TypeError, ValueError):
+        return
+    reset_at = float(attempts.get("resetAt", 0))
+    if reset_at <= time.time():
+        await redis.delete(_auth_attempt_key(request, room_id))
+        return
+    if int(attempts.get("count", 0)) >= AUTH_MAX_FAILURES:
+        retry_after = max(1, int(reset_at - time.time()))
+        raise fastapi.HTTPException(
+            429,
+            "Too many incorrect attempts. Wait a few minutes and try again.",
+            headers={"Retry-After": str(retry_after)},
+        )
+
+
+async def _record_auth_failure(request: fastapi.Request, room_id: str) -> None:
+    key = _auth_attempt_key(request, room_id)
+    now = time.time()
+    count = 0
+    reset_at = now + AUTH_WINDOW_SECONDS
+    raw = await redis.get(key)
+    if raw:
+        try:
+            previous = json.loads(raw)
+            if float(previous.get("resetAt", 0)) > now:
+                count = int(previous.get("count", 0))
+                reset_at = float(previous["resetAt"])
+        except (TypeError, ValueError, KeyError):
+            pass
+    await redis.set(
+        key,
+        json.dumps({"count": count + 1, "resetAt": reset_at}),
+        ex=max(1, int(reset_at - now)),
+    )
+
+
+async def _clear_auth_failures(request: fastapi.Request, room_id: str) -> None:
+    await redis.delete(_auth_attempt_key(request, room_id))
 
 
 # How long a lock lease lasts. A holder that dies (or, on Vercel, is frozen
@@ -566,7 +627,7 @@ class CreateRoomBody(BaseModel):
     startingChips: int = Field(ge=1)
     smallBlind: int = Field(ge=1)
     bigBlind: int = Field(ge=1)
-    password: str = Field(min_length=1, max_length=64)
+    password: str = Field(min_length=4, max_length=64)
     # What the table is made of. Cosmetic and shared: a poker table is one
     # object everybody is sitting at, so this belongs to the room and not to
     # each player's settings. Validated against a list rather than taken as
@@ -627,6 +688,16 @@ class JoinBody(BaseModel):
     avatarUrl: str | None = Field(
         default=None, max_length=1000, pattern=r"^https://.+"
     )
+
+
+class RecoverHostBody(BaseModel):
+    password: str = Field(min_length=1, max_length=64)
+    recoveryCode: str = Field(min_length=12, max_length=128)
+
+
+class HostAuthorityBody(BaseModel):
+    playerId: str
+    targetId: str | None = None
 
 
 class ActionBody(BaseModel):
@@ -1416,6 +1487,7 @@ def _rack_up(room: dict[str, Any]) -> None:
     room["chipsIssued"] = room["startingChips"] * len(room["order"])
     room["chipsWithdrawn"] = 0
 
+    room["tournamentNumber"] = int(room.get("tournamentNumber") or 1) + 1
     room["phase"] = "lobby"
     room["handNumber"] = 0
     room["buttonId"] = None
@@ -2670,6 +2742,7 @@ def _build_view(room: dict[str, Any], viewer_id: str | None) -> dict[str, Any]:
             "bigBlind": room["bigBlind"],
             "startingChips": room["startingChips"],
             "handNumber": room["handNumber"],
+            "tournamentNumber": int(room.get("tournamentNumber") or 1),
             "maxSeats": MAX_SEATS,
             "actionSeconds": int(room.get("actionSeconds") or 0),
             "anteMode": room.get("anteMode", "off"),
@@ -2829,6 +2902,33 @@ async def health() -> dict[str, str]:
     return {"status": "ok"}
 
 
+@app.get("/rooms/{room_id}/preview")
+async def room_preview(room_id: str) -> dict[str, Any]:
+    """The small public face of an invitation link.
+
+    Link unfurlers cannot type the room password or hold a player's token, but
+    a useful invitation still needs to say which table the link opens. Keep
+    this projection deliberately separate from ``_build_view``: no player
+    names, credentials, cards, house rules or scheduled work belong in a chat
+    preview. Anyone with the room code can read exactly these table facts and
+    nothing else.
+    """
+    room = await load_room(room_id)
+    if not room:
+        raise fastapi.HTTPException(404, "Room not found.")
+
+    return {
+        "roomId": room["id"],
+        "name": room["name"],
+        "phase": room["phase"],
+        "playerCount": len(room.get("order") or []),
+        "maxSeats": MAX_SEATS,
+        "smallBlind": int(room["smallBlind"]),
+        "bigBlind": int(room["bigBlind"]),
+        "handNumber": int(room.get("handNumber", 0)),
+    }
+
+
 @app.post("/rooms")
 async def create_room(body: CreateRoomBody) -> dict[str, Any]:
     if body.bigBlind <= body.smallBlind:
@@ -2841,17 +2941,22 @@ async def create_room(body: CreateRoomBody) -> dict[str, Any]:
     room_id = _new_id()
     host_id = secrets.token_urlsafe(12)
     host_token = _new_token()
+    recovery_code = secrets.token_urlsafe(12)
     now = time.time()
     room = {
         "id": room_id,
         "name": body.name,
         "hostId": host_id,
         "passwordHash": _hash_password(body.password),
+        # A second device can recover host authority only with this one-time
+        # backup secret. The shared room password is deliberately insufficient.
+        "hostRecoveryHash": _hash_password(recovery_code),
         "smallBlind": body.smallBlind,
         "bigBlind": body.bigBlind,
         "startingChips": body.startingChips,
         "phase": "lobby",
         "handNumber": 0,
+        "tournamentNumber": 1,
         "order": [host_id],
         "players": {
             host_id: {
@@ -2934,6 +3039,7 @@ async def create_room(body: CreateRoomBody) -> dict[str, Any]:
         "playerId": host_id,
         "token": host_token,
         "isHost": True,
+        "recoveryCode": recovery_code,
     }
 
 
@@ -2941,6 +3047,7 @@ async def create_room(body: CreateRoomBody) -> dict[str, Any]:
 async def join_room(
     room_id: str,
     body: JoinBody,
+    request: fastapi.Request,
     x_player_token: str | None = fastapi.Header(default=None),
 ) -> dict[str, Any]:
     """Take a seat.
@@ -2991,8 +3098,11 @@ async def join_room(
         # password, which is what a table of friends would reach for anyway.
         _reject_the_removed(room, x_player_token)
 
+        await _check_auth_limit(request, room_id)
         if not _verify_password(body.password, room["passwordHash"]):
+            await _record_auth_failure(request, room_id)
             raise fastapi.HTTPException(403, "Incorrect room password.")
+        await _clear_auth_failures(request, room_id)
 
         seen = _receipt(room, body.requestId, _JOINS)
         if seen:
@@ -3259,7 +3369,9 @@ class WatchBody(BaseModel):
 
 
 @app.post("/rooms/{room_id}/watch")
-async def watch_room(room_id: str, body: WatchBody) -> dict[str, Any]:
+async def watch_room(
+    room_id: str, body: WatchBody, request: fastapi.Request
+) -> dict[str, Any]:
     """Pull up a chair without taking a seat.
 
     A spectator is simply an id that belongs to nobody at the table. That is
@@ -3274,8 +3386,11 @@ async def watch_room(room_id: str, body: WatchBody) -> dict[str, Any]:
         raise fastapi.HTTPException(404, "Room not found.")
     _reject_legacy(room)
     # Still a private table. Watching is not a way around the password.
+    await _check_auth_limit(request, room_id)
     if not _verify_password(body.password, room["passwordHash"]):
+        await _record_auth_failure(request, room_id)
         raise fastapi.HTTPException(403, "Incorrect room password.")
+    await _clear_auth_failures(request, room_id)
     return {
         "roomId": room_id,
         "playerId": f"watch-{secrets.token_urlsafe(9)}",
@@ -3283,6 +3398,107 @@ async def watch_room(room_id: str, body: WatchBody) -> dict[str, Any]:
         "isHost": False,
         "spectator": True,
     }
+
+
+@app.post("/rooms/{room_id}/host/recover")
+async def recover_host(
+    room_id: str, body: RecoverHostBody, request: fastapi.Request
+) -> dict[str, Any]:
+    """Move host authority to a replacement device using a one-time backup.
+
+    Recovery rotates both the player credential and the backup code. A lost
+    phone therefore stops authorising the host seat as soon as recovery works,
+    and a copied backup cannot be replayed later.
+    """
+    async with _RoomLock(room_id):
+        room = await load_room(room_id)
+        if not room:
+            raise fastapi.HTTPException(404, "Room not found.")
+        _reject_legacy(room)
+        await _check_auth_limit(request, room_id)
+
+        recovery_hash = room.get("hostRecoveryHash")
+        valid = bool(recovery_hash) and _verify_password(
+            body.recoveryCode, recovery_hash
+        )
+        valid = valid and _verify_password(body.password, room["passwordHash"])
+        if not valid:
+            await _record_auth_failure(request, room_id)
+            raise fastapi.HTTPException(
+                403, "The password or host backup code is incorrect."
+            )
+
+        host_id = room.get("hostId")
+        host = room["players"].get(host_id or "")
+        if not _has_seat(host):
+            raise fastapi.HTTPException(409, "This table no longer has that host seat.")
+
+        await _clear_auth_failures(request, room_id)
+        token = _new_token()
+        next_recovery_code = secrets.token_urlsafe(12)
+        host["token"] = token
+        room["hostRecoveryHash"] = _hash_password(next_recovery_code)
+        await save_room(room)
+        return {
+            "roomId": room_id,
+            "playerId": host_id,
+            "token": token,
+            "isHost": True,
+            "recoveryCode": next_recovery_code,
+        }
+
+
+@app.post("/rooms/{room_id}/host/backup")
+async def create_host_backup(
+    room_id: str,
+    body: HostAuthorityBody,
+    x_player_token: str | None = fastapi.Header(default=None),
+) -> dict[str, Any]:
+    """Issue a fresh one-time host backup to the authenticated host device."""
+    async with _RoomLock(room_id):
+        room = await load_room(room_id)
+        if not room:
+            raise fastapi.HTTPException(404, "Room not found.")
+        _authenticate(room, body.playerId, x_player_token)
+        if body.playerId != room["hostId"]:
+            raise fastapi.HTTPException(403, "Only the host can create a backup code.")
+        recovery_code = secrets.token_urlsafe(12)
+        room["hostRecoveryHash"] = _hash_password(recovery_code)
+        await save_room(room)
+        return {
+            "roomId": room_id,
+            "playerId": body.playerId,
+            "token": room["players"][body.playerId]["token"],
+            "isHost": True,
+            "recoveryCode": recovery_code,
+        }
+
+
+@app.post("/rooms/{room_id}/host/transfer")
+async def transfer_host(
+    room_id: str,
+    body: HostAuthorityBody,
+    x_player_token: str | None = fastapi.Header(default=None),
+) -> dict[str, Any]:
+    """Hand the table to another seated player without creating an account."""
+    async with _RoomLock(room_id):
+        room = await load_room(room_id)
+        if not room:
+            raise fastapi.HTTPException(404, "Room not found.")
+        _authenticate(room, body.playerId, x_player_token)
+        if body.playerId != room["hostId"]:
+            raise fastapi.HTTPException(403, "Only the host can transfer the table.")
+        if room["phase"] == "finished":
+            raise fastapi.HTTPException(400, "This tournament is already over.")
+        target = room["players"].get(body.targetId or "")
+        if not _has_seat(target) or body.targetId == body.playerId:
+            raise fastapi.HTTPException(400, "Choose another seated player.")
+        room["hostId"] = body.targetId
+        # The previous host's backup cannot reclaim a table they deliberately
+        # handed over. The new host can create a fresh backup from their device.
+        room["hostRecoveryHash"] = None
+        await save_room(room)
+        return _build_view(room, body.playerId)
 
 
 class ShowBody(BaseModel):

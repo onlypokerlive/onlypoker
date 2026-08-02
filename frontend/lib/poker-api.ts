@@ -201,6 +201,8 @@ export interface RoomView {
     bigBlind: number
     startingChips: number
     handNumber: number
+    /** Which tournament this room is running. Older stored rooms are the first. */
+    tournamentNumber?: number
     maxSeats: number
     /** Seconds allowed per decision. 0 means no shot clock. */
     actionSeconds: number
@@ -325,6 +327,8 @@ export interface Session {
   isHost: boolean
   /** Watching rather than playing: no seat, no chips, no cards. */
   spectator?: boolean
+  /** One-time accountless backup for moving host authority to another device. */
+  recoveryCode?: string
 }
 
 // --- Flattened view consumed by the UI components -------------------------
@@ -337,6 +341,7 @@ export interface GameView {
   bigBlind: number
   startingChips: number
   handNumber: number
+  tournamentNumber: number
   maxSeats: number
   actionSeconds: number
   levelMinutes: number
@@ -474,6 +479,7 @@ export function toGameView(v: RoomView, playerId: string | null): GameView {
     bigBlind: v.room.bigBlind,
     startingChips: v.room.startingChips,
     handNumber: v.room.handNumber,
+    tournamentNumber: v.room.tournamentNumber ?? 1,
     maxSeats: v.room.maxSeats,
     actionSeconds: v.room.actionSeconds,
     levelMinutes: v.room.levelMinutes,
@@ -732,6 +738,34 @@ export const pokerApi = {
     req<Session>(`/api/rooms/${roomId}/watch`, {
       method: 'POST',
       body: JSON.stringify({ password }),
+    }),
+
+  /** Recover the current host seat on a replacement device. Rotates both secrets. */
+  recoverHost: (roomId: string, password: string, recoveryCode: string) =>
+    req<Session>(`/api/rooms/${roomId}/host/recover`, {
+      method: 'POST',
+      body: JSON.stringify({ password, recoveryCode }),
+    }),
+
+  /** Authenticated host: replace the one-time backup code. */
+  createHostBackup: (roomId: string, playerId: string, token?: string) =>
+    req<Session>(`/api/rooms/${roomId}/host/backup`, {
+      method: 'POST',
+      headers: auth(token),
+      body: JSON.stringify({ playerId }),
+    }),
+
+  /** Authenticated host: hand authority to another occupied seat. */
+  transferHost: (
+    roomId: string,
+    playerId: string,
+    targetId: string,
+    token?: string,
+  ) =>
+    req<RoomView>(`/api/rooms/${roomId}/host/transfer`, {
+      method: 'POST',
+      headers: auth(token),
+      body: JSON.stringify({ playerId, targetId }),
     }),
 
   getState: (roomId: string, playerId?: string, token?: string) =>

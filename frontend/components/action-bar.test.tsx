@@ -81,6 +81,7 @@ describe('ActionBar bet sizing', () => {
     render(
       <ActionBar view={gameView(YOUR_TURN)} onAction={onAction} busy={false} secondsLeft={null} />,
     )
+    // No disclosure to open first: the stepper and the slider are on the felt.
     // Opens at the minimum raise, so lowering is not available yet.
     expect(screen.getByRole('button', { name: 'Lower by 5' })).toBeDisabled()
     // Half a blind at 5/10, on every street: two taps to a whole one. The

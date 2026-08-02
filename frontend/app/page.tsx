@@ -1,8 +1,9 @@
-import { Spade, Users, Link2, ShieldCheck } from 'lucide-react'
+import { Suspense } from 'react'
+import { Link2, ShieldCheck, Spade, Users } from 'lucide-react'
 
+import { CreateRoomEntry } from '@/components/create-room-entry'
 import { CreateRoomForm } from '@/components/create-room-form'
 import { PlayingCard } from '@/components/playing-card'
-import { SiteHeader } from '@/components/site-header'
 import { SignedOutCta } from '@/components/signed-out-cta'
 import {
   Card,
@@ -16,43 +17,56 @@ const STEPS = [
   {
     icon: Spade,
     title: 'Configure the table',
-    body: 'Set the starting stack, the small and big blinds, and a password.',
+    body: 'Use the dealt setup or customize the stakes, pace, and house rules.',
   },
   {
     icon: Link2,
     title: 'Share the link',
-    body: 'Send friends the invite link. They enter their name and the password.',
+    body: 'Send friends one private invite. No account or download needed.',
   },
   {
     icon: Users,
     title: 'Deal the cards',
-    body: 'Once everyone is seated, start the hand and play No-Limit Hold’em.',
+    body: 'Start once two players are seated. Friends can still join later.',
   },
-]
+] as const
+
+function HowItWorks({ className = '' }: { className?: string }) {
+  return (
+    <ul className={`grid gap-4 sm:grid-cols-3 ${className}`}>
+      {STEPS.map((step) => (
+        <li key={step.title} className="flex flex-col gap-2">
+          <span className="flex size-9 items-center justify-center rounded-lg bg-primary/15 text-primary">
+            <step.icon className="size-4.5" aria-hidden />
+          </span>
+          <p className="text-sm font-semibold">{step.title}</p>
+          <p className="text-sm leading-relaxed text-muted-foreground">{step.body}</p>
+        </li>
+      ))}
+    </ul>
+  )
+}
 
 export default function HomePage() {
   return (
-    <main className="min-h-dvh">
-      <SiteHeader />
-      <div className="mx-auto flex max-w-6xl flex-col gap-10 px-5 py-10 lg:flex-row lg:items-center lg:gap-16 lg:py-16">
-        {/* Hero / pitch */}
+    <main id="main-content" tabIndex={-1} className="min-h-dvh outline-none">
+      <div className="compact-phone-shell mx-auto flex min-h-dvh max-w-6xl flex-col gap-4 px-5 py-5 lg:flex-row lg:items-center lg:gap-16 lg:py-16">
         <section className="flex-1">
-          <div className="inline-flex items-center gap-2 rounded-full border border-primary/30 bg-primary/10 px-3 py-1 text-xs font-medium text-primary">
-            <ShieldCheck className="size-3.5" />
+          <div className="compact-phone-badge inline-flex items-center gap-2 rounded-full border border-primary/30 bg-primary/10 px-3 py-1 text-xs font-medium text-primary">
+            <ShieldCheck className="size-3.5" aria-hidden />
             Private tables, powered by pokerkit
           </div>
 
-          <h1 className="mt-5 text-pretty font-serif text-4xl font-extrabold leading-tight sm:text-5xl lg:text-6xl">
-            Deal your friends into a private{' '}
-            <span className="text-primary">Texas Hold’em</span> table.
+          <h1 className="compact-phone-title mt-4 max-w-xl text-pretty font-serif text-4xl font-extrabold leading-[1.08] sm:text-5xl lg:mt-5 lg:text-6xl">
+            Your poker night starts with{' '}
+            <span className="text-primary">one link.</span>
           </h1>
 
-          <p className="mt-4 max-w-md text-pretty leading-relaxed text-muted-foreground">
-            Spin up a room in seconds, choose the stakes, and invite everyone
-            with a single link. No downloads, no accounts — just cards.
+          <p className="compact-phone-copy mt-3 max-w-md text-pretty text-sm leading-relaxed text-muted-foreground sm:text-base lg:mt-4">
+            Name the table, send one link, and deal. The usual setup is ready.
           </p>
 
-          <div className="mt-6 flex items-center gap-2" aria-hidden>
+          <div className="compact-phone-cards mt-3 flex items-center gap-2 lg:mt-6" aria-hidden>
             <PlayingCard card="Ah" size="md" className="-rotate-6" />
             <PlayingCard card="Kh" size="md" className="rotate-3" />
             <PlayingCard card="Qh" size="md" className="-rotate-2" />
@@ -60,39 +74,29 @@ export default function HomePage() {
             <PlayingCard card="Th" size="md" className="rotate-12" />
           </div>
 
-          <ul className="mt-8 grid gap-4 sm:grid-cols-3">
-            {STEPS.map((step) => (
-              <li key={step.title} className="flex flex-col gap-2">
-                <span className="flex size-9 items-center justify-center rounded-lg bg-primary/15 text-primary">
-                  <step.icon className="size-4.5" />
-                </span>
-                <p className="text-sm font-semibold">{step.title}</p>
-                <p className="text-sm leading-relaxed text-muted-foreground">
-                  {step.body}
-                </p>
-              </li>
-            ))}
-          </ul>
+          <HowItWorks className="mt-8 hidden lg:grid" />
         </section>
 
-        {/* Create form */}
-        <section className="w-full lg:max-w-md">
+        <section id="create-table" className="compact-phone-create w-full scroll-mt-4 lg:max-w-md">
           <Card className="border-primary/15 shadow-xl">
-            <CardHeader>
+            <CardHeader className="compact-phone-card-header gap-1 pb-4">
               <CardTitle className="font-serif text-2xl">
                 Create a table
               </CardTitle>
-              <CardDescription>
-                You’ll be the host. You can share the invite link on the next
-                screen.
+              <CardDescription className="compact-phone-card-description">
+                You’ll be the host. Share the invitation on the next screen.
               </CardDescription>
             </CardHeader>
             <CardContent>
-              <CreateRoomForm />
+              <Suspense fallback={<CreateRoomForm />}>
+                <CreateRoomEntry />
+              </Suspense>
             </CardContent>
           </Card>
           <SignedOutCta />
         </section>
+
+        <HowItWorks className="pb-5 lg:hidden" />
       </div>
     </main>
   )

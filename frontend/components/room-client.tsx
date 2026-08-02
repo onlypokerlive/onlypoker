@@ -22,6 +22,7 @@ import { BuyChips } from "@/components/buy-chips"
 import { PreActions } from "@/components/pre-actions"
 import { RunoutOffer } from "@/components/runout-offer"
 import { PlayAgain, TournamentResults } from "@/components/tournament-results"
+import { InviteShareButton } from "@/components/invite-share-button"
 import { useSecondsLeft } from "@/lib/use-countdown"
 import { tableIsAudible, useTableEvents, type SoundMode } from "@/lib/use-table-events"
 import { useShotClockWarning } from "@/lib/use-shot-clock-warning"
@@ -31,11 +32,22 @@ import { ownZoneHeight, zoneScale } from "@/lib/table-layout"
 import { useViewportHeight } from "@/lib/use-viewport-height"
 import { playCue } from "@/lib/sound"
 import { useRunout } from "@/lib/use-runout"
+import { handoverState } from "@/lib/handover"
+import {
+  failureCategory,
+  recordActionRejected,
+  recordGameStartAttempt,
+  recordGameStartFailed,
+  recordGameStarted,
+  recordRoomSessionMissing,
+  recordTournamentFinished,
+} from "@/lib/growth"
 import {
   ApiError,
   pokerApi,
   toGameView,
   loadSession,
+  saveSession,
   clearSession,
   type GameView,
   type Session,
@@ -66,14 +78,18 @@ export function RoomClient({ roomId }: { roomId: string }) {
   // stale when it comes back.
   const pollRef = useRef(0)
   const answeredRef = useRef(0)
+  const resultsHeadingRef = useRef<HTMLHeadingElement>(null)
+  const savedHostStateRef = useRef<boolean | null>(null)
 
   // Resolve session from local storage; if absent, send to join page.
   useEffect(() => {
     const s = loadSession(roomId)
     if (!s) {
+      recordRoomSessionMissing()
       router.replace(`/join/${roomId}`)
       return
     }
+    savedHostStateRef.current = s.isHost
     setSession(s)
   }, [roomId, router])
 
@@ -159,11 +175,55 @@ export function RoomClient({ roomId }: { roomId: string }) {
   // An all-in arrives as a finished board in one response. Deal it out.
   const { board: shownBoard, revealing } = useRunout(view)
 
+  // Host authority can move without an account. Keep this device's persisted
+  // session aligned with the server while never restoring an invalidated
+  // recovery backup after a deliberate handoff.
+  useEffect(() => {
+    if (!session || !view || savedHostStateRef.current === view.isHost) return
+    const latest = loadSession(roomId) ?? session
+    const nextSession = view.isHost
+      ? { ...latest, isHost: true }
+      : {
+          roomId: latest.roomId,
+          playerId: latest.playerId,
+          token: latest.token,
+          isHost: false,
+          spectator: latest.spectator,
+        }
+    saveSession(nextSession)
+    savedHostStateRef.current = view.isHost
+  }, [roomId, session, view])
+
+  useEffect(() => {
+    if (phase !== "finished") return
+    window.scrollTo({ top: 0, behavior: "auto" })
+    window.requestAnimationFrame(() => resultsHeadingRef.current?.focus())
+  }, [phase])
+
+  useEffect(() => {
+    if (view?.phase !== "finished") return
+    recordTournamentFinished(
+      view.roomId,
+      view.tournamentNumber,
+      view.standings.length || view.players.length,
+      view.handNumber,
+      view.isHost,
+    )
+  }, [
+    view?.phase,
+    view?.roomId,
+    view?.tournamentNumber,
+    view?.standings.length,
+    view?.players.length,
+    view?.handNumber,
+    view?.isHost,
+  ])
+
   // Rapping the table is what checking *is*, so it is the gesture and not a
   // button. The whole felt, not a target: at a real table you knock wherever
   // your hand happens to be.
   const canCheckNow = !!view?.isYourTurn && !!view?.legal?.canCheck && !busy
-  const { refused, learned: knowsTheTap, ...feltTap } = useDoubleTap({
+  const { refused, ...feltTap } = useDoubleTap({
     enabled: canCheckNow,
     onDoubleTap: () => handleAction("check"),
   })
@@ -196,13 +256,17 @@ export function RoomClient({ roomId }: { roomId: string }) {
     [],
   )
 
-  async function withBusy(fn: () => Promise<void>) {
+  async function withBusy(
+    fn: () => Promise<void>,
+    onError?: (error: unknown) => void,
+  ) {
     if (busy) return
     setBusy(true)
     pausePollRef.current = true
     try {
       await fn()
     } catch (e) {
+      onError?.(e)
       // Said as well as shown. Everything this device asks for and is refused
       // sounds the same, and it is the one cue that is unambiguously about
       // *you*: the double-tap that was not your turn already plays it, and a
@@ -221,12 +285,22 @@ export function RoomClient({ roomId }: { roomId: string }) {
     }
   }
 
-  const handleStart = () =>
-    withBusy(async () => {
-      if (!session) return
+  const handleStart = () => {
+    const initialStart = view?.phase === "lobby" && view.handNumber === 0
+    if (view && initialStart) recordGameStartAttempt(view.players.length)
+    return withBusy(async () => {
+      if (!session || !view) return
+      const firstDeal = view.phase === "lobby" && view.handNumber === 0
       const raw = await pokerApi.startHand(roomId, session.playerId, session.token)
-      showFresh(toGameView(raw, session.playerId))
+      const nextView = toGameView(raw, session.playerId)
+      showFresh(nextView)
+      if (firstDeal) {
+        recordGameStarted(roomId, nextView.tournamentNumber, nextView.players.length)
+      }
+    }, (caught) => {
+      if (initialStart) recordGameStartFailed(failureCategory(caught))
     })
+  }
 
   // Another tournament at the same table. Named after the one that just
   // finished — the hand it ended on — so two taps are one decision.
@@ -257,7 +331,7 @@ export function RoomClient({ roomId }: { roomId: string }) {
         session.token,
       )
       showFresh(toGameView(raw, session.playerId))
-    })
+    }, (caught) => recordActionRejected(action, failureCategory(caught)))
 
   const handleSitToggle = () =>
     withBusy(async () => {
@@ -299,6 +373,12 @@ export function RoomClient({ roomId }: { roomId: string }) {
   // chaining: `!you?.sittingOut` is *true* for a spectator, which is how you
   // end up offering a chair to somebody who does not have one.
   const spectating = !you
+  const handover = handoverState({
+    lastHand: view.lastHand,
+    isHost: view.isHost,
+    paused: view.paused,
+    autoDealIn,
+  })
 
   return (
     // The cloth is chosen here rather than on the table, so the whole room is
@@ -306,6 +386,8 @@ export function RoomClient({ roomId }: { roomId: string }) {
     // the felt instead of the table being blue under a gold button. `.table-lit`
     // rebinds the four accent tokens; nothing else has to know.
     <main
+      id="main-content"
+      tabIndex={-1}
       data-baize={baizeOf(view.baize)}
       data-deck={deckOf(view.deck)}
       // Three zones in one screen, and nothing scrolls.
@@ -318,7 +400,7 @@ export function RoomClient({ roomId }: { roomId: string }) {
       // the rest and fits itself into it. `svh` and not `vh` because the mobile
       // URL bar moves and `vh` measures the tallest the viewport ever gets,
       // which is the one measurement guaranteed not to fit.
-      className="table-lit mx-auto flex h-[100svh] w-full max-w-4xl flex-col overflow-hidden px-3 pb-[max(0.5rem,env(safe-area-inset-bottom))] pt-2"
+      className="table-lit mx-auto flex h-[100svh] w-full max-w-4xl flex-col overflow-hidden px-3 pb-[max(0.5rem,env(safe-area-inset-bottom))] pt-2 outline-none"
       // The rows of the room breathe with the controls: on a short phone the
       // eight pixels between the header, the table and your zone are three
       // more rows of felt.
@@ -350,6 +432,17 @@ export function RoomClient({ roomId }: { roomId: string }) {
           </span>
         </div>
         <div className="flex shrink-0 items-center gap-1">
+          {view.phase !== "lobby" && view.phase !== "finished" && (
+            <InviteShareButton
+              roomId={view.roomId}
+              roomName={view.roomName}
+              phase={view.phase}
+              isHost={view.isHost}
+              playerCount={view.players.length}
+              surface="table"
+              compact
+            />
+          )}
           <HelpSheet />
           {/* On the table, not buried in settings: this gets used with other
               people in the room, and the person who needs it needs it now. */}
@@ -392,6 +485,9 @@ export function RoomClient({ roomId }: { roomId: string }) {
         // nothing on it to press, and is what this was.
         <div className="flex min-h-0 flex-1 flex-col items-center gap-3 py-2">
           <div className="flex min-h-0 flex-1 flex-col items-center justify-center gap-3 overflow-y-auto">
+            <h2 ref={resultsHeadingRef} tabIndex={-1} className="sr-only">
+              Final results for {view.roomName}
+            </h2>
             <HandResults view={view} title="The final hand" className="shrink-0" />
             <TournamentResults view={view} />
           </div>
@@ -443,24 +539,24 @@ export function RoomClient({ roomId }: { roomId: string }) {
                 having hung. */}
             <RunoutOffer view={view} roomId={roomId} onDone={refresh} session={session} />
 
-            {/* Said only while it is true, and only until the gesture has been
-                used once. It taught, it was learned, and after that it is a
-                line of instructions standing between the table and the buttons.
+            {/* There was a line here — "Double-tap the felt to check", pinned
+                to the bottom of the felt until the gesture had been used once.
+                It is gone, and so is the flag in local storage that decided
+                when to stop drawing it.
 
-                On the felt, which is where it belongs twice over. It is a
-                sentence about the felt — pointing at the thing it is asking
-                you to tap is better teaching than describing it from a row
-                underneath. And it is an announcement, so it obeys the rule the
-                stopped-table panel and the run-it-twice offer already obey:
-                announcements are drawn *over* the table and cost it nothing.
-                Down in the reserved zone it was 21 extra pixels in a 180-pixel
-                box on a 320px phone, and what those pixels came out of was the
-                top of the peek band — measured at 19px of it, gone. */}
-            {canCheckNow && !knowsTheTap && (
-              <p className="pointer-events-none absolute bottom-1 left-1/2 -translate-x-1/2 rounded-full bg-background/70 px-2.5 py-0.5 text-[11px] text-muted-foreground backdrop-blur-[2px]">
-                Double-tap the felt to check
-              </p>
-            )}
+                It was never legible where it was put: the bottom seat is drawn
+                at `z-[3]` and the line had no z-index at all, so on any phone
+                short enough for the plate to reach the bottom of the felt —
+                which is every small one — your own name and stack were painted
+                straight through the middle of the sentence. Raising it above
+                the seat only moves the collision.
+
+                And it was answering a question nobody had. Checking has a
+                button on the bar, in words, on every turn where it is free.
+                The knock is a shortcut for people who play, and the help sheet
+                one tap away is where a shortcut is written down. A gesture
+                that needs a caption over the table to be found is a gesture
+                the table can do without announcing. */}
 
             {/* Nothing covers the felt between hands, and that is the change.
                 A full-screen panel went up the instant a hand ended — over the
@@ -481,13 +577,23 @@ export function RoomClient({ roomId }: { roomId: string }) {
               drawn over the table to stay reachable.
 
               One height, in every phase of every hand: playing, waiting,
-              folded, between hands, watching. See OWN_ZONE_H for what the
+              folded, between hands, watching. See `ownZoneHeight` for what the
               number is and for the four-year-old bug it closes. `justify-end`
               so short states pad at the top and the buttons stay against the
               bottom of the screen, where the thumb is; `overflow-hidden` so a
               state nobody has measured yet gives up its own top edge rather
-              than taking a bite out of the table. */}
+              than taking a bite out of the table.
+
+              Which is the failure this zone is *designed* to fail with, and it
+              is silent: nothing throws, nothing scrolls, the top of the band
+              simply stops being drawn. It shipped that way — a pass that took
+              every button in the app to 44px overflowed this box by 16.7px and
+              cut "Your hand" in half on every phone, and by 81.7px with the
+              slider open, which took your own cards off the screen. So the box
+              is named, and `e2e/your-zone-fits.spec.ts` measures the band's top
+              edge against it at five sizes. */}
           <div
+            data-own-zone
             className="z-20 flex shrink-0 flex-col justify-end overflow-hidden"
             style={{ height: ownZoneHeight(viewportH), gap: 6 * zu }}
           >
@@ -577,7 +683,15 @@ export function RoomClient({ roomId }: { roomId: string }) {
                     />
                   </div>
                 )}
-                {view.isHost ? (
+                {handover.kind === "finishing" ? (
+                  <div
+                    role="status"
+                    aria-live="polite"
+                    className="flex min-h-11 items-center justify-center rounded-xl border border-primary/35 bg-primary/10 px-4 text-center text-[13px] font-medium text-foreground"
+                  >
+                    {handover.label}
+                  </div>
+                ) : handover.kind === "host" ? (
                   <div className="flex gap-2">
                     <Button
                       onClick={handleStart}
@@ -585,9 +699,7 @@ export function RoomClient({ roomId }: { roomId: string }) {
                       size="lg"
                       className="flex-1"
                     >
-                      {autoDealIn != null && !view.paused
-                        ? `Deal now · ${Math.ceil(autoDealIn)}s`
-                        : "Deal next hand"}
+                      {handover.label}
                     </Button>
                     <Button
                       variant="outline"
@@ -601,11 +713,7 @@ export function RoomClient({ roomId }: { roomId: string }) {
                   </div>
                 ) : (
                   <div className="flex h-11 items-center justify-center rounded-xl border border-border/60 bg-card/60 text-[13px] text-muted-foreground">
-                    {view.paused
-                      ? "The host stopped the table…"
-                      : autoDealIn != null
-                        ? `Next hand in ${Math.ceil(autoDealIn)}s`
-                        : "Dealing the next hand…"}
+                    {handover.label}
                   </div>
                 )}
                 {/* The two quiet ones, on one line.

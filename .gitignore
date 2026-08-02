@@ -18,6 +18,9 @@ next-env.d.ts
 
 # Console logs and page dumps left behind by browser automation
 .playwright-mcp/
+test-results/
+playwright-report/
+blob-report/
 
 # Python backend
 .venv/

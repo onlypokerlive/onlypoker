@@ -22,11 +22,20 @@ const playfair = Playfair_Display({
   variable: '--font-playfair',
 })
 
+const deploymentHost =
+  process.env.NEXT_PUBLIC_SITE_URL ??
+  process.env.VERCEL_PROJECT_PRODUCTION_URL ??
+  process.env.VERCEL_URL ??
+  'http://localhost:3000'
+const metadataBase = new URL(
+  deploymentHost.startsWith('http') ? deploymentHost : `https://${deploymentHost}`,
+)
+
 export const metadata: Metadata = {
+  metadataBase,
   title: 'Felt & Gold — Private Texas Hold’em',
   description:
-    'Spin up a private No-Limit Texas Hold’em table, set the blinds and stacks, and invite your friends with a single link.',
-  generator: 'v0.app',
+    'Set up a private No-Limit Texas Hold’em table and invite your friends with one link. No account or download needed.',
 }
 
 export const viewport: Viewport = {
@@ -34,8 +43,6 @@ export const viewport: Viewport = {
   themeColor: '#1b2a24',
   width: 'device-width',
   initialScale: 1,
-  maximumScale: 1,
-  userScalable: false,
 }
 
 export default function RootLayout({
@@ -49,6 +56,12 @@ export default function RootLayout({
       className={`dark bg-background ${geistSans.variable} ${geistMono.variable} ${playfair.variable}`}
     >
       <body className="font-sans antialiased">
+        <a
+          href="#main-content"
+          className="fixed left-3 top-3 z-[100] -translate-y-24 rounded-lg bg-primary px-4 py-2 text-sm font-semibold text-primary-foreground shadow-xl transition-transform focus:translate-y-0"
+        >
+          Skip to main content
+        </a>
         <AuthProvider>
           {children}
           {/* Nothing was rendering these. Every `toast.error` the app has ever
