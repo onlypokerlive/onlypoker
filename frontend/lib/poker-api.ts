@@ -789,14 +789,17 @@ export const pokerApi = {
    * decision — and it has to be, because by then the room is a lobby and there
    * is no finished tournament left to refuse.
    */
-  playAgain: (roomId: string, playerId: string, endedAt: number, token?: string) =>
+  playAgain: (roomId: string, playerId: string, endedAt: number, tournamentNumber: number, token?: string) =>
     req<RoomView>(`/api/rooms/${roomId}/again`, {
       method: 'POST',
       headers: auth(token),
       body: JSON.stringify({
         playerId,
         action: 'again',
-        requestId: `again:${roomId}:${endedAt}`,
+        // Include tournamentNumber so that two tournaments ending on the same
+        // hand number produce distinct requestIds and don't hit the receipt
+        // cache from the previous play-again.
+        requestId: `again:${roomId}:t${tournamentNumber}:${endedAt}`,
       }),
     }),
 
