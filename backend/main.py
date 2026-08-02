@@ -1753,6 +1753,10 @@ def _settle_hand(room: dict[str, Any], state) -> None:
     # same pause, and the schedule closes the room when it is up.
     if len(_eligible_player_ids(room)) < 2:
         room["finishAt"] = time.time() + _handover_seconds(room)
+        # Tell the frontend this is the last hand so it shows "Finishing the
+        # night…" instead of a "Deal next hand" button that would fail because
+        # there is only one player with chips left.
+        room["lastHand"] = True
     else:
         _arm_auto_deal(room)
 
