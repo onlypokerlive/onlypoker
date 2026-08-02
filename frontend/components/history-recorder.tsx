@@ -26,11 +26,21 @@ export function HistoryRecorder({
 }) {
   const { user, loading } = useAuth()
   const [status, setStatus] = useState<Status>('idle')
-  const attempted = useRef(false)
+  // Track the roomId we last attempted to save so that a play-again (which
+  // produces a new roomId) correctly saves the second game too.
+  const attemptedRoomId = useRef<string | null>(null)
+
+  // Reset UI state when the room changes (play-again gives a new roomId).
+  const prevRoomId = useRef<string | null>(null)
+  if (prevRoomId.current !== view.roomId) {
+    prevRoomId.current = view.roomId
+    if (status !== 'idle') setStatus('idle')
+  }
 
   useEffect(() => {
-    if (loading || attempted.current) return
+    if (loading) return
     if (view.phase !== 'finished') return
+    if (attemptedRoomId.current === view.roomId) return
 
     if (!user) {
       setStatus('signed-out')
@@ -38,11 +48,11 @@ export function HistoryRecorder({
     }
     // Spectators have no seat, so there's no result of theirs to save.
     if (!session || session.spectator) {
-      attempted.current = true
+      attemptedRoomId.current = view.roomId
       return
     }
 
-    attempted.current = true
+    attemptedRoomId.current = view.roomId
     setStatus('saving')
 
     const mine = view.standings.find((s) => s.playerId === session.playerId)
