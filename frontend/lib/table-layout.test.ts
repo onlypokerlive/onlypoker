@@ -7,7 +7,7 @@ import {
   layoutTable,
   MIN_TABLE_ROOM,
   LAYOUT,
-  OWN_ACTION_H,
+  ownActionHeight,
   OWN_ZONE_GAP,
   OWN_ZONE_H,
   ownZoneHeight,
@@ -236,6 +236,12 @@ describe('nothing covers anything', () => {
     // Pinned so it can only get better. If a change fixes some of it this test
     // fails and the numbers come down; if a change makes it worse it fails and
     // says by how much.
+    //
+    // (The timeout below is not a hint that something is slow — it is that this
+    // one `it` lays out every width against every sub-360 height against every
+    // seat count and walks the collisions, and 5 seconds is a coin flip for it:
+    // 2.5s on an idle machine and over 7 with anything else running, which is a
+    // test that fails for reasons that have nothing to do with the code.)
     const seen: Record<string, number> = {}
     let deepest = 0
     let fewest = SEATS.length
@@ -260,7 +266,7 @@ describe('nothing covers anything', () => {
     // three-handed on — it takes a crowded ring to run out of felt.
     expect(deepest).toBe(340)
     expect(fewest).toBe(5)
-  })
+  }, 30_000)
 
   it('keeps everything on the table it was given', () => {
     // A stack pushed off the felt looking for room is a stack the player cannot
@@ -441,7 +447,32 @@ describe('the rule: the table is the constant', () => {
     // Anything less and the normal case — a hand being played, on your turn —
     // is a scroller, which is the state this whole reservation exists to stop
     // being paid for out of the table.
-    expect(OWN_ZONE_H).toBeGreaterThanOrEqual(PEEK_BAND_H + OWN_ZONE_GAP + OWN_ACTION_H)
+    //
+    // This is three constants agreeing with each other and it is worth exactly
+    // that much: it passed for the whole time the browser was clipping 16.7px
+    // off the top of the peek band, because nothing here has ever measured a
+    // browser. What the reservation is really checked against is
+    // `e2e/your-zone-fits.spec.ts`, which lays the page out at five phone
+    // sizes and reads the band's top edge off the DOM. Kept because the two
+    // answer different questions — this one says the arithmetic is coherent,
+    // that one says the arithmetic is true.
+    expect(OWN_ZONE_H).toBeGreaterThanOrEqual(PEEK_BAND_H + OWN_ZONE_GAP + ownActionHeight(1))
+  })
+
+  it('keeps the same slack at both ends of the range', () => {
+    // The controls have a part that does not scale — borders, 10px type, and
+    // 32px of slider track whatever `--zu` says — so a reservation that is one
+    // number times the scale is generous where it does not matter and thin
+    // where it does. The old one reserved 152 for controls that measure 138.8
+    // at full size, and 121.6 for the same controls at 119.3 on the shortest
+    // phone: thirteen pixels of room on the phone with room to spare, and 2.3
+    // on the one without.
+    const need = (u: number) => 41.3 + 97.5 * u // measured; see OWN_ACTION_FIXED
+    for (const u of [0.8, 0.9, 1]) {
+      const slack = ownActionHeight(u) - need(u)
+      expect(slack).toBeGreaterThan(2)
+      expect(slack).toBeLessThan(8)
+    }
   })
 
   it('leaves the shortest phone supported a table it can still draw', () => {
@@ -449,9 +480,10 @@ describe('the rule: the table is the constant', () => {
     // subtract a header and the zone and stop there, which credited the table
     // with 29px of padding, gaps and safe area it never receives — a check
     // measuring a room that does not exist. Verified against the live DOM at
-    // 320×568, where the felt row comes out at 323.
-    expect(tableRoom(568)).toBeGreaterThan(320)
-    expect(Math.round(tableRoom(568))).toBe(323)
+    // 320×568, where the felt row comes out at 312 — with the header counted
+    // at the 44 it measures rather than the 36 it used to claim.
+    expect(tableRoom(568)).toBeGreaterThan(MIN_TABLE_ROOM)
+    expect(Math.round(tableRoom(568))).toBe(312)
   })
 
   it('spends the same chrome at every size, and the table takes the difference', () => {

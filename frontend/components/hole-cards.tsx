@@ -286,7 +286,9 @@ export function HoleCards({
   const lift = revealed || carry ? OUT : TUCKED
 
   return (
-    <div className={cn('relative', className)}>
+    // Named so the fit test can find its top edge. The zone above clips in
+    // silence, and this band is what it clips first — see `data-own-zone`.
+    <div data-peek-band className={cn('relative', className)}>
       {/* The target, above the line that divides your zone from the table —
           which is where a muck goes at a real table, and which is also the only
           place it can go: the band itself is where the thumb started, so a

@@ -183,9 +183,22 @@ export function ActionBar({
                   variant={clamp(raiseTo) === p.amount ? "secondary" : "outline"}
                   disabled={busy}
                   onClick={() => setRaiseTo(p.amount)}
-                  // These remain the primary sizing controls, so each keeps a
-                  // full touch target even though exact sizing is collapsed.
-                  className="min-h-11 px-1 text-xs font-semibold tabular-nums"
+                  // Thirty pixels of box and forty-six of target.
+                  //
+                  // These went to a flat 44 in a pass that raised every button
+                  // in the app to the touch-target guidance, and it is the one
+                  // place in the app where that arithmetic does not hold: this
+                  // band is the table's ceiling, so fourteen pixels here are
+                  // fourteen pixels of felt — and the zone they overflowed was
+                  // clipping your own cards to pay for them.
+                  //
+                  // What made a preset hittable was never its height. Four of
+                  // them across a phone is ninety-seven pixels of width each,
+                  // and the rest of the target is bought back with a
+                  // pseudo-element that reaches eight pixels above and below
+                  // into the gaps either side — which the layout does not pay
+                  // for, because a pseudo-element has no height of its own.
+                  className="relative h-[calc(30px*var(--zu,1))] min-h-0 px-1 text-xs font-semibold tabular-nums after:absolute after:inset-x-0 after:-inset-y-2 after:content-['']"
                   // "Set raise to", not "Raise to": this button moves the
                   // slider, it does not commit chips — and the button that
                   // *does* commit them is three inches below with almost the
@@ -198,63 +211,87 @@ export function ActionBar({
             </div>
           )}
 
-          {/* One row, not two: every pixel this bar takes comes off the table
-              above it, and on a short phone the bottom seat is the first thing
-              to go under it. */}
-          <details className="group rounded-lg border border-border/55 bg-background/25 px-2.5">
-            <summary className="flex min-h-11 cursor-pointer list-none items-center justify-between gap-3 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring [&::-webkit-details-marker]:hidden">
-              <span className="text-xs font-medium text-muted-foreground">Fine tune</span>
-              <span className="flex items-baseline gap-1.5">
-                <strong className="font-mono text-sm tabular-nums text-foreground">
-                  {clamp(raiseTo).toLocaleString()}
-                </strong>
-                <span className="font-mono text-[10px] text-accent">
-                  {inBigBlinds(clamp(raiseTo), view.bigBlind)}
-                </span>
+          {/* One row, not two — and out in the open, not behind a disclosure.
+              Every pixel this bar takes comes off the table above it, and on a
+              short phone the bottom seat is the first thing to go under it.
+
+              It spent a while as a `<details>` labelled "Fine tune", collapsed
+              to a summary that showed the number and hid the control. Three
+              things were wrong with that and only the third is about pixels.
+
+              A slider you cannot see is a slider nobody knows is there: the
+              row read as a static caption, and the only visible way to a size
+              the presets do not offer was gone. Opening it then cost 65px in a
+              zone with 150 — measured at 231.8px of controls in a 210px zone,
+              which clipped the peek band 81.7px and took your own cards off
+              the screen entirely to show you a slider. And the amount, which
+              is the number you are about to commit chips against, sat where
+              the disclosure's label goes rather than at the end of the control
+              that sets it.
+
+              So: the slider, on the felt, to the left of the number it
+              moves. */}
+          <div className="flex items-center gap-[calc(6px*var(--zu,1))]">
+            <Button
+              type="button"
+              size="icon"
+              variant="outline"
+              disabled={busy || clamp(raiseTo) <= min}
+              onClick={() => setRaiseTo(clamp(raiseTo - step))}
+              aria-label={`Lower by ${step}`}
+              // Same trade as the presets above: a 32px box reaching 48px of
+              // target through a pseudo-element the layout never pays for.
+              className="relative size-[calc(32px*var(--zu,1))] shrink-0 after:absolute after:-inset-2 after:content-['']"
+            >
+              <Minus />
+            </Button>
+            <Slider
+              value={raiseTo}
+              min={min}
+              max={max}
+              // A chip, not a blind. The stepper next to it moves in half
+              // blinds — that is the unit people size in — and this is the
+              // control for landing on an exact number when they do not: the
+              // last chip of a stack, the amount that puts somebody all in.
+              // Two controls, two jobs.
+              step={1}
+              onValueChange={(v) =>
+                setRaiseTo(clamp(snapToPreset(readSliderValue(v), sizes, max - min)))
+              }
+              className="flex-1"
+              aria-label="Raise amount"
+              // What a screen reader says instead of the raw number. "4200" is
+              // the only thing it has to go on otherwise, and the number a
+              // player is actually deciding with is the one in big blinds.
+              aria-valuetext={`${clamp(raiseTo).toLocaleString()} chips · ${inBigBlinds(
+                clamp(raiseTo),
+                view.bigBlind,
+              )}`}
+            />
+            <Button
+              type="button"
+              size="icon"
+              variant="outline"
+              disabled={busy || clamp(raiseTo) >= max}
+              onClick={() => setRaiseTo(clamp(raiseTo + step))}
+              aria-label={`Raise by ${step}`}
+              className="relative size-[calc(32px*var(--zu,1))] shrink-0 after:absolute after:-inset-2 after:content-['']"
+            >
+              <Plus />
+            </Button>
+            {/* Chips are the number the engine takes; big blinds are the number
+                players compare against. Both, or half the table is doing the
+                division in their head — and both bright, because this is read
+                at a glance in a dim room. */}
+            <span className="flex w-16 shrink-0 flex-col items-end leading-tight">
+              <span className="font-mono text-sm font-bold tabular-nums text-foreground">
+                {clamp(raiseTo).toLocaleString()}
               </span>
-            </summary>
-            <div className="flex items-center gap-2 border-t border-border/45 py-2.5">
-              <Button
-                type="button"
-                size="icon-lg"
-                variant="outline"
-                disabled={busy || clamp(raiseTo) <= min}
-                onClick={() => setRaiseTo(clamp(raiseTo - step))}
-                aria-label={`Lower by ${step}`}
-                className="shrink-0"
-              >
-                <Minus />
-              </Button>
-              <Slider
-                value={raiseTo}
-                min={min}
-                max={max}
-                // A chip, not a blind. The stepper moves in half blinds; this
-                // control is for exact stack and all-in amounts.
-                step={1}
-                onValueChange={(v) =>
-                  setRaiseTo(clamp(snapToPreset(readSliderValue(v), sizes, max - min)))
-                }
-                className="flex-1"
-                aria-label="Raise amount"
-                aria-valuetext={`${clamp(raiseTo).toLocaleString()} chips · ${inBigBlinds(
-                  clamp(raiseTo),
-                  view.bigBlind,
-                )}`}
-              />
-              <Button
-                type="button"
-                size="icon-lg"
-                variant="outline"
-                disabled={busy || clamp(raiseTo) >= max}
-                onClick={() => setRaiseTo(clamp(raiseTo + step))}
-                aria-label={`Raise by ${step}`}
-                className="shrink-0"
-              >
-                <Plus />
-              </Button>
-            </div>
-          </details>
+              <span className="font-mono text-[10px] text-accent">
+                {inBigBlinds(clamp(raiseTo), view.bigBlind)}
+              </span>
+            </span>
+          </div>
         </div>
       )}
 
