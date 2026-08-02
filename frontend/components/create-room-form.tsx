@@ -137,6 +137,7 @@ export function CreateRoomForm({
   const [deck, setDeck] = useState<DeckId>(preset.deck ?? DEFAULT_DECK)
   const [password, setPassword] = useState('')
   const [customized, setCustomized] = useState(false)
+  const [detailsOpen, setDetailsOpen] = useState(false)
   const [issue, setIssue] = useState<FormIssue | null>(null)
   const [loading, setLoading] = useState(false)
   const formRef = useRef<HTMLFormElement>(null)
@@ -360,7 +361,9 @@ export function CreateRoomForm({
 
         <details
           className="group rounded-lg border border-border bg-muted/20"
+          open={detailsOpen}
           onToggle={(event) => {
+            setDetailsOpen(event.currentTarget.open)
             if (event.currentTarget.open) {
               setCustomized(true)
               if (!customizeRecordedRef.current) {
