@@ -118,6 +118,8 @@ export function CreateRoomForm({
     preset.roomName ?? (source === 'rematch' ? 'The Rematch' : 'Friday Night Poker'),
   )
   const [hostName, setHostName] = useState('')
+  const [hostAvatarUrl, setHostAvatarUrl] = useState<string | null>(null)
+  const rememberGuestNickname = useRef<((n: string) => void) | null>(null)
   const [startingChips, setStartingChips] = useState(String(preset.startingChips ?? 1000))
   const [smallBlind, setSmallBlind] = useState(String(preset.smallBlind ?? 5))
   const [bigBlind, setBigBlind] = useState(String(preset.bigBlind ?? 10))
@@ -202,12 +204,14 @@ export function CreateRoomForm({
     if (seconds > 120)
       return showIssue('actionSeconds', 'A decision can take at most 120 seconds.')
 
+    rememberGuestNickname.current?.(hostName.trim())
+
     setLoading(true)
     try {
       const session = await pokerApi.createRoom({
         name: roomName.trim(),
         hostName: hostName.trim(),
-        hostAvatarUrl: null,
+        hostAvatarUrl,
         startingChips: chips,
         smallBlind: sb,
         bigBlind: bb,

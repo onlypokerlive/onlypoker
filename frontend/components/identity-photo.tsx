@@ -62,20 +62,23 @@ export function IdentityPhoto({
     if (!signedIn) onRememberGuestNickname?.(guest.setNickname)
   }, [signedIn, guest.setNickname, onRememberGuestNickname])
 
+  // Signed-in: show profile avatar in the same PhotoUpload-sized slot so the
+  // form dimensions are identical regardless of auth state.
   if (signedIn) {
     return (
-      <div className="flex items-center gap-3">
-        <PlayerAvatar src={avatarUrl} name={profile?.nickname || profile?.fullName || name} size="lg" />
-        <div className="flex flex-col gap-0.5 text-sm">
-          <span className="font-medium text-foreground">
-            Using your profile photo
-          </span>
+      <div className="flex flex-col gap-2">
+        <div className="flex items-center gap-3">
+          <PlayerAvatar
+            src={avatarUrl}
+            name={profile?.nickname || profile?.fullName || name}
+            size="lg"
+          />
           <Link
             href="/profile"
             className="inline-flex items-center gap-1 text-xs text-muted-foreground hover:text-foreground"
           >
             <Pencil className="size-3" />
-            Edit profile
+            Edit profile photo
           </Link>
         </div>
       </div>
