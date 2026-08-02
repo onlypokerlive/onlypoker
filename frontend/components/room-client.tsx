@@ -312,6 +312,7 @@ export function RoomClient({ roomId }: { roomId: string }) {
         roomId,
         session.playerId,
         view.handNumber,
+        view.tournamentNumber,
         session.token,
       )
       showFresh(toGameView(raw, session.playerId))

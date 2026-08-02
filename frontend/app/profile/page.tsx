@@ -1,7 +1,9 @@
 'use client'
 
 import { useEffect, useState } from 'react'
+import Link from 'next/link'
 import { toast } from 'sonner'
+import { History } from 'lucide-react'
 
 import { useAuth } from '@/components/auth-provider'
 import { PhotoUpload } from '@/components/photo-upload'
@@ -135,10 +137,21 @@ export default function ProfilePage() {
       <div className="mx-auto max-w-lg px-5 py-10">
         <Card className="border-primary/15 shadow-xl">
           <CardHeader>
-            <CardTitle className="font-serif text-2xl">Your profile</CardTitle>
-            <CardDescription>
-              Your nickname and photo are used when you join or host a table.
-            </CardDescription>
+            <div className="flex items-start justify-between gap-4">
+              <div>
+                <CardTitle className="font-serif text-2xl">Your profile</CardTitle>
+                <CardDescription className="mt-1">
+                  Your nickname and photo are used when you join or host a table.
+                </CardDescription>
+              </div>
+              <Link
+                href="/history"
+                className="flex shrink-0 items-center gap-1.5 rounded-md px-2.5 py-1.5 text-sm font-medium text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
+              >
+                <History className="size-4" aria-hidden />
+                Game history
+              </Link>
+            </div>
           </CardHeader>
           <CardContent className="flex flex-col gap-6">
             <div className="flex flex-col gap-2">
