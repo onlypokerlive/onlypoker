@@ -30,9 +30,12 @@ export function IdentityPhoto({
   /** Lets the parent stash the guest's chosen name on submit. */
   onRememberGuestNickname?: (setter: (nickname: string) => void) => void
 }) {
-  const { user, profile } = useAuth()
+  const { user, profile, loading } = useAuth()
   const guest = useGuestIdentity()
-  const signedIn = !!user
+  // Don't switch to the signed-in variant until auth has fully resolved.
+  // While loading is true, user is null even when the session exists, which
+  // causes a guest→signed-in layout jump on every authenticated page load.
+  const signedIn = !loading && !!user
   const prefilled = useRef(false)
 
   const avatarUrl = signedIn ? profile?.avatarUrl ?? null : guest.photoUrl
