@@ -713,41 +713,11 @@ export const MIN_SCALE = 0.74
 export const MIN_TABLE_ROOM = 310
 
 /**
- * The height your own zone holds — always, in every phase of every hand.
- *
- * **The rule this layout is built on: the table is the constant.** It is a
- * drawing of a physical object in a room, and physical objects do not change
- * size when the person looking at them is offered a different button. What
- * changes is the device; nothing else may.
- *
- * Your zone is one row of a screen that adds up, so whatever it does not take,
- * the table gets. That made every difference in your own controls a difference
- * in the size of the table: measured on a 375px phone, 218 while a hand is
- * being played against 210 between hands, and each of those against 104 for a
- * spectator — so the ring moved, every seat moved, and every chip was placed
- * against a box that had just stopped existing. It is the single worst thing
- * this layout has ever done and it has been fixed twice; the first fix reserved
- * a height for the controls *during a hand* and left every other phase free to
- * go on resizing the table.
- *
- * So the whole zone is one fixed height, taken from its tallest honest state:
- * the peek band (54) and the full action controls (152) with the gap between
- * them — measured on a live table across playing, waiting, folded and between
- * hands, where the tallest of the four came to 200. Everything else — between-hands offers, a spectator's one line — is
- * shorter and is padded out to it rather than allowed to shrink the felt.
- *
- * `height`, not `min-height`. A minimum is a floor a tall state simply steps
- * over, which is exactly what "between hands" was doing. Anything that does not
- * fit scrolls inside the zone; nothing gets to push the table.
- */
-export const OWN_ZONE_H = 212
-
-/**
  * The peek band: the lip your own cards sit under, at the top of your zone.
  *
  * Here rather than in the component because it is one of the two numbers
- * {@link OWN_ZONE_H} is made of, and a band that grew without the zone growing
- * with it would push the controls into a scroller on every hand.
+ * {@link ownZoneHeight} is made of, and a band that grew without the zone
+ * growing with it would push the controls into a scroller on every hand.
  */
 export const PEEK_BAND_H = 54
 
@@ -794,12 +764,44 @@ export function zoneScale(viewportH: number): number {
 }
 
 /**
- * The height your zone holds on this screen. See {@link zoneScale}.
+ * The height your own zone holds — always, in every phase of every hand, on a
+ * screen this tall.
+ *
+ * **The rule this layout is built on: the table is the constant.** It is a
+ * drawing of a physical object in a room, and physical objects do not change
+ * size when the person looking at them is offered a different button. What
+ * changes is the device; nothing else may.
+ *
+ * Your zone is one row of a screen that adds up, so whatever it does not take,
+ * the table gets. That made every difference in your own controls a difference
+ * in the size of the table: measured on a 375px phone, 218 while a hand is
+ * being played against 210 between hands, and each of those against 104 for a
+ * spectator — so the ring moved, every seat moved, and every chip was placed
+ * against a box that had just stopped existing. It is the single worst thing
+ * this layout has ever done and it has been fixed twice; the first fix reserved
+ * a height for the controls *during a hand* and left every other phase free to
+ * go on resizing the table.
+ *
+ * So the whole zone is one height for a given screen, taken from its tallest
+ * honest state: the peek band and the full action controls with the gap between
+ * them. Everything else — between-hands offers, a spectator's one line — is
+ * shorter and is padded out to it rather than allowed to shrink the felt.
+ *
+ * This used to have a hand-written twin, `OWN_ZONE_H = 212`, which nothing
+ * computed and which the comments quoted as the answer. It stopped being the
+ * answer the moment the controls were re-derived — the function returns 204 at
+ * full size — and a constant that disagrees with the function beside it is the
+ * same failure as a model that disagrees with the DOM, one level in. There is
+ * one of these now.
+ *
+ * `height`, not `min-height`. A minimum is a floor a tall state simply steps
+ * over, which is exactly what "between hands" was doing. Anything that does not
+ * fit scrolls inside the zone; nothing gets to push the table.
  *
  * The band does *not* scale, and that is not an oversight: it is a pocket a
  * 48px card slides out of, so a band drawn at 44 clips the card at the moment
  * it is fully out — which is the one frame the whole gesture exists for. What
- * scales is everything that is only a button.
+ * scales is everything that is only a button. See {@link zoneScale}.
  */
 export function ownZoneHeight(viewportH: number): number {
   const u = zoneScale(viewportH)

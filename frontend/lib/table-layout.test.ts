@@ -9,7 +9,6 @@ import {
   LAYOUT,
   ownActionHeight,
   OWN_ZONE_GAP,
-  OWN_ZONE_H,
   ownZoneHeight,
   roomChrome,
   tableRoom,
@@ -442,21 +441,26 @@ describe('re-laying out', () => {
 })
 
 describe('the rule: the table is the constant', () => {
-  it('reserves your zone the tallest state it ever holds', () => {
-    // The peek band and the full action controls, with the gap between them.
-    // Anything less and the normal case — a hand being played, on your turn —
-    // is a scroller, which is the state this whole reservation exists to stop
-    // being paid for out of the table.
+  it('never spends the pocket your cards slide out of on the controls', () => {
+    // There was a check here that read
     //
-    // This is three constants agreeing with each other and it is worth exactly
-    // that much: it passed for the whole time the browser was clipping 16.7px
-    // off the top of the peek band, because nothing here has ever measured a
-    // browser. What the reservation is really checked against is
-    // `e2e/your-zone-fits.spec.ts`, which lays the page out at five phone
-    // sizes and reads the band's top edge off the DOM. Kept because the two
-    // answer different questions — this one says the arithmetic is coherent,
-    // that one says the arithmetic is true.
-    expect(OWN_ZONE_H).toBeGreaterThanOrEqual(PEEK_BAND_H + OWN_ZONE_GAP + ownActionHeight(1))
+    //   expect(OWN_ZONE_H).toBeGreaterThanOrEqual(PEEK_BAND_H + GAP + OWN_ACTION_H)
+    //
+    // and it is gone with the constant, because it was three hand-written
+    // numbers agreeing with each other. It passed for the whole time the
+    // browser was clipping 16.7px off the top of the peek band — nothing in
+    // this file has ever laid anything out. Whether the zone really holds what
+    // is put in it is `e2e/your-zone-fits.spec.ts`, which renders the page at
+    // five phone sizes and reads the band's top edge off the DOM.
+    //
+    // What is worth asserting here is the shape of the split: the band is a
+    // pocket a 48px card slides out of and it must keep all 54 at every screen
+    // size, however small the buttons get. Make the band scale with `--zu` and
+    // this fails at the floor.
+    for (const h of [400, 568, 640, 700, 812, 1000]) {
+      const u = zoneScale(h)
+      expect(ownZoneHeight(h) - ownActionHeight(u) - OWN_ZONE_GAP * u).toBeCloseTo(PEEK_BAND_H, 0)
+    }
   })
 
   it('keeps the same slack at both ends of the range', () => {

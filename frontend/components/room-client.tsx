@@ -577,7 +577,7 @@ export function RoomClient({ roomId }: { roomId: string }) {
               drawn over the table to stay reachable.
 
               One height, in every phase of every hand: playing, waiting,
-              folded, between hands, watching. See OWN_ZONE_H for what the
+              folded, between hands, watching. See `ownZoneHeight` for what the
               number is and for the four-year-old bug it closes. `justify-end`
               so short states pad at the top and the buttons stay against the
               bottom of the screen, where the thumb is; `overflow-hidden` so a
