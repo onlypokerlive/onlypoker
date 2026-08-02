@@ -46,7 +46,13 @@ export function IdentityPhoto({
   }, [avatarUrl, onAvatarUrlChange])
 
   // Suggest a display name once, without clobbering anything already typed.
+  // Guard on loading too: auth starts with loading=true / user=null, so the
+  // guest branch would fire first, set prefilled=true, and block the
+  // signed-in branch from ever running. Wait until loading is settled so
+  // we always prefill from the right source and never trigger two parent
+  // re-renders (which would reset the <details> open state in the form).
   useEffect(() => {
+    if (loading) return
     if (prefilled.current || name.trim()) return
     if (signedIn) {
       const suggested = profile?.nickname || profile?.fullName || ''
@@ -58,7 +64,7 @@ export function IdentityPhoto({
       onNameChange(guest.identity.nickname)
       prefilled.current = true
     }
-  }, [signedIn, profile, guest.ready, guest.identity.nickname, name, onNameChange])
+  }, [loading, signedIn, profile, guest.ready, guest.identity.nickname, name, onNameChange])
 
   // Hand the parent a way to remember the guest's nickname on submit.
   useEffect(() => {
