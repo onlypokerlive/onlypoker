@@ -705,49 +705,19 @@ export const MIN_SCALE = 0.74
  * given — but the point at which {@link MIN_SCALE} starts binding, so the
  * pieces stop shrinking with it and nine of them begin to touch. It is the
  * budget the rest of the screen has to respect: on the shortest phone supported
- * (568px) everything else may spend 258, and it spends 245 — your own zone
- * takes 180 (see {@link ownZoneHeight}) and the room's own header, padding and
- * gaps take the other 65 (see {@link roomChrome}). What is left is 323, which
+ * (568px) everything else may spend 258, and it spends 256 — your own zone
+ * takes 183 (see {@link ownZoneHeight}) and the room's own header, padding and
+ * gaps take the other 73 (see {@link roomChrome}). What is left is 312, which
  * is what the live DOM measures at 320×568.
  */
 export const MIN_TABLE_ROOM = 310
 
 /**
- * The height your own zone holds — always, in every phase of every hand.
- *
- * **The rule this layout is built on: the table is the constant.** It is a
- * drawing of a physical object in a room, and physical objects do not change
- * size when the person looking at them is offered a different button. What
- * changes is the device; nothing else may.
- *
- * Your zone is one row of a screen that adds up, so whatever it does not take,
- * the table gets. That made every difference in your own controls a difference
- * in the size of the table: measured on a 375px phone, 218 while a hand is
- * being played against 210 between hands, and each of those against 104 for a
- * spectator — so the ring moved, every seat moved, and every chip was placed
- * against a box that had just stopped existing. It is the single worst thing
- * this layout has ever done and it has been fixed twice; the first fix reserved
- * a height for the controls *during a hand* and left every other phase free to
- * go on resizing the table.
- *
- * So the whole zone is one fixed height, taken from its tallest honest state:
- * the peek band (54) and the full action controls (152) with the gap between
- * them — measured on a live table across playing, waiting, folded and between
- * hands, where the tallest of the four came to 200. Everything else — between-hands offers, a spectator's one line — is
- * shorter and is padded out to it rather than allowed to shrink the felt.
- *
- * `height`, not `min-height`. A minimum is a floor a tall state simply steps
- * over, which is exactly what "between hands" was doing. Anything that does not
- * fit scrolls inside the zone; nothing gets to push the table.
- */
-export const OWN_ZONE_H = 212
-
-/**
  * The peek band: the lip your own cards sit under, at the top of your zone.
  *
  * Here rather than in the component because it is one of the two numbers
- * {@link OWN_ZONE_H} is made of, and a band that grew without the zone growing
- * with it would push the controls into a scroller on every hand.
+ * {@link ownZoneHeight} is made of, and a band that grew without the zone
+ * growing with it would push the controls into a scroller on every hand.
  */
 export const PEEK_BAND_H = 54
 
@@ -794,20 +764,59 @@ export function zoneScale(viewportH: number): number {
 }
 
 /**
- * The height your zone holds on this screen. See {@link zoneScale}.
+ * The height your own zone holds — always, in every phase of every hand, on a
+ * screen this tall.
+ *
+ * **The rule this layout is built on: the table is the constant.** It is a
+ * drawing of a physical object in a room, and physical objects do not change
+ * size when the person looking at them is offered a different button. What
+ * changes is the device; nothing else may.
+ *
+ * Your zone is one row of a screen that adds up, so whatever it does not take,
+ * the table gets. That made every difference in your own controls a difference
+ * in the size of the table: measured on a 375px phone, 218 while a hand is
+ * being played against 210 between hands, and each of those against 104 for a
+ * spectator — so the ring moved, every seat moved, and every chip was placed
+ * against a box that had just stopped existing. It is the single worst thing
+ * this layout has ever done and it has been fixed twice; the first fix reserved
+ * a height for the controls *during a hand* and left every other phase free to
+ * go on resizing the table.
+ *
+ * So the whole zone is one height for a given screen, taken from its tallest
+ * honest state: the peek band and the full action controls with the gap between
+ * them. Everything else — between-hands offers, a spectator's one line — is
+ * shorter and is padded out to it rather than allowed to shrink the felt.
+ *
+ * This used to have a hand-written twin, `OWN_ZONE_H = 212`, which nothing
+ * computed and which the comments quoted as the answer. It stopped being the
+ * answer the moment the controls were re-derived — the function returns 204 at
+ * full size — and a constant that disagrees with the function beside it is the
+ * same failure as a model that disagrees with the DOM, one level in. There is
+ * one of these now.
+ *
+ * `height`, not `min-height`. A minimum is a floor a tall state simply steps
+ * over, which is exactly what "between hands" was doing. Anything that does not
+ * fit scrolls inside the zone; nothing gets to push the table.
  *
  * The band does *not* scale, and that is not an oversight: it is a pocket a
  * 48px card slides out of, so a band drawn at 44 clips the card at the moment
  * it is fully out — which is the one frame the whole gesture exists for. What
- * scales is everything that is only a button.
+ * scales is everything that is only a button. See {@link zoneScale}.
  */
 export function ownZoneHeight(viewportH: number): number {
   const u = zoneScale(viewportH)
-  return Math.round(PEEK_BAND_H + (OWN_ZONE_GAP + OWN_ACTION_H) * u)
+  return Math.round(PEEK_BAND_H + OWN_ZONE_GAP * u + ownActionHeight(u))
 }
 
-/** The blind clock, the level and the room's name, across the top. */
-export const HEADER_H = 36
+/**
+ * The blind clock, the level and the room's name, across the top.
+ *
+ * 44 and not 36, which is what this said while the DOM measured 44 — the help
+ * and sound buttons are 44px targets and the row is as tall as they are. Eight
+ * pixels of felt that the model was handing the table and the browser was not,
+ * on every screen, in every hand.
+ */
+export const HEADER_H = 44
 
 /** What the room keeps clear of its own edge, top and bottom. */
 export const ROOM_PAD = 8
@@ -837,20 +846,39 @@ export function tableRoom(viewportH: number): number {
 }
 
 /**
- * Where the controls sit inside that zone while a hand is being played.
+ * What the controls cost however small they are drawn.
  *
- * Kept as its own number because it is what the zone's height is *derived
- * from*: the sizes, the stepper and the buttons, measured on a live table at
- * 139, plus slack — because not everything inside them scales. A border is a
- * border and "5 BB" is 10px of type at any size, so the controls come out at
- * 118 where 0.8 × 139 would predict 111, and a reservation that trusted the
- * multiplication would be three pixels short on the shortest phone.
+ * The bar has always had a part that does not scale — a border is a border,
+ * "2 BB" is 10px of type at any size, and the slider is 32px of track and thumb
+ * whatever `--zu` says. The old model handled that by multiplying one number by
+ * the scale and padding it: 152 × 0.8 predicted 122 for controls that measured
+ * 119, and 152 × 1 reserved 152 for controls that measured 139. Thirteen
+ * pixels of slack on a big phone and three on the phone that needs it — the
+ * wrong way round, and slack the table was paying for either way.
  *
- * It was 158 until the shot clock's words came out of the column and went onto
- * the bar's own top edge, where they cost the layout nothing — seventeen
- * pixels of felt that a line of text had been holding every hand.
+ * Measured on a live table, on your turn, with the sizes, the slider and the
+ * three buttons — the tallest the column ever gets, because `PreActions`
+ * renders nothing on your own turn and `ShowCards` only offers itself to
+ * somebody who has folded, whose bar has no sizing row at all:
+ *
+ *     --zu 1.0 → 138.8      --zu 0.8 → 119.3
+ *
+ * Two points, one line: 41.3 fixed plus 97.5 that scales. Rounded up to 44 and
+ * 100, which is five pixels of slack at both ends instead of thirteen at one
+ * and two at the other.
  */
-export const OWN_ACTION_H = 152
+export const OWN_ACTION_FIXED = 44
+
+/** …and what it costs on top of that, at full size. See {@link OWN_ACTION_FIXED}. */
+export const OWN_ACTION_SCALED = 100
+
+/**
+ * Where the controls sit inside that zone while a hand is being played, on a
+ * screen whose zone is drawn at `u`. See {@link zoneScale}.
+ */
+export function ownActionHeight(u: number): number {
+  return OWN_ACTION_FIXED + OWN_ACTION_SCALED * u
+}
 export function tableScale(table: TableSize): number {
   return Math.max(MIN_SCALE, Math.min(1.25, table.w / REFERENCE_TABLE_W))
 }

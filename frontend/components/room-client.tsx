@@ -223,7 +223,7 @@ export function RoomClient({ roomId }: { roomId: string }) {
   // button. The whole felt, not a target: at a real table you knock wherever
   // your hand happens to be.
   const canCheckNow = !!view?.isYourTurn && !!view?.legal?.canCheck && !busy
-  const { refused, learned: knowsTheTap, ...feltTap } = useDoubleTap({
+  const { refused, ...feltTap } = useDoubleTap({
     enabled: canCheckNow,
     onDoubleTap: () => handleAction("check"),
   })
@@ -539,24 +539,24 @@ export function RoomClient({ roomId }: { roomId: string }) {
                 having hung. */}
             <RunoutOffer view={view} roomId={roomId} onDone={refresh} session={session} />
 
-            {/* Said only while it is true, and only until the gesture has been
-                used once. It taught, it was learned, and after that it is a
-                line of instructions standing between the table and the buttons.
+            {/* There was a line here — "Double-tap the felt to check", pinned
+                to the bottom of the felt until the gesture had been used once.
+                It is gone, and so is the flag in local storage that decided
+                when to stop drawing it.
 
-                On the felt, which is where it belongs twice over. It is a
-                sentence about the felt — pointing at the thing it is asking
-                you to tap is better teaching than describing it from a row
-                underneath. And it is an announcement, so it obeys the rule the
-                stopped-table panel and the run-it-twice offer already obey:
-                announcements are drawn *over* the table and cost it nothing.
-                Down in the reserved zone it was 21 extra pixels in a 180-pixel
-                box on a 320px phone, and what those pixels came out of was the
-                top of the peek band — measured at 19px of it, gone. */}
-            {canCheckNow && !knowsTheTap && (
-              <p className="pointer-events-none absolute bottom-1 left-1/2 -translate-x-1/2 rounded-full bg-background/70 px-2.5 py-0.5 text-[11px] text-muted-foreground backdrop-blur-[2px]">
-                Double-tap the felt to check
-              </p>
-            )}
+                It was never legible where it was put: the bottom seat is drawn
+                at `z-[3]` and the line had no z-index at all, so on any phone
+                short enough for the plate to reach the bottom of the felt —
+                which is every small one — your own name and stack were painted
+                straight through the middle of the sentence. Raising it above
+                the seat only moves the collision.
+
+                And it was answering a question nobody had. Checking has a
+                button on the bar, in words, on every turn where it is free.
+                The knock is a shortcut for people who play, and the help sheet
+                one tap away is where a shortcut is written down. A gesture
+                that needs a caption over the table to be found is a gesture
+                the table can do without announcing. */}
 
             {/* Nothing covers the felt between hands, and that is the change.
                 A full-screen panel went up the instant a hand ended — over the
@@ -577,13 +577,23 @@ export function RoomClient({ roomId }: { roomId: string }) {
               drawn over the table to stay reachable.
 
               One height, in every phase of every hand: playing, waiting,
-              folded, between hands, watching. See OWN_ZONE_H for what the
+              folded, between hands, watching. See `ownZoneHeight` for what the
               number is and for the four-year-old bug it closes. `justify-end`
               so short states pad at the top and the buttons stay against the
               bottom of the screen, where the thumb is; `overflow-hidden` so a
               state nobody has measured yet gives up its own top edge rather
-              than taking a bite out of the table. */}
+              than taking a bite out of the table.
+
+              Which is the failure this zone is *designed* to fail with, and it
+              is silent: nothing throws, nothing scrolls, the top of the band
+              simply stops being drawn. It shipped that way — a pass that took
+              every button in the app to 44px overflowed this box by 16.7px and
+              cut "Your hand" in half on every phone, and by 81.7px with the
+              slider open, which took your own cards off the screen. So the box
+              is named, and `e2e/your-zone-fits.spec.ts` measures the band's top
+              edge against it at five sizes. */}
           <div
+            data-own-zone
             className="z-20 flex shrink-0 flex-col justify-end overflow-hidden"
             style={{ height: ownZoneHeight(viewportH), gap: 6 * zu }}
           >
