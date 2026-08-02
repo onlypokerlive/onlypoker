@@ -4,6 +4,8 @@ import { Link2, ShieldCheck, Spade, Users } from 'lucide-react'
 import { CreateRoomEntry } from '@/components/create-room-entry'
 import { CreateRoomForm } from '@/components/create-room-form'
 import { PlayingCard } from '@/components/playing-card'
+import { SignedOutCta } from '@/components/signed-out-cta'
+import { SiteHeader } from '@/components/site-header'
 import {
   Card,
   CardContent,
@@ -49,6 +51,7 @@ function HowItWorks({ className = '' }: { className?: string }) {
 export default function HomePage() {
   return (
     <main id="main-content" tabIndex={-1} className="min-h-dvh outline-none">
+      <SiteHeader />
       <div className="compact-phone-shell mx-auto flex min-h-dvh max-w-6xl flex-col gap-4 px-5 py-5 lg:flex-row lg:items-center lg:gap-16 lg:py-16">
         <section className="flex-1">
           <div className="compact-phone-badge inline-flex items-center gap-2 rounded-full border border-primary/30 bg-primary/10 px-3 py-1 text-xs font-medium text-primary">
@@ -92,6 +95,7 @@ export default function HomePage() {
               </Suspense>
             </CardContent>
           </Card>
+          <SignedOutCta />
         </section>
 
         <HowItWorks className="pb-5 lg:hidden" />

@@ -22,6 +22,7 @@ import { BuyChips } from "@/components/buy-chips"
 import { PreActions } from "@/components/pre-actions"
 import { RunoutOffer } from "@/components/runout-offer"
 import { PlayAgain, TournamentResults } from "@/components/tournament-results"
+import { HistoryRecorder } from "@/components/history-recorder"
 import { InviteShareButton } from "@/components/invite-share-button"
 import { useSecondsLeft } from "@/lib/use-countdown"
 import { tableIsAudible, useTableEvents, type SoundMode } from "@/lib/use-table-events"
@@ -491,10 +492,13 @@ export function RoomClient({ roomId }: { roomId: string }) {
             <HandResults view={view} title="The final hand" className="shrink-0" />
             <TournamentResults view={view} />
           </div>
-          <PlayAgain
-            onPlayAgain={view.isHost ? handlePlayAgain : undefined}
-            busy={busy}
-          />
+          <div className="flex w-full max-w-md flex-col items-center gap-2">
+            <HistoryRecorder view={view} session={session} />
+            <PlayAgain
+              onPlayAgain={view.isHost ? handlePlayAgain : undefined}
+              busy={busy}
+            />
+          </div>
         </div>
       ) : (
         <>

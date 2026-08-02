@@ -3,6 +3,7 @@
 import { WifiOff } from "lucide-react"
 
 import { cn } from "@/lib/utils"
+import { PlayerAvatar } from "@/components/player-avatar"
 import { PlayingCard } from "@/components/playing-card"
 import { ChipStack } from "@/components/chip-stack"
 import { CHIP_W } from "@/lib/table-layout"
@@ -346,16 +347,18 @@ export function PlayerSeat({
         style={{ width: av, height: av, marginBottom: px(-7) }}
       >
         <div
-          className="grid h-full w-full place-items-center rounded-full font-extrabold text-white/95"
+          className="grid h-full w-full place-items-center overflow-hidden rounded-full font-extrabold text-white/95"
           style={{
             fontSize: px(compact ? 11 : 13),
-            background: `linear-gradient(150deg, oklch(0.62 0.14 ${avatarHue(player.name)}), oklch(0.34 0.09 ${avatarHue(player.name)}))`,
+            background: player.avatarUrl
+              ? `url(${JSON.stringify(player.avatarUrl)}) center / cover no-repeat`
+              : `linear-gradient(150deg, oklch(0.62 0.14 ${avatarHue(player.name)}), oklch(0.34 0.09 ${avatarHue(player.name)}))`,
             boxShadow:
               "0 3px 10px rgba(0,0,0,.6), inset 0 0 0 2px rgba(255,255,255,.14)",
           }}
           aria-hidden
         >
-          {initials(player.name)}
+          {!player.avatarUrl && initials(player.name)}
         </div>
 
         {showClock && (

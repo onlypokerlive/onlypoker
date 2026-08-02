@@ -4,6 +4,7 @@ import { useEffect, useRef, useState } from 'react'
 import { useRouter } from 'next/navigation'
 import { ChevronDown, Eye, KeyRound, LogIn } from 'lucide-react'
 
+import { IdentityPhoto } from '@/components/identity-photo'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Field, FieldDescription, FieldError, FieldLabel } from '@/components/ui/field'
@@ -28,6 +29,8 @@ export function JoinRoomForm({
   const router = useRouter()
   const [name, setName] = useState('')
   const [password, setPassword] = useState('')
+  const [avatarUrl, setAvatarUrl] = useState<string | null>(null)
+  const rememberGuestNickname = useRef<((n: string) => void) | null>(null)
   const [recoveryCode, setRecoveryCode] = useState('')
   const [issue, setIssue] = useState<{
     field: 'name' | 'password' | 'recoveryCode' | null
@@ -58,6 +61,8 @@ export function JoinRoomForm({
       return showIssue('password', 'Enter the room password.')
     }
 
+    if (as === 'player') rememberGuestNickname.current?.(name.trim())
+
     setLoading(true)
     try {
       const session =
@@ -69,6 +74,7 @@ export function JoinRoomForm({
               // If this device still holds a credential for this table, it is
               // the same person coming back to it, not a new arrival.
               loadSession(roomId)?.token,
+              avatarUrl,
             )
           : await pokerApi.watchRoom(roomId, password.trim())
       saveSession(session)
@@ -161,6 +167,18 @@ export function JoinRoomForm({
           aria-describedby={issue?.field === 'password' ? 'join-password-error' : undefined}
         />
         {issue?.field === 'password' ? <FieldError id="join-password-error">{issue.message}</FieldError> : null}
+      </Field>
+
+      <Field>
+        <FieldLabel>Your photo <span className="text-muted-foreground font-normal">(optional)</span></FieldLabel>
+        <IdentityPhoto
+          name={name}
+          onNameChange={setName}
+          onAvatarUrlChange={setAvatarUrl}
+          onRememberGuestNickname={(setter) => {
+            rememberGuestNickname.current = setter
+          }}
+        />
       </Field>
 
       {issue?.field === null && (
