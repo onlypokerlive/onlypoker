@@ -3,6 +3,7 @@ import { Coins, Layers3, Timer, TrendingUp, UsersRound } from "lucide-react"
 import { cn } from "@/lib/utils"
 import type { GameView, PlayerView } from "@/lib/poker-api"
 import { InviteShareButton } from "@/components/invite-share-button"
+import { PlayerAvatar } from "@/components/player-avatar"
 
 function Stat({
   icon: Icon,
@@ -53,16 +54,18 @@ function LobbySeatRail({ players, maxSeats }: { players: PlayerView[]; maxSeats:
           <span
             key={seat}
             className={cn(
-              "absolute grid size-8 -translate-x-1/2 -translate-y-1/2 place-items-center rounded-full border text-[11px] font-bold uppercase shadow-lg",
-              player
-                ? "border-primary/80 bg-primary text-primary-foreground shadow-primary/10"
-                : "border-border/80 bg-background/85 text-muted-foreground/50",
+              "absolute size-8 -translate-x-1/2 -translate-y-1/2 rounded-full shadow-lg",
+              player ? "ring-2 ring-primary/80 shadow-primary/10" : "",
             )}
             style={seatPosition(seat, maxSeats)}
             title={player ? `Seat ${seat + 1}: ${player.name}` : `Seat ${seat + 1}: open`}
             aria-hidden
           >
-            {player ? player.name.slice(0, 1) : ""}
+            {player ? (
+              <PlayerAvatar src={player.avatarUrl} name={player.name} size="sm" />
+            ) : (
+              <span className="grid size-8 place-items-center rounded-full border border-border/80 bg-background/85 text-[11px] font-bold uppercase text-muted-foreground/50" />
+            )}
           </span>
         )
       })}
@@ -136,15 +139,16 @@ export function RoomLobby({
                 className="flex min-h-11 items-center justify-between rounded-xl border border-border/50 bg-background/40 px-3 py-2"
               >
                 <span className="flex min-w-0 items-center gap-2 text-sm font-medium text-card-foreground">
-                  <span
-                    className={cn(
-                      "size-2 shrink-0 rounded-full ring-4 ring-transparent",
-                      player.connected
-                        ? "bg-emerald-400 ring-emerald-400/10"
-                        : "bg-muted-foreground/40",
-                    )}
-                    aria-label={player.connected ? "Connected" : "Disconnected"}
-                  />
+                  <span className="relative shrink-0">
+                    <PlayerAvatar src={player.avatarUrl} name={player.name} size="sm" />
+                    <span
+                      className={cn(
+                        "absolute -bottom-0.5 -right-0.5 size-2 rounded-full ring-2 ring-background",
+                        player.connected ? "bg-emerald-400" : "bg-muted-foreground/40",
+                      )}
+                      aria-label={player.connected ? "Connected" : "Disconnected"}
+                    />
+                  </span>
                   <span className="truncate">{player.name}</span>
                   {player.isHost ? (
                     <span className="rounded-full border border-primary/20 bg-primary/10 px-1.5 py-0.5 text-[9px] font-bold uppercase tracking-wide text-primary">
