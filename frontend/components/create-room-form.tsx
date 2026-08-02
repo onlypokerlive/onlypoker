@@ -137,6 +137,7 @@ export function CreateRoomForm({
   const [deck, setDeck] = useState<DeckId>(preset.deck ?? DEFAULT_DECK)
   const [password, setPassword] = useState('')
   const [customized, setCustomized] = useState(false)
+  const [customizeOpen, setCustomizeOpen] = useState(false)
   const [issue, setIssue] = useState<FormIssue | null>(null)
   const [loading, setLoading] = useState(false)
   const formRef = useRef<HTMLFormElement>(null)
@@ -358,32 +359,36 @@ export function CreateRoomForm({
           </p>
         </div>
 
-        <details
-          className="group rounded-lg border border-border bg-muted/20"
-          onToggle={(event) => {
-            if (event.currentTarget.open) {
-              setCustomized(true)
-              if (!customizeRecordedRef.current) {
-                customizeRecordedRef.current = true
-                recordCustomizeOpened()
+        <div className={cn('rounded-lg border border-border bg-muted/20', customizeOpen && 'group-open')}>
+          <button
+            type="button"
+            aria-expanded={customizeOpen}
+            className="flex min-h-11 w-full cursor-pointer items-center gap-3 rounded-[inherit] px-3 py-1.5 transition-colors hover:bg-muted/50 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring"
+            onClick={() => {
+              const next = !customizeOpen
+              setCustomizeOpen(next)
+              if (next) {
+                setCustomized(true)
+                if (!customizeRecordedRef.current) {
+                  customizeRecordedRef.current = true
+                  recordCustomizeOpened()
+                }
               }
-            }
-          }}
-        >
-          <summary className="flex min-h-11 cursor-pointer list-none items-center gap-3 rounded-[inherit] px-3 py-1.5 transition-colors hover:bg-muted/50 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring [&::-webkit-details-marker]:hidden">
+            }}
+          >
             <span className="flex size-8 items-center justify-center rounded-md bg-primary/10 text-primary">
               <SlidersHorizontal className="size-4" aria-hidden />
             </span>
-            <span className="min-w-0 flex-1">
+            <span className="min-w-0 flex-1 text-left">
               <span className="block text-sm font-semibold text-foreground">Customize the night</span>
               <span className="block truncate text-xs text-muted-foreground">
                 Stakes, pace, breaks and house rules
               </span>
             </span>
-            <ChevronDown className="size-4 text-muted-foreground transition-transform group-open:rotate-180" aria-hidden />
-          </summary>
+            <ChevronDown className={cn('size-4 text-muted-foreground transition-transform', customizeOpen && 'rotate-180')} aria-hidden />
+          </button>
 
-          <div className="flex flex-col gap-2 border-t border-border/70 px-3 pb-4 pt-3">
+          {customizeOpen && <div className="flex flex-col gap-2 border-t border-border/70 px-3 pb-4 pt-3">
             <CustomSection title="Stakes" summary="Starting stack and opening blinds">
               <Field data-invalid={issue?.field === 'startingChips'}>
                 <FieldLabel htmlFor="startingChips">Chips per player</FieldLabel>
@@ -722,8 +727,8 @@ export function CreateRoomForm({
                 <FieldDescription>The card faces and backs used all night.</FieldDescription>
               </Field>
             </CustomSection>
-          </div>
-        </details>
+          </div>}
+        </div>
 
       </FieldGroup>
     </form>
