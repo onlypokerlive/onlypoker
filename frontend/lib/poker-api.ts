@@ -331,6 +331,27 @@ export interface Session {
   recoveryCode?: string
 }
 
+/** One retained line of room chat, already projected for this viewer. */
+export interface ChatMessage {
+  /** Stable, server-generated identity used for polling and unread state. */
+  id: string
+  /** Snapshot of the capability-authenticated seat name at send time. */
+  authorName: string
+  text: string
+  /** Server epoch timestamp in milliseconds. */
+  createdAt: number
+  /** Viewer-relative; the API deliberately does not expose an author player id. */
+  isMine: boolean
+}
+
+export interface ChatView {
+  messages: ChatMessage[]
+  /** True only when the supplied capability currently resolves to a seat. */
+  canSend: boolean
+  /** Server epoch timestamp in milliseconds for diagnostics/skew-aware clients. */
+  serverTime: number
+}
+
 // --- Flattened view consumed by the UI components -------------------------
 // The backend returns a nested RoomView; components use this flattened shape.
 export interface GameView {
@@ -773,6 +794,24 @@ export const pokerApi = {
       `/api/rooms/${roomId}/state${playerId ? `?playerId=${encodeURIComponent(playerId)}` : ''}`,
       { headers: auth(token) },
     ),
+
+  /** Read bounded room chat as either a seated player or authenticated spectator. */
+  getChat: (roomId: string, token?: string) =>
+    req<ChatView>(`/api/rooms/${roomId}/chat`, {
+      headers: auth(token),
+      cache: 'no-store',
+    }),
+
+  /**
+   * Send as the seat proven by `token`. No author name or player id is accepted
+   * by this contract; `requestId` only makes a lost-response retry idempotent.
+   */
+  sendChat: (roomId: string, token: string, text: string, requestId: string) =>
+    req<ChatView>(`/api/rooms/${roomId}/chat`, {
+      method: 'POST',
+      headers: auth(token),
+      body: JSON.stringify({ text, requestId }),
+    }),
 
   startHand: (roomId: string, playerId: string, token?: string) =>
     req<RoomView>(`/api/rooms/${roomId}/start`, {

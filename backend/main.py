@@ -25,15 +25,17 @@ import contextvars
 import hashlib
 import hmac
 import json
+import math
 import os
 import secrets
 import time
+import unicodedata
 from typing import Any
 
 import fastapi
 import fastapi.middleware.cors
 import fastapi.responses
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 import poker
 
@@ -84,6 +86,12 @@ ROOM_TTL = 60 * 60 * 24  # 24h
 MAX_SEATS = 9
 AUTH_WINDOW_SECONDS = 10 * 60
 AUTH_MAX_FAILURES = 8
+CHAT_MAX_MESSAGES = 100
+CHAT_MAX_CHARACTERS = 280
+CHAT_BURST_MESSAGES = 5
+CHAT_BURST_SECONDS = 10
+CHAT_WINDOW_MESSAGES = 20
+CHAT_WINDOW_SECONDS = 60
 
 # Blind ladder expressed as multipliers of the table's opening blinds, so the
 # host only picks the starting stakes and how long a level lasts. The ratio the
@@ -152,6 +160,10 @@ BOMB_POT_BLINDS = 2
 # --------------------------------------------------------------------------- #
 def _room_key(room_id: str) -> str:
     return f"holdem:room:{room_id}"
+
+
+def _chat_key(room_id: str) -> str:
+    return f"holdem:chat:{room_id}"
 
 
 def _lock_key(room_id: str) -> str:
@@ -233,7 +245,13 @@ return 0
 
 _GUARDED_SET_SCRIPT = """
 if redis.call('get', KEYS[2]) == ARGV[3] then
+  if ARGV[4] == '1' and redis.call('exists', KEYS[3]) == 0 then
+    return 0
+  end
   redis.call('set', KEYS[1], ARGV[1], 'EX', ARGV[2])
+  if ARGV[5] == '1' then
+    redis.call('expire', KEYS[3], ARGV[2])
+  end
   return 1
 end
 return 0
@@ -247,12 +265,37 @@ async def _release_lock(key: str, token: str) -> None:
         await redis.eval(_RELEASE_SCRIPT, [key], [token])
 
 
-async def _guarded_set(key: str, value: str, lock_key: str, token: str) -> bool:
-    """Write ``key`` only if ``lock_key`` still holds ``token``."""
+async def _guarded_set(
+    key: str,
+    value: str,
+    lock_key: str,
+    token: str,
+    *,
+    expire_key: str | None = None,
+    require_expire_key: bool = False,
+) -> bool:
+    """Write ``key`` and align a related TTL while the lease is still ours."""
     if hasattr(redis, "compare_set"):  # dev store
-        return await redis.compare_set(key, value, ROOM_TTL, lock_key, token)
+        return await redis.compare_set(
+            key,
+            value,
+            ROOM_TTL,
+            lock_key,
+            token,
+            expire_key,
+            require_expire_key,
+        )
+    related_key = expire_key or key
     result = await redis.eval(
-        _GUARDED_SET_SCRIPT, [key, lock_key], [value, str(ROOM_TTL), token]
+        _GUARDED_SET_SCRIPT,
+        [key, lock_key, related_key],
+        [
+            value,
+            str(ROOM_TTL),
+            token,
+            "1" if require_expire_key else "0",
+            "1" if expire_key else "0",
+        ],
     )
     return bool(result)
 
@@ -283,11 +326,67 @@ async def save_room(room: dict[str, Any]) -> None:
     payload = json.dumps(room)
     lock = _current_lock.get()
     if lock is not None and lock.held:
-        if not await _guarded_set(_room_key(room["id"]), payload, lock.key, lock.token):
+        if not await _guarded_set(
+            _room_key(room["id"]),
+            payload,
+            lock.key,
+            lock.token,
+            expire_key=_chat_key(room["id"]),
+        ):
             lock.held = False  # somebody else owns it now; do not delete theirs
             raise LockLost(lock.key)
         return
     await redis.set(_room_key(room["id"]), payload, ex=ROOM_TTL)
+    # Creation is the only production write without a lease and has no chat
+    # yet. Keeping this here also makes direct maintenance/test saves preserve
+    # an existing chat's room-aligned lifetime.
+    await redis.expire(_chat_key(room["id"]), ROOM_TTL)
+
+
+def _empty_chat() -> dict[str, Any]:
+    return {"messages": [], "rate": {}}
+
+
+async def load_chat(room_id: str) -> dict[str, Any]:
+    """Load the bounded chat document, never the PokerKit room document."""
+    raw = await redis.get(_chat_key(room_id))
+    if not raw:
+        return _empty_chat()
+    try:
+        chat = json.loads(raw)
+    except (TypeError, ValueError):
+        return _empty_chat()
+    if not isinstance(chat, dict):
+        return _empty_chat()
+    if not isinstance(chat.get("messages"), list):
+        chat["messages"] = []
+    if not isinstance(chat.get("rate"), dict):
+        chat["rate"] = {}
+    return chat
+
+
+async def save_chat(room_id: str, chat: dict[str, Any]) -> None:
+    """Persist chat under the room lease and renew both documents together.
+
+    A chat send is room activity, but it must not rewrite the large serialized
+    game record. The fenced Redis command writes only the chat key and moves
+    the room key to the same 24-hour expiry. Requiring the room key prevents a
+    send right on the expiry boundary from leaving an orphaned chat behind.
+    """
+    lock = _current_lock.get()
+    if lock is None or not lock.held:
+        raise RuntimeError("Chat writes require the room lock.")
+    payload = json.dumps(chat, separators=(",", ":"), ensure_ascii=False)
+    if not await _guarded_set(
+        _chat_key(room_id),
+        payload,
+        lock.key,
+        lock.token,
+        expire_key=_room_key(room_id),
+        require_expire_key=True,
+    ):
+        lock.held = False
+        raise LockLost(lock.key)
 
 
 class RoomBusy(Exception):
@@ -614,8 +713,108 @@ def _player_by_token(room: dict[str, Any], token: str | None) -> str | None:
 
 
 # --------------------------------------------------------------------------- #
+# Table talk
+# --------------------------------------------------------------------------- #
+def _normalise_chat_text(value: str) -> str:
+    """Keep intentional line breaks while refusing empty/control-only text."""
+    text = value.replace("\r\n", "\n").replace("\r", "\n").strip()
+    if not text:
+        raise fastapi.HTTPException(400, "Write a message before sending it.")
+    if len(text) > CHAT_MAX_CHARACTERS:
+        raise fastapi.HTTPException(
+            400, f"Messages can be at most {CHAT_MAX_CHARACTERS} characters."
+        )
+    if any(
+        unicodedata.category(character) == "Cc" and character != "\n"
+        for character in text
+    ):
+        raise fastapi.HTTPException(
+            400, "Messages contain an unsupported control character."
+        )
+    return text
+
+
+def _chat_retry_after(
+    chat: dict[str, Any], player_id: str, now: float
+) -> int | None:
+    """Prune rolling windows and say how long this seat must wait, if at all."""
+    rates = chat.setdefault("rate", {})
+    if not isinstance(rates, dict):
+        rates = {}
+        chat["rate"] = rates
+
+    # Old player records can accumulate as people leave and rejoin. A rate
+    # entry has no purpose after its one-minute window, so every accepted send
+    # also keeps this internal map bounded independently of room history.
+    for pid, raw_stamps in list(rates.items()):
+        stamps = raw_stamps if isinstance(raw_stamps, list) else []
+        recent = sorted(
+            float(stamp)
+            for stamp in stamps
+            if isinstance(stamp, (int, float))
+            and now - CHAT_WINDOW_SECONDS < float(stamp) <= now + 1
+        )
+        if recent:
+            rates[pid] = recent
+        else:
+            rates.pop(pid, None)
+
+    stamps = rates.get(player_id, [])
+    burst = [stamp for stamp in stamps if stamp > now - CHAT_BURST_SECONDS]
+    waits: list[float] = []
+    if len(burst) >= CHAT_BURST_MESSAGES:
+        clears_at = burst[len(burst) - CHAT_BURST_MESSAGES] + CHAT_BURST_SECONDS
+        waits.append(clears_at - now)
+    if len(stamps) >= CHAT_WINDOW_MESSAGES:
+        clears_at = stamps[len(stamps) - CHAT_WINDOW_MESSAGES] + CHAT_WINDOW_SECONDS
+        waits.append(clears_at - now)
+    return max(1, math.ceil(max(waits))) if waits else None
+
+
+def _chat_view(
+    room: dict[str, Any], chat: dict[str, Any], token: str | None
+) -> dict[str, Any]:
+    """Project chat without player IDs, capabilities, rate data, or game state."""
+    viewer_id = _player_by_token(room, token)
+    can_send = bool(viewer_id and _has_seat(room["players"].get(viewer_id)))
+    messages: list[dict[str, Any]] = []
+    for message in (chat.get("messages") or [])[-CHAT_MAX_MESSAGES:]:
+        if not isinstance(message, dict):
+            continue
+        try:
+            messages.append(
+                {
+                    "id": str(message["id"]),
+                    "authorName": str(message["authorName"]),
+                    "text": str(message["text"]),
+                    "createdAt": int(message["createdAt"]),
+                    "isMine": bool(viewer_id and message.get("authorId") == viewer_id),
+                }
+            )
+        except (KeyError, TypeError, ValueError):
+            continue
+    return {
+        "messages": messages,
+        "canSend": can_send,
+        "serverTime": int(time.time() * 1000),
+    }
+
+
+# --------------------------------------------------------------------------- #
 # Request models
 # --------------------------------------------------------------------------- #
+class ChatSendBody(BaseModel):
+    # Author identity is deliberately absent, and spoof-shaped extra fields are
+    # rejected rather than silently ignored. The capability header is the only
+    # identity input accepted by the route.
+    model_config = ConfigDict(extra="forbid")
+
+    text: str = Field(min_length=1, max_length=CHAT_MAX_CHARACTERS)
+    # Names one intention across a network retry. The public message id remains
+    # server-generated and cannot be chosen by the caller.
+    requestId: str = Field(min_length=1, max_length=64)
+
+
 class CreateRoomBody(BaseModel):
     name: str = Field(min_length=1, max_length=40)
     hostName: str = Field(min_length=1, max_length=20)
@@ -3038,6 +3237,11 @@ async def create_room(body: CreateRoomBody) -> dict[str, Any]:
         "watchToken": _new_token(),
     }
     await save_room(room)
+    # A room code is meant to name one private room for its whole lifetime.
+    # `_new_id` collisions are rare, but carrying a separate old chat into a
+    # newly created room would turn that rarity into a conversation leak. The
+    # new capability is not returned until its chat namespace is empty.
+    await redis.delete(_chat_key(room_id))
     return {
         "roomId": room_id,
         "playerId": host_id,
@@ -3402,6 +3606,96 @@ async def watch_room(
         "isHost": False,
         "spectator": True,
     }
+
+
+@app.get("/rooms/{room_id}/chat")
+async def get_chat(
+    room_id: str,
+    response: fastapi.Response,
+    x_player_token: str | None = fastapi.Header(default=None),
+) -> dict[str, Any]:
+    """Read the room's bounded table talk with the same capability as state."""
+    room = await load_room(room_id)
+    if not room:
+        raise fastapi.HTTPException(404, "Room not found.")
+    _require_access(room, x_player_token)
+    chat = await load_chat(room_id)
+    # The body is private and viewer-relative (`isMine`). Do not let a browser,
+    # edge, or future proxy reuse one capability's snapshot for another.
+    response.headers["Cache-Control"] = "private, no-store"
+    response.headers["Vary"] = PLAYER_TOKEN_HEADER
+    return _chat_view(room, chat, x_player_token)
+
+
+@app.post("/rooms/{room_id}/chat")
+async def send_chat(
+    room_id: str,
+    body: ChatSendBody,
+    x_player_token: str | None = fastapi.Header(default=None),
+) -> dict[str, Any]:
+    """Append table talk as the seat proven by the capability header.
+
+    The room lease makes author authentication linearizable with leaving,
+    removal, and host recovery, and prevents concurrent JSON appends from
+    overwriting one another. PokerKit is never loaded or rewritten here.
+    """
+    text = _normalise_chat_text(body.text)
+    async with _RoomLock(room_id):
+        room = await load_room(room_id)
+        if not room:
+            raise fastapi.HTTPException(404, "Room not found.")
+        _require_access(room, x_player_token)
+        author_id = _player_by_token(room, x_player_token)
+        if not author_id or not _has_seat(room["players"].get(author_id)):
+            raise fastapi.HTTPException(
+                403, "Only seated players can send messages to this table."
+            )
+
+        chat = await load_chat(room_id)
+        messages = chat.setdefault("messages", [])
+        if not isinstance(messages, list):
+            messages = []
+            chat["messages"] = messages
+
+        # A response can disappear after Redis commits. Repeating the same
+        # request returns the original server id and timestamp instead of
+        # saying the same thing twice.
+        accepted = next(
+            (
+                message
+                for message in reversed(messages)
+                if isinstance(message, dict)
+                and message.get("authorId") == author_id
+                and message.get("requestId") == body.requestId
+            ),
+            None,
+        )
+        if accepted is not None:
+            await save_chat(room_id, chat)  # also realigns both 24-hour TTLs
+            return _chat_view(room, chat, x_player_token)
+
+        now = time.time()
+        retry_after = _chat_retry_after(chat, author_id, now)
+        if retry_after is not None:
+            raise fastapi.HTTPException(
+                429,
+                "You're sending messages too quickly. Wait a moment and try again.",
+                headers={"Retry-After": str(retry_after)},
+            )
+
+        message = {
+            "id": secrets.token_urlsafe(12),
+            "authorId": author_id,
+            "authorName": room["players"][author_id]["name"],
+            "text": text,
+            "createdAt": int(now * 1000),
+            "requestId": body.requestId,
+        }
+        messages.append(message)
+        chat["messages"] = messages[-CHAT_MAX_MESSAGES:]
+        chat.setdefault("rate", {}).setdefault(author_id, []).append(now)
+        await save_chat(room_id, chat)
+        return _chat_view(room, chat, x_player_token)
 
 
 @app.post("/rooms/{room_id}/host/recover")

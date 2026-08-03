@@ -3,7 +3,7 @@
 The app normally keeps every room in Upstash. Without credentials there is no
 store at all, so `npm run dev` cannot deal a single hand. This module fills that
 gap with a dict that implements the tiny slice of the Redis API the app uses:
-``get``, ``set`` (with ``ex`` / ``nx``) and ``delete``.
+``get``, ``set`` (with ``ex`` / ``nx``), ``expire`` and ``delete``.
 
 It is deliberately not a Redis replacement: state lives in one process and
 disappears on restart, so it must never be used in production. ``main.py`` only
@@ -55,6 +55,14 @@ class LocalStore:
                 removed += 1
         return removed
 
+    async def expire(self, key: str, seconds: int) -> int:
+        """Move a live key's expiry without changing its value."""
+        value = self._live_value(key)
+        if value is None:
+            return 0
+        self._data[key] = (value, time.time() + seconds)
+        return 1
+
     # The two compare-and-swap operations the room lock needs. Against Upstash
     # these are Lua scripts; here the whole method runs without an await, so it
     # is already atomic with respect to other tasks on this loop.
@@ -65,10 +73,28 @@ class LocalStore:
         return 1
 
     async def compare_set(
-        self, key: str, value: str, ex: int, lock_key: str, token: str
+        self,
+        key: str,
+        value: str,
+        ex: int,
+        lock_key: str,
+        token: str,
+        expire_key: str | None = None,
+        require_expire_key: bool = False,
     ) -> bool:
-        """Write ``key`` only while ``lock_key`` still holds ``token``."""
+        """Write ``key`` and align a related TTL while the lease is owned.
+
+        The method contains no await, so both changes are atomic with respect
+        to every other task using this in-process development store. Redis does
+        the same work in one Lua script in ``main.py``.
+        """
         if self._live_value(lock_key) != token:
             return False
-        self._data[key] = (value, time.time() + ex if ex else None)
+        related = self._live_value(expire_key) if expire_key else None
+        if require_expire_key and related is None:
+            return False
+        expires_at = time.time() + ex if ex else None
+        self._data[key] = (value, expires_at)
+        if expire_key and related is not None:
+            self._data[expire_key] = (related, expires_at)
         return True

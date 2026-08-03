@@ -25,6 +25,28 @@ together with the room password, can move host authority to a new device. A host
 can also hand control directly to a seated player. Recovery rotates both the
 host credential and backup code; the old device and old code stop working.
 
+## Table talk
+
+Every private room has bounded text chat. Seated players can send; spectators
+who entered through the room password can read but never receive a composer.
+Authors are resolved from the existing `X-Player-Token` capability — the send
+API accepts no player ID or display name.
+
+Chat is deliberately separate from the serialized PokerKit room value under
+`holdem:chat:{roomId}`. The newest 100 messages are retained, each with a
+server-generated stable ID and server timestamp. Room and chat expiries move
+together on every fenced write, so both keep the same rolling 24-hour room
+lifetime. Per-seat rolling limits allow five messages per 10 seconds and 20 per
+minute; retry IDs make a lost POST response return the original message rather
+than duplicate it.
+
+The client uses the existing HTTP/serverless model: 4-second polling while the
+sheet is closed, 1.6-second polling while open, and no WebSocket service. The
+newest message briefly appears in a fixed closed-state preview while its unread
+badge remains durable. Neither that preview nor the portal sheet participates
+in the poker table's `100svh` height calculation. Details and the API/privacy
+contract are in [`docs/chat.md`](docs/chat.md).
+
 ## Layout
 
 | Path        | What it is                                                        |
@@ -32,9 +54,10 @@ host credential and backup code; the old device and old code stop working.
 | `frontend/` | Next.js app (App Router, Tailwind v4). Talks to `/api/*`.          |
 | `backend/`  | FastAPI service wrapping the `pokerkit` engine. Mounted at `/api`. |
 
-Game state lives in Upstash Redis: each request unpickles the pokerkit state,
-applies at most one action, and writes it back, which keeps the engine
-authoritative and works on serverless.
+Game state lives in Upstash Redis: each game request unpickles the PokerKit
+state, applies at most one action, and writes it back, which keeps the engine
+authoritative and works on serverless. Bounded chat has its own Redis document
+and never enters or rewrites that serialized game value.
 
 ## Running it locally
 
@@ -53,29 +76,32 @@ disappear when the process restarts.
 ## Tests
 
 ```bash
-cd backend && .venv/bin/python -m pytest tests/ -q
+cd backend && uv run --with pytest --frozen pytest tests/ -q
 ```
 
 Covers the blind ladder, every clock the table runs on, per-player card
-redaction, who is allowed to do what, the chip ledger, and the tournament
-endgame.
+redaction, who is allowed to do what, the chip ledger, the tournament endgame,
+and chat authentication/privacy/retention/lifecycle behavior.
 
 ```bash
 cd frontend && pnpm test && pnpm exec tsc --noEmit && pnpm lint
 ```
 
-Bet sizing, the events derived from polling, the card-by-card runout, and the
-components where getting a condition wrong shows somebody something they should
-not see. `pnpm lint` is green; the React Compiler rules are left as warnings on
-purpose — see the note in `frontend/eslint.config.mjs`.
+Bet sizing, the events derived from polling, the card-by-card runout, chat sheet
+focus/unread/safe-text behavior, and the components where getting a condition
+wrong shows somebody something they should not see. `pnpm lint` is green; the
+React Compiler rules are left as warnings on purpose — see the note in
+`frontend/eslint.config.mjs`.
 
 ```bash
 cd frontend && pnpm test:e2e
 ```
 
-The Playwright journey starts the local stack and checks compact-phone creation,
-host and guest play through results and next-table actions, accountless host
-recovery and handoff, and expired-invite recovery in Chrome.
+The Playwright journey starts isolated frontend/backend ports plus a test-only
+signed-out Supabase stub. It checks compact-phone creation, host and guest play
+through results and next-table actions, accountless host recovery and handoff,
+expired-invite recovery, fixed table geometry, and player/spectator chat in
+Chrome. It does not stub or claim coverage of OAuth/account flows.
 
 ## Growth measurement and invitations
 

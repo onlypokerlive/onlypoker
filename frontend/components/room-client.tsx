@@ -16,6 +16,7 @@ import { HandSummarySheet } from "@/components/hand-summary-sheet"
 import { RabbitHunt } from "@/components/rabbit-hunt"
 import { ShowCards } from "@/components/show-cards"
 import { HelpSheet } from "@/components/help-sheet"
+import { ChatSheet } from "@/components/chat-sheet"
 import { HostPanel } from "@/components/host-panel"
 import { TableBreak } from "@/components/table-break"
 import { BuyChips } from "@/components/buy-chips"
@@ -445,6 +446,7 @@ export function RoomClient({ roomId }: { roomId: string }) {
               compact
             />
           )}
+          {session && <ChatSheet roomId={roomId} session={session} />}
           <HelpSheet />
           {/* On the table, not buried in settings: this gets used with other
               people in the room, and the person who needs it needs it now. */}
