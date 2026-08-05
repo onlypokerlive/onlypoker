@@ -141,6 +141,43 @@ test.describe('your own zone holds what is put in it', () => {
     })
   }
 
+  test('keeps your own cards clear of your own thumb', async ({ page }) => {
+    // They lived pinned to the right of the band, which is the side the thumb
+    // comes up for nine people in ten — and the band *is* the control the thumb
+    // presses and drags. You pressed to look at your hand and what you looked
+    // at was your finger.
+    //
+    // Measured rather than asserted against a class name: which half of the
+    // band the cards are drawn in is a fact about the layout, and a
+    // `flex-row-reverse` that stopped applying would leave the class in place.
+    await page.setViewportSize({ width: 390, height: 844 })
+    const roomId = await seatOnTheClock(page)
+
+    const sideOfBand = async () =>
+      page.evaluate(() => {
+        const band = document.querySelector('[data-peek-band]')!.getBoundingClientRect()
+        // Face down, which is how your hand sits until a thumb is on it.
+        const cards = document
+          .querySelector('[data-peek-band] .card-back, [data-peek-band] .card-face')!
+          .getBoundingClientRect()
+        return cards.left + cards.width / 2 < band.left + band.width / 2 ? 'left' : 'right'
+      })
+
+    expect(await sideOfBand()).toBe('left')
+
+    // And the other hand moves them. Written straight to storage rather than
+    // clicked through the help sheet, so this test is about the layout and not
+    // about where the switch happens to live.
+    await page.evaluate(() => localStorage.setItem('holdem:handed', 'left'))
+    await page.goto(`/room/${roomId}`)
+    await expect(raiseButton(page)).toBeVisible()
+    expect(await sideOfBand()).toBe('right')
+
+    // Whichever side they are on, the band still fits — this is the box that
+    // clips in silence.
+    expect((await measure(page)).bandClippedBy).toBeLessThan(0.5)
+  })
+
   test('shows the slider without being asked for it', async ({ page }) => {
     // It spent a release collapsed behind a `<details>` labelled "Fine tune",
     // which is a slider nobody knows is there: the row reads as a caption, and
