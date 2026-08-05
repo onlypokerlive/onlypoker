@@ -110,7 +110,7 @@ test('an all-in shows the hands before it deals the board', async ({ page }) => 
   const start = Date.now()
   while (Date.now() - start < 9_000) {
     film.push({ at: Date.now() - start, ...(await frame(page)) })
-    await page.waitForTimeout(80)
+    await page.waitForTimeout(50)
   }
 
   const dealt = film.find((f) => f.board >= 5)
@@ -126,10 +126,20 @@ test('an all-in shows the hands before it deals the board', async ({ page }) => 
   const firstCard = film.find((f) => f.board > 0)!
   expect(firstUp.at).toBeLessThan(firstCard.at)
 
-  // Street by street, and unhurried. Every board size on the way, each one on
-  // screen long enough to be a card rather than a flicker.
+  // Street by street, and unhurried. Each one on screen on its own, and long
+  // enough to be a card rather than a flicker.
+  //
+  // Asserted as "these were seen, in this direction" rather than as the exact
+  // list, because the list also contains the empty board — and whether this
+  // loop got a sample in before the flop landed is a fact about how busy the
+  // machine running it is, not about the table. The streets themselves cannot
+  // be missed: they are more than a second apart, which is the actual claim.
   const sizes = [...new Set(film.map((f) => f.board))]
-  expect(sizes).toEqual([0, 3, 4, 5])
+  expect(sizes).toContain(3)
+  expect(sizes).toContain(4)
+  expect(sizes).toContain(5)
+  // Forwards only: a board that went back is the next hand being dealt over it.
+  expect(sizes).toEqual([...sizes].sort((a, b) => a - b))
   const landed = (n: number) => film.find((f) => f.board === n)!.at
   expect(landed(4) - landed(3)).toBeGreaterThan(600)
   expect(landed(5) - landed(4)).toBeGreaterThan(600)
