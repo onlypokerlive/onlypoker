@@ -68,15 +68,22 @@ const TOO_LATE_MS = 500
  * Both paths are best-effort and neither is load-bearing: with both refused the
  * app behaves exactly as it did, which is to say it works with the ringer on.
  */
-function claimPlaybackChannel(): void {
+function claimPlaybackChannel(overSilence: boolean): void {
   const session = (navigator as any).audioSession
   if (session) {
     try {
-      session.type = PLAYBACK_TYPE
+      session.type = overSilence ? SESSION.over : SESSION.with
       return
     } catch {
       // Fall through to the element.
     }
+  }
+  // The pre-`audioSession` trick only has one setting, and it is the loud one:
+  // an element playing media *is* the media channel. Off, there is nothing to
+  // do here — not claiming it is the whole of mixing with the music.
+  if (!overSilence) {
+    silence?.pause()
+    return
   }
   if (silence) {
     void silence.play().catch(() => {})
@@ -121,15 +128,16 @@ function releasePlaybackChannel(): void {
 }
 
 /**
- * The session this table asks for when it is allowed to make a noise.
+ * The two sessions this table can ask for, and the whole of what the switch
+ * above the felt decides.
  *
  * `playback` is the only type that escapes the silent switch, and it is not
- * mixable — so this is also the decision to interrupt whatever else the phone
- * is playing. One name, in one place, because it is a product decision and not
- * a constant: `ambient` is the other real answer and it means the table obeys
- * the silent switch and never touches the music.
+ * mixable — taking it stops whatever the room was listening to. `ambient` mixes
+ * with the music and obeys the switch, which is what every page on the web
+ * does. There is no third: iOS gives one or the other, and there is no way to
+ * interrupt now and become mixable later. See `over-silence.ts`.
  */
-const PLAYBACK_TYPE = 'playback'
+const SESSION = { over: 'playback', with: 'ambient' } as const
 
 let silence: HTMLAudioElement | null = null
 
@@ -169,9 +177,9 @@ export function unlockAudio(): void {
  * as long as there is something to hold it for. Called by the one thing that
  * knows: the sound switch.
  */
-export function setAudioAudible(audible: boolean): void {
+export function setAudioAudible(audible: boolean, overSilence = true): void {
   if (typeof window === 'undefined') return
-  if (audible) claimPlaybackChannel()
+  if (audible) claimPlaybackChannel(overSilence)
   else releasePlaybackChannel()
 }
 

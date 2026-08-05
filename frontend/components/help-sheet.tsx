@@ -16,13 +16,18 @@ import type { Handed } from "@/lib/handedness"
  * that is always there costs nothing and is the thing people actually reach
  * for — mid-hand, when they have forgotten what the clock does.
  */
-/** The entry the handedness switch belongs to, named so it cannot drift. */
+/** The entries the two switches belong to, named so they cannot drift. */
 const PEEK_ENTRY = "Peek or tap to see your cards"
+const SOUND_ENTRY = "Sound"
 
 const ENTRIES: { title: string; body: string }[] = [
   {
     title: PEEK_ENTRY,
     body: "Press and hold for a private peek, then let go to hide your hand. A quick tap keeps the cards up briefly when you need a second look. The cards sit on the far side from your thumb, so it never covers them.",
+  },
+  {
+    title: SOUND_ENTRY,
+    body: "The speaker in the header cycles between the whole table, only your turn, and silence. Phones are usually on silent, so the table talks over the silent switch by default — which means it stops any music that was playing. Turn that off below and it mixes with the music instead, and goes quiet when your phone is on silent.",
   },
   {
     title: "Double-tap to check",
@@ -53,10 +58,15 @@ const ENTRIES: { title: string; body: string }[] = [
 export function HelpSheet({
   handed,
   onHandedChange,
+  overSilence,
+  onOverSilenceChange,
 }: {
   /** Which hand holds the phone, if the caller is keeping that setting. */
   handed?: Handed
   onHandedChange?: (next: Handed) => void
+  /** Whether the table speaks over the phone's silent switch. */
+  overSilence?: boolean
+  onOverSilenceChange?: (next: boolean) => void
 } = {}) {
   const [open, setOpen] = useState(false)
   const triggerRef = useRef<HTMLButtonElement>(null)
@@ -164,6 +174,21 @@ export function HelpSheet({
                         have. Somebody who finds their own thumb in the way of
                         their own cards comes here to find out how the peek
                         works — which is exactly when to offer to move them. */}
+                    {e.title === SOUND_ENTRY &&
+                      overSilence !== undefined &&
+                      onOverSilenceChange && (
+                        <label className="mt-1.5 flex items-center gap-2">
+                          <input
+                            type="checkbox"
+                            checked={overSilence}
+                            onChange={(event) => onOverSilenceChange(event.target.checked)}
+                            className="size-4 accent-[var(--primary)]"
+                          />
+                          <span className="text-xs text-muted-foreground">
+                            Play even when my phone is on silent
+                          </span>
+                        </label>
+                      )}
                     {e.title === PEEK_ENTRY && handed && onHandedChange && (
                       <div className="mt-1.5 flex items-center gap-2">
                         <span className="text-xs text-muted-foreground">I hold my phone in my</span>

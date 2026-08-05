@@ -87,8 +87,26 @@ function parseMode(saved: string | null): SoundMode | null {
  * state: it is only ever read to make a comparison, and putting it in state
  * would render the whole table a second time for every poll.
  */
-export function useTableEvents(view: GameView | null) {
+export function useTableEvents(
+  view: GameView | null,
+  /**
+   * Whether this phone may speak over its own silent switch — the switch in the
+   * help sheet, not a mode of this hook. See `over-silence.ts` for what it
+   * costs, which is somebody else's music.
+   */
+  overSilence = true,
+) {
   const [mode, setModeState] = useState<SoundMode>(DEFAULT_SOUND_MODE)
+  /**
+   * Whether what this phone chose last time has been read back yet.
+   *
+   * `localStorage` is not readable while the page is being rendered on the
+   * server, so the switch always starts at the default and is corrected on
+   * mount. For everything else that costs a render; for the audio channel it
+   * costs the room's music — a phone with the sound saved off would claim the
+   * exclusive session on its way to finding out it was muted.
+   */
+  const [settled, setSettled] = useState(false)
   const reduced = useReducedMotion()
   const previous = useRef<GameView | null>(null)
   const ready = useRef(false)
@@ -108,6 +126,7 @@ export function useTableEvents(view: GameView | null) {
       // A browser with storage blocked still gets sound; it just forgets.
     }
     ready.current = true
+    setSettled(true)
   }, [])
 
   const setMode = useCallback((next: SoundMode) => {
@@ -158,9 +177,10 @@ export function useTableEvents(view: GameView | null) {
    * Released on the way out too. Leaving the table is leaving the table.
    */
   useEffect(() => {
-    setAudioAudible(mode !== 'off')
+    if (!settled) return
+    setAudioAudible(mode !== 'off', overSilence)
     return () => setAudioAudible(false)
-  }, [mode])
+  }, [settled, mode, overSilence])
 
   // Sounds waiting on the rake. Leaving the table is not a reason to hear a
   // card land on it a second later.

@@ -35,6 +35,7 @@ import { useViewportHeight } from "@/lib/use-viewport-height"
 import { playCue } from "@/lib/sound"
 import { useRunout } from "@/lib/use-runout"
 import { cardsSide, useHandedness } from "@/lib/handedness"
+import { useOverSilence } from "@/lib/over-silence"
 import { handoverState } from "@/lib/handover"
 import {
   failureCategory,
@@ -167,7 +168,10 @@ export function RoomClient({ roomId }: { roomId: string }) {
 
   const secondsLeft = useSecondsLeft(view?.actionDeadlineMs ?? null)
   const autoDealIn = useSecondsLeft(view?.autoDealAtMs ?? null)
-  const { soundMode, setSoundMode } = useTableEvents(view)
+  // Whether this phone talks over its own silent switch. Read before the table
+  // events, because it is what the audio channel is claimed with.
+  const { overSilence, setOverSilence } = useOverSilence()
+  const { soundMode, setSoundMode } = useTableEvents(view, overSilence)
   // Which hand is holding the phone, and therefore which side of the peek band
   // the cards go on — the side the thumb is not coming from.
   const { handed, setHanded } = useHandedness()
@@ -451,7 +455,12 @@ export function RoomClient({ roomId }: { roomId: string }) {
             />
           )}
           {session && <ChatSheet roomId={roomId} session={session} />}
-          <HelpSheet handed={handed} onHandedChange={setHanded} />
+          <HelpSheet
+            handed={handed}
+            onHandedChange={setHanded}
+            overSilence={overSilence}
+            onOverSilenceChange={setOverSilence}
+          />
           {/* On the table, not buried in settings: this gets used with other
               people in the room, and the person who needs it needs it now. */}
           {/* Three states, cycled by tapping. A label rather than three

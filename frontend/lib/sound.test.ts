@@ -1,9 +1,9 @@
 import { existsSync } from 'node:fs'
 import path from 'node:path'
 
-import { describe, expect, it } from 'vitest'
+import { beforeEach, describe, expect, it } from 'vitest'
 
-import { GAIN, SAMPLE_FILES, pickVariant } from '@/lib/sound'
+import { GAIN, SAMPLE_FILES, pickVariant, setAudioAudible, unlockAudio } from '@/lib/sound'
 
 const SOUNDS = path.resolve(__dirname, '..', 'public', 'sounds')
 
@@ -91,5 +91,49 @@ describe('elegir variante', () => {
 
   it('devuelve la única que hay aunque acabe de sonar', () => {
     expect(pickVariant(['check'], 'check', 0.4)).toBe('check')
+  })
+})
+
+describe('el canal de audio de iOS', () => {
+  // Lo único de todo el fichero que se puede afirmar sin un iPhone delante, y
+  // es justo lo que estaba roto: qué sesión se pide, cuándo, y si se devuelve.
+  //
+  // `navigator.audioSession` no existe en jsdom ni en Chromium — solo en
+  // Safari — así que se pone uno de mentira. No es simular iOS: es comprobar
+  // que este módulo pide lo que dice pedir. Que `playback` se salte el
+  // interruptor de silencio es cosa del sistema y no se puede probar aquí.
+  const session = () => (navigator as unknown as { audioSession: { type: string } }).audioSession
+
+  beforeEach(() => {
+    Object.defineProperty(navigator, 'audioSession', {
+      value: { type: 'auto' },
+      configurable: true,
+      writable: true,
+    })
+  })
+
+  it('no reclama nada hasta que la mesa puede hablar', () => {
+    // Se reclamaba en el primer toque de la página, incluyera o no sonido esa
+    // mesa: una página que interrumpe la música para no decir nada.
+    unlockAudio()
+    expect(session().type).toBe('auto')
+  })
+
+  it('pide el canal exclusivo cuando el sonido está encendido', () => {
+    setAudioAudible(true, true)
+    expect(session().type).toBe('playback')
+  })
+
+  it('se mezcla con la música cuando se lo piden', () => {
+    // El interruptor de la hoja de ayuda, y lo único que decide.
+    setAudioAudible(true, false)
+    expect(session().type).toBe('ambient')
+  })
+
+  it('lo devuelve al silenciar la mesa', () => {
+    // Quedárselo después de silenciar es haber cogido algo sin decir para qué.
+    setAudioAudible(true, true)
+    setAudioAudible(false)
+    expect(session().type).toBe('auto')
   })
 })
