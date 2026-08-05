@@ -30,6 +30,69 @@ import { HAPTICS, type TableEvent } from '@/lib/table-events'
 
 let ctx: AudioContext | null = null
 
+/** Whether the context has ever actually been running. See `audioIsAwake`. */
+export function audioIsAwake(): boolean {
+  return ctx?.state === 'running'
+}
+
+/**
+ * A sound that arrives later than this is not the sound of anything.
+ *
+ * The wake-up below is asynchronous, and a chip rattle that lands a second
+ * after the chips is a second noise rather than a late one.
+ */
+const TOO_LATE_MS = 500
+
+/**
+ * Put this page's audio on the media channel rather than the ringer's.
+ *
+ * The single most common reason "the sound does not work on my iPhone", and it
+ * is not a bug in the page: **on iOS the hardware silent switch mutes Web Audio
+ * and does not mute an `<audio>` tag.** A phone that has been on silent since a
+ * meeting last Tuesday — which is most phones — deals cards in silence, and
+ * nothing in the app is wrong, so nobody ever finds it.
+ *
+ * `navigator.audioSession` is the standard answer and Safari has it: declaring
+ * `playback` says this page is a media player and not a notification, and the
+ * switch stops applying. Older iOS gets the trick the whole web used before the
+ * API existed — a silent looping `<audio>` element, which is on the media
+ * channel by virtue of being an element, and drags the context onto it.
+ *
+ * Both are best-effort and neither is load-bearing: with both refused the app
+ * behaves exactly as it did, which is to say it works with the switch off.
+ */
+function claimPlaybackChannel(): void {
+  const session = (navigator as any).audioSession
+  if (session) {
+    try {
+      session.type = 'playback'
+      return
+    } catch {
+      // Fall through to the element.
+    }
+  }
+  if (silence) return
+  try {
+    silence = new Audio(SILENCE)
+    silence.loop = true
+    // An attribute rather than a property: `playsinline` is typed onto video
+    // elements only, and Safari reads it off the audio element all the same.
+    silence.setAttribute('playsinline', '')
+    // Not muted: a muted element is not playing media as far as the OS is
+    // concerned, and the whole point is to be playing media. The file is
+    // silent instead, which costs 132 bytes and nothing to listen to.
+    void silence.play().catch(() => {})
+  } catch {
+    silence = null
+  }
+}
+
+let silence: HTMLAudioElement | null = null
+
+/** Fifty milliseconds of nothing, looped: 8kHz mono 8-bit, 444 bytes of WAV. */
+const SILENCE =
+  'data:audio/wav;base64,UklGRrQBAABXQVZFZm10IBAAAAABAAEAQB8AAEAfAAABAAgAZGF0YZABAACAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICA'
+
 /**
  * Start (or wake) the audio context.
  *
@@ -47,8 +110,9 @@ export function unlockAudio(): void {
   if (typeof window === 'undefined') return
   const Ctor = window.AudioContext ?? (window as any).webkitAudioContext
   if (!Ctor) return
+  claimPlaybackChannel()
   ctx ??= new Ctor()
-  if (ctx.state === 'suspended') void ctx.resume()
+  if (ctx.state === 'suspended') void ctx.resume().catch(() => {})
   fetchSamples()
 }
 
@@ -559,12 +623,42 @@ function playSampled(event: TableEvent | Cue, at: number): boolean {
   return true
 }
 
-export function playEvent(event: TableEvent | Cue): void {
-  unlockAudio()
-  if (!ctx || ctx.state !== 'running') return
+function say(event: TableEvent | Cue): void {
+  if (!ctx) return
   const at = ctx.currentTime + 0.01
   if (playSampled(event, at)) return
   VOICES[event]?.(at)
+}
+
+export function playEvent(event: TableEvent | Cue): void {
+  unlockAudio()
+  if (!ctx) return
+  if (ctx.state === 'running') {
+    say(event)
+    return
+  }
+
+  // Suspended, and about to stop being. `resume()` is a promise, and this used
+  // to give up in front of it — so every sound that landed inside the wake-up
+  // was dropped and nothing said so. On iOS that is not an edge case, it is the
+  // *first* sound: the context is asleep until the page is touched and asleep
+  // again every time the phone comes back from the lock screen, which at this
+  // table is once a hand. The app sounded broken and then started working, and
+  // both were the same code.
+  //
+  // Waited for rather than queued, and dropped if the wait runs long: a rattle
+  // that arrives a second after the chips is not a late sound, it is a wrong
+  // one.
+  const asked = Date.now()
+  void ctx
+    .resume()
+    .then(() => {
+      if (ctx?.state !== 'running' || Date.now() - asked > TOO_LATE_MS) return
+      say(event)
+    })
+    .catch(() => {
+      // Refused: no gesture has happened yet. The next one will call this again.
+    })
 }
 
 /** Same thing, named for the caller that owns the moment. See {@link Cue}. */

@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 
-import { audible, tableIsAudible } from '@/lib/use-table-events'
+import { audible, DEFAULT_SOUND_MODE, tableIsAudible } from '@/lib/use-table-events'
 import type { TableEvent } from '@/lib/table-events'
 
 const EVERYTHING: TableEvent[] = [
@@ -20,6 +20,13 @@ const EVERYTHING: TableEvent[] = [
 ]
 
 describe('the three-state switch', () => {
+  it('starts on, saying everything', () => {
+    // A poker app that opens silent is a poker app whose best part is behind a
+    // setting nobody goes looking for. Muting is one tap away and remembered.
+    expect(DEFAULT_SOUND_MODE).toBe('all')
+    expect(tableIsAudible(DEFAULT_SOUND_MODE)).toBe(true)
+  })
+
   it('says everything on "all"', () => {
     expect(EVERYTHING.filter((e) => audible('all', e))).toEqual(EVERYTHING)
   })

@@ -3,7 +3,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 
 import { sweepLeadIn, sweepStart } from '@/lib/chip-flight'
-import { announce, unlockAudio } from '@/lib/sound'
+import { announce, audioIsAwake, unlockAudio } from '@/lib/sound'
 import { closedByABet, diffViews, type TableEvent } from '@/lib/table-events'
 import { useReducedMotion } from '@/lib/use-reduced-motion'
 import type { GameView } from '@/lib/poker-api'
@@ -20,6 +20,19 @@ const STORAGE_KEY = 'holdem:sound'
  * then miss their turn.
  */
 export type SoundMode = 'all' | 'turn' | 'off'
+
+/**
+ * On, and everything, until somebody says otherwise.
+ *
+ * The table makes noise because the table makes noise — chips, cards, knuckles
+ * on wood — and a poker app that opens silent is a poker app whose best part is
+ * behind a setting nobody goes looking for. Muting is one tap away and it is
+ * remembered; being asked to *find* the sound is not.
+ *
+ * Named rather than written inline at the `useState` because it is a product
+ * decision and not a default value.
+ */
+export const DEFAULT_SOUND_MODE: SoundMode = 'all'
 
 /** What still gets through on "only my turn". Nothing that is about anyone else. */
 const MINE: ReadonlySet<TableEvent> = new Set<TableEvent>(['yourTurn'])
@@ -75,7 +88,7 @@ function parseMode(saved: string | null): SoundMode | null {
  * would render the whole table a second time for every poll.
  */
 export function useTableEvents(view: GameView | null) {
-  const [mode, setModeState] = useState<SoundMode>('all')
+  const [mode, setModeState] = useState<SoundMode>(DEFAULT_SOUND_MODE)
   const reduced = useReducedMotion()
   const previous = useRef<GameView | null>(null)
   const ready = useRef(false)
@@ -110,10 +123,28 @@ export function useTableEvents(view: GameView | null) {
   // iOS keeps the audio context asleep until a real gesture has happened. Any
   // touch on the page counts, so the table is usually awake long before it has
   // anything to say.
+  //
+  // Every gesture until one of them works, and not just the first. It was
+  // `{ once: true }`, which spends the single attempt on whichever pointer
+  // happened to land first — and the ones that do not count are exactly the
+  // ones that happen first: a touch that starts a scroll, a tap that arrives
+  // while the tab is still hidden, a gesture the browser cancels. Miss it and
+  // the phone is silent for the rest of the night with nothing to press to fix
+  // it. So it keeps asking until the context is genuinely awake, and then stops
+  // for good.
   useEffect(() => {
-    const wake = () => unlockAudio()
-    window.addEventListener('pointerdown', wake, { once: true })
-    return () => window.removeEventListener('pointerdown', wake)
+    if (audioIsAwake()) return
+    const wake = () => {
+      unlockAudio()
+      if (audioIsAwake()) stop()
+    }
+    const stop = () => {
+      window.removeEventListener('pointerdown', wake)
+      window.removeEventListener('keydown', wake)
+    }
+    window.addEventListener('pointerdown', wake)
+    window.addEventListener('keydown', wake)
+    return stop
   }, [])
 
   // Sounds waiting on the rake. Leaving the table is not a reason to hear a
