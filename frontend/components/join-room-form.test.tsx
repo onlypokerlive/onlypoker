@@ -14,6 +14,21 @@ const mocks = vi.hoisted(() => ({
 }))
 
 vi.mock('next/navigation', () => ({ useRouter: () => ({ push: mocks.push }) }))
+// Signed out, which is the only state this form is about: joining a table is
+// the one thing in the app that never needed an account, and `IdentityPhoto`
+// inside it reads the session. Rendered without the provider that `layout.tsx`
+// wraps the whole app in, `useAuth` throws — so the provider is what is stood
+// in for here, not the auth.
+vi.mock('@/components/auth-provider', () => ({
+  useAuth: () => ({
+    user: null,
+    profile: null,
+    loading: false,
+    signInWithGoogle: vi.fn(),
+    signOut: vi.fn(),
+    refreshProfile: vi.fn(),
+  }),
+}))
 vi.mock('@/lib/poker-api', async (importOriginal) => {
   const original = await importOriginal<typeof import('@/lib/poker-api')>()
   return {

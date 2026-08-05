@@ -34,6 +34,8 @@ import { ownZoneHeight, zoneScale } from "@/lib/table-layout"
 import { useViewportHeight } from "@/lib/use-viewport-height"
 import { playCue } from "@/lib/sound"
 import { useRunout } from "@/lib/use-runout"
+import { cardsSide, useHandedness } from "@/lib/handedness"
+import { useOverSilence } from "@/lib/over-silence"
 import { handoverState } from "@/lib/handover"
 import {
   failureCategory,
@@ -166,7 +168,13 @@ export function RoomClient({ roomId }: { roomId: string }) {
 
   const secondsLeft = useSecondsLeft(view?.actionDeadlineMs ?? null)
   const autoDealIn = useSecondsLeft(view?.autoDealAtMs ?? null)
-  const { soundMode, setSoundMode } = useTableEvents(view)
+  // Whether this phone talks over its own silent switch. Read before the table
+  // events, because it is what the audio channel is claimed with.
+  const { overSilence, setOverSilence } = useOverSilence()
+  const { soundMode, setSoundMode } = useTableEvents(view, overSilence)
+  // Which hand is holding the phone, and therefore which side of the peek band
+  // the cards go on — the side the thumb is not coming from.
+  const { handed, setHanded } = useHandedness()
   // Yours only. Nine countdowns ticking at once is not a warning, and whose
   // clock is nearly out is theirs to give away rather than ours to broadcast.
   useShotClockWarning({
@@ -175,7 +183,7 @@ export function RoomClient({ roomId }: { roomId: string }) {
     audible: soundMode !== "off",
   })
   // An all-in arrives as a finished board in one response. Deal it out.
-  const { board: shownBoard, revealing } = useRunout(view)
+  const { board: shownBoard, revealing, boardCompleteMs } = useRunout(view)
 
   // Host authority can move without an account. Keep this device's persisted
   // session aligned with the server while never restoring an invalidated
@@ -447,7 +455,12 @@ export function RoomClient({ roomId }: { roomId: string }) {
             />
           )}
           {session && <ChatSheet roomId={roomId} session={session} />}
-          <HelpSheet />
+          <HelpSheet
+            handed={handed}
+            onHandedChange={setHanded}
+            overSilence={overSilence}
+            onOverSilenceChange={setOverSilence}
+          />
           {/* On the table, not buried in settings: this gets used with other
               people in the room, and the person who needs it needs it now. */}
           {/* Three states, cycled by tapping. A label rather than three
@@ -523,9 +536,10 @@ export function RoomClient({ roomId }: { roomId: string }) {
               view={{ ...view, board: shownBoard }}
               revealed={revealed}
               secondsLeft={secondsLeft}
-              // The first beat of a showdown is the board completing, so the
-              // hands must not start turning over until it has.
-              revealing={revealing}
+              // The hands go face up first and the board is dealt out over
+              // them; what waits for the last card is the answer — the winning
+              // five lighting up and the pot going out.
+              boardCompleteMs={boardCompleteMs}
               // A hand turning over is a sound the table makes, and the table
               // is the only thing that knows when one does — the reveal runs
               // on a clock here, not on anything the server said.
@@ -628,6 +642,7 @@ export function RoomClient({ roomId }: { roomId: string }) {
                   // arms on a hand that cannot be folded.
                   canMuck={!!view.isYourTurn && !!view.legal?.canFold && !busy}
                   onMuck={() => handleAction("fold")}
+                  side={cardsSide(handed)}
                 />
               )
             )}

@@ -69,6 +69,7 @@ export function HoleCards({
   made,
   canMuck = false,
   onMuck,
+  side = 'left',
   className,
 }: {
   cards: (string | null)[] | null
@@ -89,6 +90,11 @@ export function HoleCards({
    */
   canMuck?: boolean
   onMuck?: () => void
+  /**
+   * Which side of the band the cards sit on — the side the thumb is *not*
+   * coming from. See `cardsSide`.
+   */
+  side?: 'left' | 'right'
   className?: string
 }) {
   /**
@@ -379,8 +385,19 @@ export function HoleCards({
             : 'border-border/60 bg-card/80 hover:border-primary/40',
         )}
       >
-        <div className="flex h-full items-center gap-3 px-3">
-          <div className="flex flex-col gap-0.5">
+        {/* Cards on one side, what the control is doing on the other. Which
+            side is the setting — see `cardsSide`: the cards go opposite the
+            thumb, because they live inside the control the thumb presses and a
+            thumb on top of your own hand is the one thing you cannot look
+            past. `flex-row-reverse` rather than two orderings, so there is one
+            layout and a mirror of it. */}
+        <div
+          className={cn(
+            'flex h-full items-center gap-3 px-3',
+            side === 'left' && 'flex-row-reverse',
+          )}
+        >
+          <div className="flex min-w-0 flex-1 flex-col gap-0.5">
             <span className="flex items-center gap-1.5 text-[10px] font-bold uppercase tracking-widest text-muted-foreground">
               {revealed ? (
                 <Eye className="size-3 text-primary" />
@@ -418,7 +435,7 @@ export function HoleCards({
               own clip is what hides them, so the offsets are inline: they are
               two states of one animated value, and reading them as a pair of
               conflicting transform utilities is how the geometry gets lost. */}
-          <div className="relative ml-auto h-full w-24">
+          <div className="relative h-full w-24 shrink-0">
             <div
               className="absolute bottom-0 left-1/2 flex gap-1.5 transition-transform duration-200 ease-out"
               style={{

@@ -2,18 +2,51 @@
 
 import { useEffect, useRef, useState } from 'react'
 
-import { runoutPauseSeconds, runoutStepMs, runoutSteps } from '@/lib/runout'
+import { runoutBeats, runoutDurationMs, runoutPauseSeconds, type RunoutBeat } from '@/lib/runout'
+import { revealDurationMs } from '@/lib/showdown'
 import type { GameView } from '@/lib/poker-api'
+
+export interface Runout {
+  /** The board to draw right now. */
+  board: string[]
+  /** Whether the reveal is still running. */
+  revealing: boolean
+  /**
+   * When the board finishes being dealt, measured from the hand ending — zero
+   * on a hand where nothing was ever held back.
+   *
+   * Published because the showdown is one sequence told by two hooks. The hands
+   * turn over first (`use-showdown`), the board is dealt out over them, and only
+   * then does the winning hand light up and the pot go out. That last part is
+   * timed by the other hook, which has no way of knowing how long the board
+   * took — so it is told.
+   *
+   * **It outlives the reveal, and that is the point.** It said "how long is
+   * left" and was dropped to zero the instant the river landed, which put every
+   * beat still to come into a past the clock had already gone by: the winning
+   * five lit in one frame and the pot left underneath them. The last two
+   * seconds of the hand did not exist. It is a fact about the hand that ended —
+   * *when the board was complete* — and it stands until the next one is dealt.
+   */
+  boardCompleteMs: number
+}
 
 /**
  * Holds back a board that arrived all at once, and deals it out card by card.
  *
- * Returns the board to draw and whether the reveal is still running — the
- * result panel has to stay hidden until it finishes, or it announces the winner
- * while the turn is still face down.
+ * When everybody is all-in there is nothing left to decide, so the engine deals
+ * the rest of the board and settles the hand in a single step: the most tense
+ * moment of the night, over before it registered. Nothing about fixing that
+ * needs the server — the client already receives the finished board and just
+ * has to refuse to show all of it at once.
+ *
+ * The hands go face up **first** and the board waits for them. See
+ * `RUNOUT_LEAD_IN_MS`: a board dealt out over hole cards nobody has seen is
+ * three cards and no stakes.
  */
-export function useRunout(view: GameView | null) {
+export function useRunout(view: GameView | null): Runout {
   const [heldTo, setHeldTo] = useState<number | null>(null)
+  const [duration, setDuration] = useState(0)
   const seenLength = useRef(0)
   const seenHand = useRef(0)
   const started = useRef(false)
@@ -44,6 +77,7 @@ export function useRunout(view: GameView | null) {
     if (view.handNumber !== seenHand.current) {
       clearTimers()
       setHeldTo(null)
+      setDuration(0)
       seenHand.current = view.handNumber
       seenLength.current = length
       return
@@ -51,22 +85,38 @@ export function useRunout(view: GameView | null) {
 
     const from = seenLength.current
     seenLength.current = length
-    const steps = runoutSteps(from, length)
-    if (!steps.length) return
+    // How long the hands take to turn over, which is what the first card waits
+    // for. Taken from the server's `showOrder` — the same list `use-showdown`
+    // times the reveal from, so the two clocks cannot disagree about when the
+    // last hand landed face up.
+    const handsUpMs = revealDurationMs(view.showOrder?.length ?? 0)
+    const beats: RunoutBeat[] = runoutBeats(from, length, {
+      pauseSeconds: runoutPauseSeconds(
+        view.autoDealAtMs,
+        view.autoDealSeconds,
+        Date.now(),
+        view.paused,
+      ),
+      handsUpMs,
+    })
+    if (!beats.length) return
 
     clearTimers()
     setHeldTo(from)
-    const step = runoutStepMs(
-      steps.length,
-      runoutPauseSeconds(view.autoDealAtMs, view.autoDealSeconds),
-    )
-    steps.forEach((size, i) => {
+    setDuration(runoutDurationMs(beats))
+    beats.forEach((beat, i) => {
       timers.current.push(
-        setTimeout(() => setHeldTo(i === steps.length - 1 ? null : size), step * (i + 1)),
+        setTimeout(() => setHeldTo(i === beats.length - 1 ? null : beat.size), beat.at),
       )
     })
   }, [view])
 
-  const board = view && heldTo !== null ? view.board.slice(0, heldTo) : (view?.board ?? [])
-  return { board, revealing: heldTo !== null }
+  const revealing = heldTo !== null
+  return {
+    board: view && revealing ? view.board.slice(0, heldTo!) : (view?.board ?? []),
+    revealing,
+    // Not `revealing ? duration : 0` — see the field. Cleared where it becomes
+    // untrue, which is the next hand, and nowhere else.
+    boardCompleteMs: duration,
+  }
 }

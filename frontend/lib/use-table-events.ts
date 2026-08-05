@@ -3,7 +3,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 
 import { sweepLeadIn, sweepStart } from '@/lib/chip-flight'
-import { announce, unlockAudio } from '@/lib/sound'
+import { announce, audioIsAwake, setAudioAudible, unlockAudio } from '@/lib/sound'
 import { closedByABet, diffViews, type TableEvent } from '@/lib/table-events'
 import { useReducedMotion } from '@/lib/use-reduced-motion'
 import type { GameView } from '@/lib/poker-api'
@@ -20,6 +20,19 @@ const STORAGE_KEY = 'holdem:sound'
  * then miss their turn.
  */
 export type SoundMode = 'all' | 'turn' | 'off'
+
+/**
+ * On, and everything, until somebody says otherwise.
+ *
+ * The table makes noise because the table makes noise — chips, cards, knuckles
+ * on wood — and a poker app that opens silent is a poker app whose best part is
+ * behind a setting nobody goes looking for. Muting is one tap away and it is
+ * remembered; being asked to *find* the sound is not.
+ *
+ * Named rather than written inline at the `useState` because it is a product
+ * decision and not a default value.
+ */
+export const DEFAULT_SOUND_MODE: SoundMode = 'all'
 
 /** What still gets through on "only my turn". Nothing that is about anyone else. */
 const MINE: ReadonlySet<TableEvent> = new Set<TableEvent>(['yourTurn'])
@@ -74,8 +87,26 @@ function parseMode(saved: string | null): SoundMode | null {
  * state: it is only ever read to make a comparison, and putting it in state
  * would render the whole table a second time for every poll.
  */
-export function useTableEvents(view: GameView | null) {
-  const [mode, setModeState] = useState<SoundMode>('all')
+export function useTableEvents(
+  view: GameView | null,
+  /**
+   * Whether this phone may speak over its own silent switch — the switch in the
+   * help sheet, not a mode of this hook. See `over-silence.ts` for what it
+   * costs, which is somebody else's music.
+   */
+  overSilence = true,
+) {
+  const [mode, setModeState] = useState<SoundMode>(DEFAULT_SOUND_MODE)
+  /**
+   * Whether what this phone chose last time has been read back yet.
+   *
+   * `localStorage` is not readable while the page is being rendered on the
+   * server, so the switch always starts at the default and is corrected on
+   * mount. For everything else that costs a render; for the audio channel it
+   * costs the room's music — a phone with the sound saved off would claim the
+   * exclusive session on its way to finding out it was muted.
+   */
+  const [settled, setSettled] = useState(false)
   const reduced = useReducedMotion()
   const previous = useRef<GameView | null>(null)
   const ready = useRef(false)
@@ -95,6 +126,7 @@ export function useTableEvents(view: GameView | null) {
       // A browser with storage blocked still gets sound; it just forgets.
     }
     ready.current = true
+    setSettled(true)
   }, [])
 
   const setMode = useCallback((next: SoundMode) => {
@@ -110,11 +142,45 @@ export function useTableEvents(view: GameView | null) {
   // iOS keeps the audio context asleep until a real gesture has happened. Any
   // touch on the page counts, so the table is usually awake long before it has
   // anything to say.
+  //
+  // Every gesture until one of them works, and not just the first. It was
+  // `{ once: true }`, which spends the single attempt on whichever pointer
+  // happened to land first — and the ones that do not count are exactly the
+  // ones that happen first: a touch that starts a scroll, a tap that arrives
+  // while the tab is still hidden, a gesture the browser cancels. Miss it and
+  // the phone is silent for the rest of the night with nothing to press to fix
+  // it. So it keeps asking until the context is genuinely awake, and then stops
+  // for good.
   useEffect(() => {
-    const wake = () => unlockAudio()
-    window.addEventListener('pointerdown', wake, { once: true })
-    return () => window.removeEventListener('pointerdown', wake)
-  }, [])
+    if (mode === 'off' || audioIsAwake()) return
+    const wake = () => {
+      unlockAudio()
+      if (audioIsAwake()) stop()
+    }
+    const stop = () => {
+      window.removeEventListener('pointerdown', wake)
+      window.removeEventListener('keydown', wake)
+    }
+    window.addEventListener('pointerdown', wake)
+    window.addEventListener('keydown', wake)
+    return stop
+  }, [mode])
+
+  /**
+   * Hold the media channel only while this table is allowed to speak.
+   *
+   * On iOS that channel is exclusive: taking it can stop whatever the room is
+   * listening to. It was taken on the first touch of the page and never given
+   * back — including on a table somebody had muted, which is a page that
+   * interrupts the music in order to say nothing.
+   *
+   * Released on the way out too. Leaving the table is leaving the table.
+   */
+  useEffect(() => {
+    if (!settled) return
+    setAudioAudible(mode !== 'off', overSilence)
+    return () => setAudioAudible(false)
+  }, [settled, mode, overSilence])
 
   // Sounds waiting on the rake. Leaving the table is not a reason to hear a
   // card land on it a second later.

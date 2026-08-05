@@ -318,6 +318,7 @@ export function PlayerSeat({
               // the grown size: the plates are less than thirty pixels apart,
               // and a full-size revealed hand lands on the neighbour's.
               className="rounded-[2px]"
+              data-lit={c && lit?.(c) ? 'true' : undefined}
               style={{
                 ...(shown
                   ? {

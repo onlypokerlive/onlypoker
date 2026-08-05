@@ -5,6 +5,8 @@ import { createPortal } from "react-dom"
 import { HelpCircle, X } from "lucide-react"
 
 import { Button } from "@/components/ui/button"
+import { cn } from "@/lib/utils"
+import type { Handed } from "@/lib/handedness"
 
 /**
  * The cheat sheet, permanently one tap away.
@@ -14,10 +16,18 @@ import { Button } from "@/components/ui/button"
  * that is always there costs nothing and is the thing people actually reach
  * for — mid-hand, when they have forgotten what the clock does.
  */
+/** The entries the two switches belong to, named so they cannot drift. */
+const PEEK_ENTRY = "Peek or tap to see your cards"
+const SOUND_ENTRY = "Sound"
+
 const ENTRIES: { title: string; body: string }[] = [
   {
-    title: "Peek or tap to see your cards",
-    body: "Press and hold for a private peek, then let go to hide your hand. A quick tap keeps the cards up briefly when you need a second look.",
+    title: PEEK_ENTRY,
+    body: "Press and hold for a private peek, then let go to hide your hand. A quick tap keeps the cards up briefly when you need a second look. The cards sit on the far side from your thumb, so it never covers them.",
+  },
+  {
+    title: SOUND_ENTRY,
+    body: "The speaker in the header cycles between the whole table, only your turn, and silence. Phones are usually on silent, so the table talks over the silent switch by default — which means it stops any music that was playing. Turn that off below and it mixes with the music instead, and goes quiet when your phone is on silent.",
   },
   {
     title: "Double-tap to check",
@@ -45,7 +55,19 @@ const ENTRIES: { title: string; body: string }[] = [
   },
 ]
 
-export function HelpSheet() {
+export function HelpSheet({
+  handed,
+  onHandedChange,
+  overSilence,
+  onOverSilenceChange,
+}: {
+  /** Which hand holds the phone, if the caller is keeping that setting. */
+  handed?: Handed
+  onHandedChange?: (next: Handed) => void
+  /** Whether the table speaks over the phone's silent switch. */
+  overSilence?: boolean
+  onOverSilenceChange?: (next: boolean) => void
+} = {}) {
   const [open, setOpen] = useState(false)
   const triggerRef = useRef<HTMLButtonElement>(null)
   const panelRef = useRef<HTMLDivElement>(null)
@@ -146,6 +168,50 @@ export function HelpSheet() {
                   <div key={e.title}>
                     <dt className="text-sm font-semibold text-card-foreground">{e.title}</dt>
                     <dd className="text-sm text-muted-foreground">{e.body}</dd>
+                    {/* The one setting on this screen, and it lives against
+                        the sentence that explains the gesture it changes
+                        rather than in a settings screen this app does not
+                        have. Somebody who finds their own thumb in the way of
+                        their own cards comes here to find out how the peek
+                        works — which is exactly when to offer to move them. */}
+                    {e.title === SOUND_ENTRY &&
+                      overSilence !== undefined &&
+                      onOverSilenceChange && (
+                        <label className="mt-1.5 flex items-center gap-2">
+                          <input
+                            type="checkbox"
+                            checked={overSilence}
+                            onChange={(event) => onOverSilenceChange(event.target.checked)}
+                            className="size-4 accent-[var(--primary)]"
+                          />
+                          <span className="text-xs text-muted-foreground">
+                            Play even when my phone is on silent
+                          </span>
+                        </label>
+                      )}
+                    {e.title === PEEK_ENTRY && handed && onHandedChange && (
+                      <div className="mt-1.5 flex items-center gap-2">
+                        <span className="text-xs text-muted-foreground">I hold my phone in my</span>
+                        <div className="flex overflow-hidden rounded-lg border border-border/60">
+                          {(["left", "right"] as const).map((hand) => (
+                            <button
+                              key={hand}
+                              type="button"
+                              aria-pressed={handed === hand}
+                              onClick={() => onHandedChange(hand)}
+                              className={cn(
+                                "px-2.5 py-1 text-xs font-semibold capitalize transition-colors",
+                                handed === hand
+                                  ? "bg-primary text-primary-foreground"
+                                  : "text-muted-foreground hover:text-foreground",
+                              )}
+                            >
+                              {hand}
+                            </button>
+                          ))}
+                        </div>
+                      </div>
+                    )}
                   </div>
                 ))}
               </dl>

@@ -753,6 +753,33 @@ def test_the_pause_stops_where_reading_stops(client, clock):
     assert main._handover_seconds(room) == main.HANDOVER_MAX_SECONDS
 
 
+def test_the_cap_does_not_quietly_rewrite_the_reasons_under_it(client, clock):
+    """The most eventful hand of the night must still get every second it is owed.
+
+    The cap was set when an all-in bought five seconds and it buys eight now,
+    because the hands turn over before the board. Left where it was, the hand
+    this cap exists *for* — everybody in, run twice, somebody out — had the
+    second board silently reduced to one second and the bust to none. A ceiling
+    that rewrites the constants above it makes those constants untrue, and their
+    comments lies.
+
+    Asserted against what the reveal actually costs the client: eight hands
+    turning over, the lead-in, three streets, and the winning five.
+    """
+    assert (
+        main.HANDOVER_SHOWDOWN_SECONDS
+        + main.HANDOVER_ALL_IN_SECONDS
+        + main.HANDOVER_SECOND_BOARD_SECONDS
+        + main.HANDOVER_BUST_SECONDS
+    ) >= main.HANDOVER_MAX_SECONDS
+    # 8 × 420ms of hands, 900ms of lead-in, 1300 + 1800 of streets, 700 + 4×200
+    # of lighting. See `runoutBeats` and `litBeats`.
+    telling = (8 * 0.42) + 0.9 + 1.3 + 1.8 + (0.7 + 4 * 0.2)
+    assert main.HANDOVER_MAX_SECONDS > telling + 3, (
+        "the longest reveal has to finish with time left to take in who won"
+    )
+
+
 def test_a_hand_nobody_showed_is_not_paced_by_what_happened_in_it(client, clock):
     """A fold-around has nothing to read whatever went on before the last fold.
 
@@ -770,6 +797,41 @@ def test_a_hand_nobody_showed_is_not_paced_by_what_happened_in_it(client, clock)
         "players": {"a": {"chips": 10}, "b": {"chips": 10}},
     }
     assert main._handover_seconds(room) == main.HANDOVER_FOLD_SECONDS
+
+
+def test_the_hand_nobody_showed_is_the_short_pause(client, clock):
+    """Most hands end this way, and the pause has to be shorter than a showdown.
+
+    Asserted as a relation and not as a number: what matters is that the hand
+    with nothing to look at is not held as long as the one with something to
+    look at, and that it is comfortably under the flat eight seconds this
+    started life with.
+    """
+    assert main.HANDOVER_FOLD_SECONDS < main.HANDOVER_SHOWDOWN_SECONDS
+    assert main.HANDOVER_FOLD_SECONDS <= 5
+
+
+def test_a_table_playing_the_seven_deuce_keeps_its_pause(client, clock):
+    """The bluff is worth money there, and this pause is the only place to claim it.
+
+    Room-level, from the host's own setting — so the length of the pause says
+    nothing about who was holding what, which is the whole reason
+    `_seven_deuce_pending` is answered per viewer.
+    """
+    room = {
+        "autoDealSeconds": main.AUTO_DEAL_SECONDS,
+        "handPlayerIds": ["a", "b"],
+        "foldedSeats": [1],
+        "actionLog": [],
+        "boardResults": [],
+        "lastResults": [],
+        "players": {"a": {"chips": 10}, "b": {"chips": 10}},
+    }
+    assert main._handover_seconds(room) == main.HANDOVER_FOLD_SECONDS
+    room["sevenDeuce"] = 2
+    assert main._handover_seconds(room) == (
+        main.HANDOVER_FOLD_SECONDS + main.HANDOVER_SEVEN_DEUCE_SECONDS
+    )
 
 
 def test_host_can_pause_and_resume_dealing(client, clock):

@@ -81,10 +81,22 @@ export function litBeats(
   return lit
 }
 
+/**
+ * How long the hands take to all be face up.
+ *
+ * Its own function because two clocks need the same answer and they run in
+ * different components: `use-showdown` turns the hands over, and `use-runout`
+ * has to wait for them before it deals the first card of an all-in. A board
+ * that landed under a hand still face down would be the run-out told backwards.
+ */
+export function revealDurationMs(hands: number): number {
+  return Math.max(0, hands - 1) * REVEAL_STEP_MS
+}
+
 /** How long the whole thing takes, for checking it fits in the pause. */
 export function showdownDurationMs(liveHands: number, handCards = 5): number {
   return (
-    Math.max(0, liveHands - 1) * REVEAL_STEP_MS +
+    revealDurationMs(liveHands) +
     HAND_LIT_DELAY_MS +
     Math.max(0, handCards - 1) * HAND_LIT_STEP_MS
   )

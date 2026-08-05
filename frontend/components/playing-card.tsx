@@ -56,12 +56,22 @@ export function PlayingCard({
   faceDown = false,
   className,
   style,
+  'data-lit': lit,
 }: {
   card?: string | null
   size?: Size
   /** Force the back of the card even when its value is known. */
   faceDown?: boolean
   className?: string
+  /**
+   * One of the five that made the winning hand, and lit.
+   *
+   * Carried as an attribute rather than left to the box-shadow the caller sets,
+   * because the lighting is a *beat* — see `data-piece`. A check running in a
+   * real browser has to be able to ask when it happened, and reading a shadow
+   * back out of a computed style is guessing.
+   */
+  'data-lit'?: string
   /**
    * An explicit size, for cards drawn on the table.
    *
@@ -80,6 +90,7 @@ export function PlayingCard({
       <div
         className={cn('card-back shrink-0', s.box, className)}
         style={style}
+        data-lit={lit}
         aria-label="Face-down card"
       />
     )
@@ -106,6 +117,7 @@ export function PlayingCard({
     <div
       className={cn('card-face relative shrink-0 overflow-hidden font-bold leading-none', s.box, className)}
       style={{ color: ink, ...style }}
+      data-lit={lit}
       aria-label={`${label} of ${SUIT_NAME[suit] ?? 'cards'}`}
     >
       {/* The corner. Rank over suit, tight — this is the whole of the card at

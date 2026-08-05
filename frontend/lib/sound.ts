@@ -30,6 +30,121 @@ import { HAPTICS, type TableEvent } from '@/lib/table-events'
 
 let ctx: AudioContext | null = null
 
+/** Whether the context has ever actually been running. See `audioIsAwake`. */
+export function audioIsAwake(): boolean {
+  return ctx?.state === 'running'
+}
+
+/**
+ * A sound that arrives later than this is not the sound of anything.
+ *
+ * The wake-up below is asynchronous, and a chip rattle that lands a second
+ * after the chips is a second noise rather than a late one.
+ */
+const TOO_LATE_MS = 500
+
+/**
+ * Put this page's audio on the media channel rather than the ringer's, or give
+ * it back.
+ *
+ * The single most common reason "the sound does not work on my iPhone", and it
+ * is not a bug in the page: **on iOS the hardware silent switch mutes Web Audio
+ * and does not mute an `<audio>` tag.** A phone that has been on silent since a
+ * meeting last Tuesday — which is most phones — deals cards in silence, and
+ * nothing in the app is wrong, so nobody ever finds it.
+ *
+ * `navigator.audioSession` is the standard answer and Safari has it. Older iOS
+ * gets the trick the whole web used before the API existed — a silent looping
+ * `<audio>` element, which is on the media channel by virtue of being an
+ * element, and drags the context onto it.
+ *
+ * **What is being asked for is exclusive, and that is the cost.** A `playback`
+ * session is not mixable: claiming it can stop whatever the room is listening
+ * to. So it is not claimed on the way past — it is held only while this table
+ * is actually allowed to make a noise, and handed straight back when it is not.
+ * `unlockAudio` deliberately does not call this; {@link setAudioAudible} does,
+ * from the one place that knows whether the switch is on.
+ *
+ * Both paths are best-effort and neither is load-bearing: with both refused the
+ * app behaves exactly as it did, which is to say it works with the ringer on.
+ */
+function claimPlaybackChannel(overSilence: boolean): void {
+  const session = (navigator as any).audioSession
+  if (session) {
+    try {
+      session.type = overSilence ? SESSION.over : SESSION.with
+      return
+    } catch {
+      // Fall through to the element.
+    }
+  }
+  // The pre-`audioSession` trick only has one setting, and it is the loud one:
+  // an element playing media *is* the media channel. Off, there is nothing to
+  // do here — not claiming it is the whole of mixing with the music.
+  if (!overSilence) {
+    silence?.pause()
+    return
+  }
+  if (silence) {
+    void silence.play().catch(() => {})
+    return
+  }
+  try {
+    silence = new Audio(SILENCE)
+    silence.loop = true
+    // An attribute rather than a property: `playsinline` is typed onto video
+    // elements only, and Safari reads it off the audio element all the same.
+    silence.setAttribute('playsinline', '')
+    // Not muted: a muted element is not playing media as far as the OS is
+    // concerned, and the whole point is to be playing media. The file is
+    // silent instead, which costs 444 bytes and nothing to listen to.
+    void silence.play().catch(() => {})
+  } catch {
+    silence = null
+  }
+}
+
+/**
+ * Hand the channel back.
+ *
+ * Because a page that keeps an exclusive session after it has been muted is a
+ * page that took something and did not say what for. `auto` is the browser's
+ * own judgement, which is where this started.
+ *
+ * The silent element is *paused* rather than dropped: while it is playing, iOS
+ * treats this page as a media player and will offer it transport controls on
+ * the lock screen — a poker table with a play button on the lock screen.
+ */
+function releasePlaybackChannel(): void {
+  const session = (navigator as any).audioSession
+  if (session) {
+    try {
+      session.type = 'auto'
+    } catch {
+      // ignore
+    }
+  }
+  silence?.pause()
+}
+
+/**
+ * The two sessions this table can ask for, and the whole of what the switch
+ * above the felt decides.
+ *
+ * `playback` is the only type that escapes the silent switch, and it is not
+ * mixable — taking it stops whatever the room was listening to. `ambient` mixes
+ * with the music and obeys the switch, which is what every page on the web
+ * does. There is no third: iOS gives one or the other, and there is no way to
+ * interrupt now and become mixable later. See `over-silence.ts`.
+ */
+const SESSION = { over: 'playback', with: 'ambient' } as const
+
+let silence: HTMLAudioElement | null = null
+
+/** Fifty milliseconds of nothing, looped: 8kHz mono 8-bit, 444 bytes of WAV. */
+const SILENCE =
+  'data:audio/wav;base64,UklGRrQBAABXQVZFZm10IBAAAAABAAEAQB8AAEAfAAABAAgAZGF0YZABAACAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICA'
+
 /**
  * Start (or wake) the audio context.
  *
@@ -48,8 +163,24 @@ export function unlockAudio(): void {
   const Ctor = window.AudioContext ?? (window as any).webkitAudioContext
   if (!Ctor) return
   ctx ??= new Ctor()
-  if (ctx.state === 'suspended') void ctx.resume()
+  if (ctx.state === 'suspended') void ctx.resume().catch(() => {})
   fetchSamples()
+}
+
+/**
+ * Say whether this table is allowed to make a noise, and take or give back the
+ * audio channel to match.
+ *
+ * Separate from `unlockAudio` because they answer different questions. Waking
+ * the context costs nothing and can happen on any touch; holding the media
+ * channel is exclusive and can silence the room's music, so it is held only for
+ * as long as there is something to hold it for. Called by the one thing that
+ * knows: the sound switch.
+ */
+export function setAudioAudible(audible: boolean, overSilence = true): void {
+  if (typeof window === 'undefined') return
+  if (audible) claimPlaybackChannel(overSilence)
+  else releasePlaybackChannel()
 }
 
 /**
@@ -559,12 +690,42 @@ function playSampled(event: TableEvent | Cue, at: number): boolean {
   return true
 }
 
-export function playEvent(event: TableEvent | Cue): void {
-  unlockAudio()
-  if (!ctx || ctx.state !== 'running') return
+function say(event: TableEvent | Cue): void {
+  if (!ctx) return
   const at = ctx.currentTime + 0.01
   if (playSampled(event, at)) return
   VOICES[event]?.(at)
+}
+
+export function playEvent(event: TableEvent | Cue): void {
+  unlockAudio()
+  if (!ctx) return
+  if (ctx.state === 'running') {
+    say(event)
+    return
+  }
+
+  // Suspended, and about to stop being. `resume()` is a promise, and this used
+  // to give up in front of it — so every sound that landed inside the wake-up
+  // was dropped and nothing said so. On iOS that is not an edge case, it is the
+  // *first* sound: the context is asleep until the page is touched and asleep
+  // again every time the phone comes back from the lock screen, which at this
+  // table is once a hand. The app sounded broken and then started working, and
+  // both were the same code.
+  //
+  // Waited for rather than queued, and dropped if the wait runs long: a rattle
+  // that arrives a second after the chips is not a late sound, it is a wrong
+  // one.
+  const asked = Date.now()
+  void ctx
+    .resume()
+    .then(() => {
+      if (ctx?.state !== 'running' || Date.now() - asked > TOO_LATE_MS) return
+      say(event)
+    })
+    .catch(() => {
+      // Refused: no gesture has happened yet. The next one will call this again.
+    })
 }
 
 /** Same thing, named for the caller that owns the moment. See {@link Cue}. */

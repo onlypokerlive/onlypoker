@@ -9,6 +9,19 @@ import { recordRoomCreated } from '@/lib/growth'
 const mocks = vi.hoisted(() => ({ push: vi.fn(), createRoom: vi.fn(), saveSession: vi.fn() }))
 
 vi.mock('next/navigation', () => ({ useRouter: () => ({ push: mocks.push }) }))
+// Signed out. `IdentityPhoto` inside this form reads the session, and rendered
+// without the provider that `layout.tsx` wraps the whole app in, `useAuth`
+// throws — so what is stood in for here is the provider, not the auth.
+vi.mock('@/components/auth-provider', () => ({
+  useAuth: () => ({
+    user: null,
+    profile: null,
+    loading: false,
+    signInWithGoogle: vi.fn(),
+    signOut: vi.fn(),
+    refreshProfile: vi.fn(),
+  }),
+}))
 vi.mock('@/lib/poker-api', async (importOriginal) => {
   const original = await importOriginal<typeof import('@/lib/poker-api')>()
   return {
@@ -23,13 +36,24 @@ vi.mock('@/lib/growth', async (importOriginal) => ({
 }))
 
 describe('quick table creation', () => {
-  beforeEach(() => vi.clearAllMocks())
+  beforeEach(() => {
+    vi.clearAllMocks()
+    // A host who has created a table before gets their name back — the guest
+    // identity is remembered on the device, which is the whole of what "no
+    // accounts" means here. It also leaks from one test into the next: the
+    // creation test types "Alex", and the validation test below then has a
+    // name already filled in and nothing to complain about.
+    localStorage.clear()
+  })
 
   it('keeps advanced rules collapsed until the host asks for them', async () => {
     render(<CreateRoomForm />)
 
     expect(screen.getByRole('button', { name: 'Create table' })).toBeVisible()
-    expect(screen.getByLabelText('Chips per player')).not.toBeVisible()
+    // Not merely hidden: the customization panel is not rendered at all until
+    // it is asked for. It used to be a `<details>` that shipped every field to
+    // every host and hid them with CSS.
+    expect(screen.queryByLabelText('Chips per player')).toBeNull()
     expect(screen.getByLabelText('Table setup')).toBeVisible()
     expect(screen.getByText(/5\/10 blinds · 1,000 chips/)).toBeVisible()
 
@@ -81,7 +105,7 @@ describe('quick table creation', () => {
   it('keeps the primary create action before progressive customization in tab order', () => {
     render(<CreateRoomForm />)
     const create = screen.getByRole('button', { name: 'Create table' })
-    const customize = screen.getByText('Customize the night').closest('summary')!
+    const customize = screen.getByText('Customize the night').closest('button')!
 
     expect(create.compareDocumentPosition(customize) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
     expect(screen.getByText(/60 sec time bank/)).toBeVisible()

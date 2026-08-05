@@ -128,14 +128,39 @@ AUTO_DEAL_SECONDS = 8
 # and it still comes to less than half the flat eight seconds this started with
 # on the hands where nothing happened.
 #
-# Seven for the hand nobody showed, because that hand is the one with a decision
-# still open in it — the winner can turn over one card or both, and a pause that
-# ends before anybody has read who won is a pause nobody can decide in.
-HANDOVER_FOLD_SECONDS = 7
+# Five for the hand nobody showed, which is most hands.
+#
+# It was seven, and the argument for seven was that the winner still has a
+# decision open — one card, both, or neither. That argument is sound and it is
+# the wrong size: the decision is *offered* for as long as the pause lasts, but
+# what a pot won by folding actually contains is one line of text and the chips
+# landing, and both are over inside two seconds. The other five were spent
+# waiting for a table that had nothing left to say, forty times a night.
+#
+# Five and not four, and the two seconds of the difference are not attention —
+# they are **the wire**. This clock starts here, and the winner's phone finds
+# out the hand is over on its next poll, up to 1.2s later (`POLL_MS`), plus the
+# round trip. Four seconds on this side is under three on theirs, and what has
+# to fit in it is two taps on two cards and a button. The pause a player gets
+# is the pause minus how long it took to reach them.
+#
+# The other exception is below and it is not a guess about attention either: a
+# table playing the 7-2 has real money riding on that decision, and it is a
+# decision that cannot be made anywhere else.
+HANDOVER_FOLD_SECONDS = 5
+# Where the bluff pays. Room-level and set by the host at the start of the
+# night, so leaking nothing about the hand that just ended — unlike who is
+# holding what, which is why `_seven_deuce_pending` is answered per viewer.
+HANDOVER_SEVEN_DEUCE_SECONDS = 3
 HANDOVER_SHOWDOWN_SECONDS = 9
 # An all-in board is dealt out card by card on the client (`use-runout`), and
 # that reveal has to finish with time left over to take in who won.
-HANDOVER_ALL_IN_SECONDS = 5
+#
+# It buys more than the cards now. The hands go face up *before* the first
+# street — which is what every room does, and what makes the run-out worth
+# watching at all: a board dealt out over hands nobody has seen is three cards
+# and no stakes. See `runoutBeats`.
+HANDOVER_ALL_IN_SECONDS = 8
 # A second board is a second answer to who won, and it gets read separately.
 HANDOVER_SECOND_BOARD_SECONDS = 3
 # Somebody left the tournament: the one thing at this table that does not happen
@@ -143,7 +168,20 @@ HANDOVER_SECOND_BOARD_SECONDS = 3
 HANDOVER_BUST_SECONDS = 4
 # However it adds up, it stops here. Beyond this nobody is reading anything —
 # they are waiting.
-HANDOVER_MAX_SECONDS = 18
+#
+# Twenty-two and not eighteen, and the four seconds are arithmetic rather than
+# generosity. Eighteen was set when an all-in bought five seconds; it buys eight
+# now, because the hands turn over before the board. So the hand this cap is
+# *for* — nine-handed all-in, run twice, somebody out — asked for 9 + 8 + 3 + 4
+# and was cut to eighteen, which quietly meant the second board added one second
+# instead of three and the bust added none. A cap that silently rewrites the
+# reasons above it is a cap that makes those reasons untrue.
+#
+# What the client actually needs on that hand: eight hands turning over is 3.4s,
+# the lead-in and three streets 4.0s, the winning five 1.5s — 8.9s before anyone
+# has begun to take it in. Twenty-two leaves that hand the same room to be read
+# in that an ordinary showdown gets, and it is the rarest hand of the night.
+HANDOVER_MAX_SECONDS = 22
 # Missing this many decisions in a row sits a player out, so one person who
 # walked away stops costing everyone else the full shot clock every hand.
 AUTO_SIT_OUT_TIMEOUTS = 3
@@ -1554,7 +1592,12 @@ def _handover_seconds(room: dict[str, Any]) -> int:
     if not _hand_was_shown_down(room):
         # Nobody showed anything. There is one line of text to read and the
         # chips to watch land, and holding the table past that is dead time.
-        return HANDOVER_FOLD_SECONDS
+        seconds = HANDOVER_FOLD_SECONDS
+        # Unless the bluff is worth money here, in which case the only place to
+        # claim it is this pause.
+        if int(room.get("sevenDeuce") or 0):
+            seconds += HANDOVER_SEVEN_DEUCE_SECONDS
+        return seconds
 
     seconds = HANDOVER_SHOWDOWN_SECONDS
     if any(entry.get("allIn") for entry in room.get("actionLog") or []):
