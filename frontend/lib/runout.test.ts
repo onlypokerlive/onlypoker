@@ -125,6 +125,16 @@ describe('runoutPauseSeconds', () => {
     expect(runoutPauseSeconds(1_000_000, 8, 1_005_000)).toBe(0)
   })
 
+  it('is not racing a clock that has been stopped', () => {
+    // A stopped table has no deadline *and* a non-zero setting, so reading the
+    // setting as a floor said "eight seconds" about a table where the next hand
+    // is not coming until somebody presses a button.
+    expect(runoutPauseSeconds(null, 8, 1_000_000, true)).toBe(Infinity)
+    expect(gaps(runoutBeats(0, 5, { pauseSeconds: runoutPauseSeconds(null, 8, 0, true) }))).toEqual(
+      [RUNOUT_STREET_MS, RUNOUT_STREET_MS + RUNOUT_RIVER_EXTRA_MS],
+    )
+  })
+
   it('takes its time when the host is dealing by hand', () => {
     // Auto-deal off. Nothing is coming, so nothing is racing.
     expect(runoutPauseSeconds(null, 0)).toBe(Infinity)

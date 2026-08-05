@@ -12,14 +12,21 @@ export interface Runout {
   /** Whether the reveal is still running. */
   revealing: boolean
   /**
-   * When the board will be complete, measured from the hand ending — zero when
-   * nothing is being held back.
+   * When the board finishes being dealt, measured from the hand ending — zero
+   * on a hand where nothing was ever held back.
    *
    * Published because the showdown is one sequence told by two hooks. The hands
    * turn over first (`use-showdown`), the board is dealt out over them, and only
    * then does the winning hand light up and the pot go out. That last part is
    * timed by the other hook, which has no way of knowing how long the board
    * took — so it is told.
+   *
+   * **It outlives the reveal, and that is the point.** It said "how long is
+   * left" and was dropped to zero the instant the river landed, which put every
+   * beat still to come into a past the clock had already gone by: the winning
+   * five lit in one frame and the pot left underneath them. The last two
+   * seconds of the hand did not exist. It is a fact about the hand that ended —
+   * *when the board was complete* — and it stands until the next one is dealt.
    */
   boardCompleteMs: number
 }
@@ -84,7 +91,12 @@ export function useRunout(view: GameView | null): Runout {
     // last hand landed face up.
     const handsUpMs = revealDurationMs(view.showOrder?.length ?? 0)
     const beats: RunoutBeat[] = runoutBeats(from, length, {
-      pauseSeconds: runoutPauseSeconds(view.autoDealAtMs, view.autoDealSeconds),
+      pauseSeconds: runoutPauseSeconds(
+        view.autoDealAtMs,
+        view.autoDealSeconds,
+        Date.now(),
+        view.paused,
+      ),
       handsUpMs,
     })
     if (!beats.length) return
@@ -103,6 +115,8 @@ export function useRunout(view: GameView | null): Runout {
   return {
     board: view && revealing ? view.board.slice(0, heldTo!) : (view?.board ?? []),
     revealing,
-    boardCompleteMs: revealing ? duration : 0,
+    // Not `revealing ? duration : 0` — see the field. Cleared where it becomes
+    // untrue, which is the next hand, and nowhere else.
+    boardCompleteMs: duration,
   }
 }

@@ -71,7 +71,12 @@ describe('useRunout', () => {
     act(() => void vi.advanceTimersByTime(river - turn))
     expect(result.current.board).toEqual(FULL)
     expect(result.current.revealing).toBe(false)
-    expect(result.current.boardCompleteMs).toBe(0)
+    // Still says how long the board took, with the board already on the table.
+    // It is a fact about the hand that ended, not a countdown: the showdown is
+    // measured from it, and everything after the river — the winning five
+    // lighting up, the pot going out — is still to come. Dropped to zero here,
+    // all of that moved into a past the clock had gone by and fired at once.
+    expect(result.current.boardCompleteMs).toBe(river)
   })
 
   it('waits for the hands to turn over before the first card', () => {

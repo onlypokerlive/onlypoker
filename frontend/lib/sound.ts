@@ -44,7 +44,8 @@ export function audioIsAwake(): boolean {
 const TOO_LATE_MS = 500
 
 /**
- * Put this page's audio on the media channel rather than the ringer's.
+ * Put this page's audio on the media channel rather than the ringer's, or give
+ * it back.
  *
  * The single most common reason "the sound does not work on my iPhone", and it
  * is not a bug in the page: **on iOS the hardware silent switch mutes Web Audio
@@ -52,26 +53,35 @@ const TOO_LATE_MS = 500
  * meeting last Tuesday — which is most phones — deals cards in silence, and
  * nothing in the app is wrong, so nobody ever finds it.
  *
- * `navigator.audioSession` is the standard answer and Safari has it: declaring
- * `playback` says this page is a media player and not a notification, and the
- * switch stops applying. Older iOS gets the trick the whole web used before the
- * API existed — a silent looping `<audio>` element, which is on the media
- * channel by virtue of being an element, and drags the context onto it.
+ * `navigator.audioSession` is the standard answer and Safari has it. Older iOS
+ * gets the trick the whole web used before the API existed — a silent looping
+ * `<audio>` element, which is on the media channel by virtue of being an
+ * element, and drags the context onto it.
  *
- * Both are best-effort and neither is load-bearing: with both refused the app
- * behaves exactly as it did, which is to say it works with the switch off.
+ * **What is being asked for is exclusive, and that is the cost.** A `playback`
+ * session is not mixable: claiming it can stop whatever the room is listening
+ * to. So it is not claimed on the way past — it is held only while this table
+ * is actually allowed to make a noise, and handed straight back when it is not.
+ * `unlockAudio` deliberately does not call this; {@link setAudioAudible} does,
+ * from the one place that knows whether the switch is on.
+ *
+ * Both paths are best-effort and neither is load-bearing: with both refused the
+ * app behaves exactly as it did, which is to say it works with the ringer on.
  */
 function claimPlaybackChannel(): void {
   const session = (navigator as any).audioSession
   if (session) {
     try {
-      session.type = 'playback'
+      session.type = PLAYBACK_TYPE
       return
     } catch {
       // Fall through to the element.
     }
   }
-  if (silence) return
+  if (silence) {
+    void silence.play().catch(() => {})
+    return
+  }
   try {
     silence = new Audio(SILENCE)
     silence.loop = true
@@ -80,12 +90,46 @@ function claimPlaybackChannel(): void {
     silence.setAttribute('playsinline', '')
     // Not muted: a muted element is not playing media as far as the OS is
     // concerned, and the whole point is to be playing media. The file is
-    // silent instead, which costs 132 bytes and nothing to listen to.
+    // silent instead, which costs 444 bytes and nothing to listen to.
     void silence.play().catch(() => {})
   } catch {
     silence = null
   }
 }
+
+/**
+ * Hand the channel back.
+ *
+ * Because a page that keeps an exclusive session after it has been muted is a
+ * page that took something and did not say what for. `auto` is the browser's
+ * own judgement, which is where this started.
+ *
+ * The silent element is *paused* rather than dropped: while it is playing, iOS
+ * treats this page as a media player and will offer it transport controls on
+ * the lock screen — a poker table with a play button on the lock screen.
+ */
+function releasePlaybackChannel(): void {
+  const session = (navigator as any).audioSession
+  if (session) {
+    try {
+      session.type = 'auto'
+    } catch {
+      // ignore
+    }
+  }
+  silence?.pause()
+}
+
+/**
+ * The session this table asks for when it is allowed to make a noise.
+ *
+ * `playback` is the only type that escapes the silent switch, and it is not
+ * mixable — so this is also the decision to interrupt whatever else the phone
+ * is playing. One name, in one place, because it is a product decision and not
+ * a constant: `ambient` is the other real answer and it means the table obeys
+ * the silent switch and never touches the music.
+ */
+const PLAYBACK_TYPE = 'playback'
 
 let silence: HTMLAudioElement | null = null
 
@@ -110,10 +154,25 @@ export function unlockAudio(): void {
   if (typeof window === 'undefined') return
   const Ctor = window.AudioContext ?? (window as any).webkitAudioContext
   if (!Ctor) return
-  claimPlaybackChannel()
   ctx ??= new Ctor()
   if (ctx.state === 'suspended') void ctx.resume().catch(() => {})
   fetchSamples()
+}
+
+/**
+ * Say whether this table is allowed to make a noise, and take or give back the
+ * audio channel to match.
+ *
+ * Separate from `unlockAudio` because they answer different questions. Waking
+ * the context costs nothing and can happen on any touch; holding the media
+ * channel is exclusive and can silence the room's music, so it is held only for
+ * as long as there is something to hold it for. Called by the one thing that
+ * knows: the sound switch.
+ */
+export function setAudioAudible(audible: boolean): void {
+  if (typeof window === 'undefined') return
+  if (audible) claimPlaybackChannel()
+  else releasePlaybackChannel()
 }
 
 /**

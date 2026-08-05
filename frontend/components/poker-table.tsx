@@ -425,6 +425,11 @@ function BoardCard({
     <PlayingCard
       card={card}
       size="xs"
+      // Stated, not inferred from the shadow below. Same reason `data-piece`
+      // exists: the lighting is a beat in a sequence, and a check running in a
+      // real browser has to be able to ask when it happened without reading a
+      // box-shadow back out of a computed style and hoping.
+      data-lit={lit ? 'true' : undefined}
       // Sized off the table, not off a viewport breakpoint. Five cards have to
       // clear the seats on the flanks, and the seats are a share of the table —
       // so the board is one too. See BOARD_CARD_W.

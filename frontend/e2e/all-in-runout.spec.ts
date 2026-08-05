@@ -84,19 +84,53 @@ async function allInPreflop(page: Page): Promise<void> {
   await act(host, { action: 'call' })
 }
 
-/** What is on the table right now: board size, and how many hands are face up. */
+/**
+ * What is on the table right now.
+ *
+ * Four numbers and not one, because the failure this exists to catch is an
+ * *order* between them. A first version counted face-up cards and stopped
+ * there, and it passed while the ending it was supposedly guarding collapsed
+ * into a single frame: the board was right, the hands were right, and
+ * everything after the river happened at once.
+ */
 async function frame(page: Page) {
-  return page.evaluate(() => ({
-    board: Number(document.querySelector('[data-testid="board"]')?.getAttribute('data-cards') ?? 0),
-    // Every face-up card that is not a board card and not your own peek band.
-    // At a showdown that is exactly the hands that have turned over — and it
-    // does not include your own, which stay face down in your seat whatever
-    // the hand did: the person next to you does not get to read them off your
-    // screen.
-    handsUp: [...document.querySelectorAll('.card-face')].filter(
-      (card) => !card.closest('[data-testid="board"]') && !card.closest('[data-peek-band]'),
-    ).length,
-  }))
+  return page.evaluate(() => {
+    const outside = (selector: string) =>
+      [...document.querySelectorAll(selector)].filter(
+        (el) => !el.closest('[data-testid="board"]') && !el.closest('[data-peek-band]'),
+      )
+    return {
+      board: Number(
+        document.querySelector('[data-testid="board"]')?.getAttribute('data-cards') ?? 0,
+      ),
+      // Hands, not cards. Counted by the seat they are in, because a single
+      // Hold'em hand is already two faces — so "two cards are up" and "both
+      // players have shown" are the same number and different claims.
+      //
+      // Your own seat is excluded by construction rather than by a filter: it
+      // stays face down whatever the hand did, and the person next to you does
+      // not get to read it off your screen.
+      handsUp: new Set(outside('.card-face').map((card) => card.closest('[data-piece="seat"]')))
+        .size,
+      // The winning five picking themselves out — the beat that answers the
+      // hand, and the one that used to fire on the river.
+      //
+      // Counted across the whole table and not `outside` it: three of the five
+      // are usually on the board and two are in a hand, and counting only the
+      // hand half would be watching two of the five light and calling it the
+      // sequence.
+      lit: document.querySelectorAll('[data-lit="true"]').length,
+      // And the money. It leaves only when the hand has finished being told.
+      //
+      // `pay-` and not any `[data-flight]`: chips fly three times in a hand —
+      // a bet going forward, the street being raked in, and the pot going out —
+      // and only the third is the answer. Asked without the prefix, the blinds
+      // posting at the top of the hand count as the pot being paid.
+      payingOut: [...document.querySelectorAll('[data-flight]')].some((el) =>
+        el.getAttribute('data-flight')?.startsWith('pay-'),
+      ),
+    }
+  })
 }
 
 test('an all-in shows the hands before it deals the board', async ({ page }) => {
@@ -105,25 +139,27 @@ test('an all-in shows the hands before it deals the board', async ({ page }) => 
 
   // Sampled rather than waited on, because what is being checked is an order
   // and not a final state — and the final state of every one of these, right
-  // and wrong, is identical: five cards and two hands face up.
-  const film: { at: number; board: number; handsUp: number }[] = []
+  // and wrong, is identical: five cards, every hand face up, five cards lit and
+  // the pot paid.
+  type Frame = Awaited<ReturnType<typeof frame>> & { at: number }
+  const shots: Frame[] = []
   const start = Date.now()
-  while (Date.now() - start < 9_000) {
-    film.push({ at: Date.now() - start, ...(await frame(page)) })
+  while (Date.now() - start < 12_000) {
+    shots.push({ at: Date.now() - start, ...(await frame(page)) })
     await page.waitForTimeout(50)
   }
 
-  const dealt = film.find((f) => f.board >= 5)
+  const dealt = shots.find((f) => f.board >= 5)
   expect(dealt, 'the board never finished').toBeTruthy()
 
   // The hands are up while the board is still short. This is the whole claim.
-  const sweating = film.filter((f) => f.handsUp >= 2 && f.board < 5)
-  expect(sweating.length, 'no frame had the hands up over an unfinished board').toBeGreaterThan(0)
+  const sweating = shots.filter((f) => f.handsUp >= 1 && f.board < 5)
+  expect(sweating.length, 'no frame had a hand up over an unfinished board').toBeGreaterThan(0)
 
   // And they were up before the first card of the run-out, not partway through
   // it: the flop lands on a table that already knows what it is looking at.
-  const firstUp = film.find((f) => f.handsUp >= 2)!
-  const firstCard = film.find((f) => f.board > 0)!
+  const firstUp = shots.find((f) => f.handsUp >= 1)!
+  const firstCard = shots.find((f) => f.board > 0)!
   expect(firstUp.at).toBeLessThan(firstCard.at)
 
   // Street by street, and unhurried. Each one on screen on its own, and long
@@ -134,13 +170,35 @@ test('an all-in shows the hands before it deals the board', async ({ page }) => 
   // loop got a sample in before the flop landed is a fact about how busy the
   // machine running it is, not about the table. The streets themselves cannot
   // be missed: they are more than a second apart, which is the actual claim.
-  const sizes = [...new Set(film.map((f) => f.board))]
+  const sizes = [...new Set(shots.map((f) => f.board))]
   expect(sizes).toContain(3)
   expect(sizes).toContain(4)
   expect(sizes).toContain(5)
   // Forwards only: a board that went back is the next hand being dealt over it.
   expect(sizes).toEqual([...sizes].sort((a, b) => a - b))
-  const landed = (n: number) => film.find((f) => f.board === n)!.at
+  const landed = (n: number) => shots.find((f) => f.board === n)!.at
   expect(landed(4) - landed(3)).toBeGreaterThan(600)
   expect(landed(5) - landed(4)).toBeGreaterThan(600)
+
+  // And then the answer, which is a separate act with a separate beat.
+  //
+  // This is the half the first version of this test did not look at, and it is
+  // the half that was broken: the moment the river landed, the hook that timed
+  // the run-out stopped saying how long it had taken, every beat still to come
+  // fell into a past the clock had gone by, and the whole ending fired at once
+  // — five cards lit in one frame with the pot leaving underneath them.
+  const river = landed(5)
+  const onTheRiver = shots.find((f) => f.at >= river)!
+  expect(onTheRiver.lit, 'the winning five lit on the river itself').toBe(0)
+  expect(onTheRiver.payingOut, 'the pot left with the river').toBe(false)
+
+  // The five light one at a time rather than together.
+  const litCounts = [...new Set(shots.filter((f) => f.at >= river).map((f) => f.lit))]
+  expect(litCounts.length, 'the lighting happened in a single frame').toBeGreaterThan(2)
+
+  // And the money is last. `payingOut` catches the chips mid-flight, so a run
+  // that samples either side of it still sees the order it happened in.
+  const firstLit = shots.find((f) => f.lit > 0)!
+  const paid = shots.find((f) => f.payingOut)
+  if (paid) expect(paid.at).toBeGreaterThanOrEqual(firstLit.at)
 })

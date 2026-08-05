@@ -48,6 +48,21 @@ export interface ShowdownBeats {
 /** How often the clock ticks. Fine enough that no beat is late by much. */
 const TICK_MS = 100
 
+/**
+ * Now, from a clock that only goes forwards.
+ *
+ * `Date.now()` is the civil clock and the civil clock is allowed to jump — NTP
+ * corrects it, the user corrects it, a phone crossing a timezone corrects it.
+ * Backwards, that means `at` decreases, and a showdown measured against a
+ * decreasing number *untells* itself: hands that had turned over go face down
+ * again. `performance.now()` is monotonic by definition, which is the entire
+ * property this needs.
+ */
+const now = () =>
+  typeof performance !== 'undefined' && typeof performance.now === 'function'
+    ? performance.now()
+    : Date.now()
+
 export function useShowdown(
   view: GameView | null,
   seats: PlayerView[],
@@ -101,7 +116,41 @@ export function useShowdown(
    * a component that sets its own state during a render before committing
    * anything, so starting it here means that frame never exists.
    */
-  const [run, setRun] = useState<{ hand: number; from: number; at: number } | null>(null)
+  const [run, setRun] = useState<{
+    hand: number
+    from: number
+    at: number
+    /** The longest {@link boardCompleteMs} this hand has ever been told. */
+    board: number
+  } | null>(null)
+
+  // Nothing to play until there has been a view before this one, and never for
+  // the hand this client opened the app on. Polling brings the same handover
+  // back every 1.2 seconds, so the hand number is what stops it being started
+  // again on each of them.
+  if (arrived !== null && showdown && handNumber !== walkedInOn && run?.hand !== handNumber) {
+    setRun({ hand: handNumber, from: now(), at: 0, board: boardCompleteMs })
+  }
+
+  const playing = run?.hand === handNumber ? run : null
+
+  /**
+   * How long the board took, as a high-water mark for this hand.
+   *
+   * Because the number arrives late and then goes away again, and both of those
+   * are properties of the hook that measures it rather than facts about the
+   * hand. It is published from a `useState` set in an effect, so the first
+   * render of a handover always says zero; and it used to be dropped back to
+   * zero the moment the river landed, which is the frame it matters most.
+   *
+   * A showdown is told once. Nothing in it may be untold, so the one number the
+   * whole ending is measured from only ever grows — and it is reset by the
+   * `hand` above going stale, which is the only thing that makes it untrue.
+   */
+  if (playing && boardCompleteMs > playing.board) {
+    setRun({ ...playing, board: boardCompleteMs })
+  }
+  const boardTook = playing ? Math.max(playing.board, boardCompleteMs) : boardCompleteMs
 
   // The order of the reveal, recomputed freely: it is cheap, and it is derived
   // from the view rather than stored, so a poll landing mid-reveal cannot leave
@@ -126,7 +175,7 @@ export function useShowdown(
   // hand face up, and every card of the board on the table. On an ordinary
   // showdown the board is already there and the reveals decide it; on an all-in
   // the board is still being dealt long after the last hand turned over.
-  const answered = Math.max(lastReveal, boardCompleteMs)
+  const answered = Math.max(lastReveal, boardTook)
   const lit = showdown
     ? litBeats(
         winners.flatMap((r) => r.handCards ?? []),
@@ -141,18 +190,16 @@ export function useShowdown(
    * heads-up pot and truncates a full one: from seven hands the reveals alone
    * outlast it, and the last winning cards never light at all. The showdown is
    * as long as the showdown is.
+   *
+   * Measured from `answered` and not from `lastReveal`, because there is a
+   * showdown with nothing to light and it is the one where this matters most:
+   * **run it twice.** Two boards means the same player usually has two
+   * different hands, so the server sends no `handCards` at all rather than
+   * print one of them and be wrong — which left the last beat of the hand at
+   * the last hand turning over, 420ms in, while the first flop was still a
+   * second away. The pot went out before a single community card existed.
    */
-  const endsAt = Math.max(lastReveal, ...(lit.size ? [...lit.values()] : [0]))
-
-  // Nothing to play until there has been a view before this one, and never for
-  // the hand this client opened the app on. Polling brings the same handover
-  // back every 1.2 seconds, so the hand number is what stops it being started
-  // again on each of them.
-  if (arrived !== null && showdown && handNumber !== walkedInOn && run?.hand !== handNumber) {
-    setRun({ hand: handNumber, from: Date.now(), at: 0 })
-  }
-
-  const playing = run?.hand === handNumber ? run : null
+  const endsAt = Math.max(answered, ...(lit.size ? [...lit.values()] : [0]))
 
   // A clock rather than a list of per-element timers: the beats are already
   // arithmetic, so one ticking number answers every "has this happened yet"
@@ -173,7 +220,7 @@ export function useShowdown(
   useEffect(() => {
     if (!ticking) return
     const timer = setInterval(() => {
-      setRun((r) => (r && r.hand === runHand ? { ...r, at: Date.now() - r.from } : r))
+      setRun((r) => (r && r.hand === runHand ? { ...r, at: now() - r.from } : r))
     }, TICK_MS)
     return () => clearInterval(timer)
   }, [ticking, runHand, runFrom])

@@ -150,6 +150,65 @@ describe('a showdown this client watched happen', () => {
     expect(result.current.done).toBe(true)
   })
 
+  it('still owes the answer after the last card has landed', () => {
+    // The board finishing is not the end of the showdown, it is the *middle*.
+    // What follows is the part that answers the hand: the winning five lighting
+    // up one at a time, and only then the pot.
+    //
+    // `use-runout` stops holding the board the instant the river lands, and it
+    // used to drop the duration with it — so on that one frame `boardCompleteMs`
+    // fell back to zero, every lit beat moved into a past the clock had already
+    // gone by, and the whole ending fired at once: five cards lit in a single
+    // frame and the pot leaving under them. The reveal was right, the run-out
+    // was right, and the last two seconds of the hand did not exist.
+    const BOARD = 5_000
+    const { result, rerender } = renderHook(
+      ({ v, b }: { v: GameView; b: number }) => useShowdown(v, seats, b),
+      { initialProps: { v: live, b: 0 } },
+    )
+    rerender({ v: shownDown(), b: BOARD })
+    act(() => void vi.advanceTimersByTime(onTick(BOARD)))
+
+    // The river has just landed and the hook is told so the way the real one
+    // tells it: nothing is being held back any more.
+    rerender({ v: shownDown(), b: 0 })
+    expect(result.current.lit('As'), 'the winning five lit on the river').toBe(false)
+    expect(result.current.done, 'the pot left with the river').toBe(false)
+
+    act(() => void vi.advanceTimersByTime(onTick(BOARD + HAND_LIT_DELAY_MS) - onTick(BOARD)))
+    expect(result.current.lit('As')).toBe(true)
+  })
+
+  it('waits for a board it has no winning cards to light', () => {
+    // Run it twice. The server deliberately sends no `handCards` — with two
+    // boards the same player usually has two different hands and printing one
+    // is printing the wrong one — so there is nothing to light, and the last
+    // beat of the showdown became the last hand turning over: 420ms, while the
+    // first flop was still a second away. The pot went out before a single
+    // community card existed.
+    const BOARD = 5_000
+    const { result, rerender } = renderHook(
+      ({ v, b }: { v: GameView; b: number }) => useShowdown(v, seats, b),
+      { initialProps: { v: live, b: 0 } },
+    )
+    rerender({
+      v: shownDown({
+        lastResults: [
+          { playerId: 'a', name: 'Ana', delta: 100, won: 200 },
+          { playerId: 'b', name: 'Beto', delta: -100, won: 0 },
+        ],
+      }),
+      b: BOARD,
+    })
+
+    act(() => void vi.advanceTimersByTime(onTick(REVEAL_STEP_MS) + TICK))
+    expect(result.current.shown(1)).toBe(true)
+    expect(result.current.done, 'the pot left before the board did').toBe(false)
+
+    act(() => void vi.advanceTimersByTime(onTick(BOARD)))
+    expect(result.current.done).toBe(true)
+  })
+
   it('survives learning how long the board takes a render late', () => {
     // `boardCompleteMs` is measured by `use-runout`, which sets it from an
     // effect — so the first render of a handover always says zero and the one

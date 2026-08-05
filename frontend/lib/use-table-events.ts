@@ -3,7 +3,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 
 import { sweepLeadIn, sweepStart } from '@/lib/chip-flight'
-import { announce, audioIsAwake, unlockAudio } from '@/lib/sound'
+import { announce, audioIsAwake, setAudioAudible, unlockAudio } from '@/lib/sound'
 import { closedByABet, diffViews, type TableEvent } from '@/lib/table-events'
 import { useReducedMotion } from '@/lib/use-reduced-motion'
 import type { GameView } from '@/lib/poker-api'
@@ -133,7 +133,7 @@ export function useTableEvents(view: GameView | null) {
   // it. So it keeps asking until the context is genuinely awake, and then stops
   // for good.
   useEffect(() => {
-    if (audioIsAwake()) return
+    if (mode === 'off' || audioIsAwake()) return
     const wake = () => {
       unlockAudio()
       if (audioIsAwake()) stop()
@@ -145,7 +145,22 @@ export function useTableEvents(view: GameView | null) {
     window.addEventListener('pointerdown', wake)
     window.addEventListener('keydown', wake)
     return stop
-  }, [])
+  }, [mode])
+
+  /**
+   * Hold the media channel only while this table is allowed to speak.
+   *
+   * On iOS that channel is exclusive: taking it can stop whatever the room is
+   * listening to. It was taken on the first touch of the page and never given
+   * back — including on a table somebody had muted, which is a page that
+   * interrupts the music in order to say nothing.
+   *
+   * Released on the way out too. Leaving the table is leaving the table.
+   */
+  useEffect(() => {
+    setAudioAudible(mode !== 'off')
+    return () => setAudioAudible(false)
+  }, [mode])
 
   // Sounds waiting on the rake. Leaving the table is not a reason to hear a
   // card land on it a second later.

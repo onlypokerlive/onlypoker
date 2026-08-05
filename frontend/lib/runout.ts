@@ -144,15 +144,23 @@ export function runoutDurationMs(beats: RunoutBeat[]): number {
  * The deadline when there is one, because it is the truth; the room's setting
  * only as a floor for the moment between the hand ending and the first view
  * that carries the new deadline.
+ *
+ * `paused` is the third answer and it is not the same as the second. A stopped
+ * table has no deadline *and* a non-zero setting, so reading the setting as a
+ * floor said "eight seconds" about a table where the next hand is not coming
+ * until somebody presses a button — and squeezed a nine-handed run-out into
+ * roughly half its pace to beat a clock that was not running.
  */
 export function runoutPauseSeconds(
   autoDealAtMs: number | null,
   autoDealSeconds: number,
   now = Date.now(),
+  paused = false,
 ): number {
   if (autoDealAtMs != null) return Math.max(0, (autoDealAtMs - now) / 1000)
-  // Nothing scheduled: either the host deals by hand, or this view was taken
-  // before the handover was armed. Either way nothing is coming to cut the
-  // reveal off, so it plays at its own pace.
+  // Nothing scheduled: the table is stopped, the host deals by hand, or this
+  // view was taken before the handover was armed. Either way nothing is coming
+  // to cut the reveal off, so it plays at its own pace.
+  if (paused) return Infinity
   return autoDealSeconds || Infinity
 }
