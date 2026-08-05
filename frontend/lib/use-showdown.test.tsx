@@ -117,21 +117,61 @@ describe('a showdown this client watched happen', () => {
     expect(result.current.done).toBe(false)
   })
 
-  it('waits for the board before it starts telling anything', () => {
-    // An all-in with cards to come: the reveal cannot begin while the river is
-    // still on its way, or the hand is named before it exists.
+  it('turns the hands over while the board is still coming, and answers after', () => {
+    // An all-in. The hands go face up first — that is what makes the run-out
+    // worth watching — and what waits for the last card is the *answer*: the
+    // winning five lighting up, and the pot going out.
+    //
+    // This is the reverse of what it used to do, and the reverse was a
+    // defensible reading of the same rule: nothing may name the hand before the
+    // board exists. Naming it and turning it over are not the same act.
+    const BOARD = 5_000
     const { result, rerender } = renderHook(
-      ({ v, w }: { v: GameView; w: boolean }) => useShowdown(v, seats, w),
-      { initialProps: { v: live, w: false } },
+      ({ v, b }: { v: GameView; b: number }) => useShowdown(v, seats, b),
+      { initialProps: { v: live, b: 0 } },
     )
-    rerender({ v: shownDown(), w: true })
-    act(() => void vi.advanceTimersByTime(onTick(ENDS) * 2))
-    expect(result.current.shown(0)).toBe(false)
-    expect(result.current.done).toBe(false)
-    rerender({ v: shownDown(), w: false })
+    rerender({ v: shownDown(), b: BOARD })
+
+    act(() => void vi.advanceTimersByTime(onTick(REVEAL_STEP_MS)))
     expect(result.current.shown(0)).toBe(true)
-    expect(result.current.shown(1)).toBe(false)
-    act(() => void vi.advanceTimersByTime(onTick(ENDS)))
+    expect(result.current.shown(1)).toBe(true)
+    // Face up, and nothing decided: the river has not landed.
+    expect(result.current.lit('As')).toBe(false)
+    expect(result.current.dimming).toBe(false)
+    expect(result.current.done).toBe(false)
+
+    const litAt = BOARD + HAND_LIT_DELAY_MS
+    act(() => void vi.advanceTimersByTime(onTick(litAt) - onTick(REVEAL_STEP_MS)))
+    expect(result.current.lit('As')).toBe(true)
+    expect(result.current.done).toBe(false)
+
+    const ends = litAt + 4 * HAND_LIT_STEP_MS
+    act(() => void vi.advanceTimersByTime(onTick(ends) - onTick(litAt)))
+    expect(result.current.done).toBe(true)
+  })
+
+  it('survives learning how long the board takes a render late', () => {
+    // `boardCompleteMs` is measured by `use-runout`, which sets it from an
+    // effect — so the first render of a handover always says zero and the one
+    // after it says five seconds. A clock that counted its own ticks answered
+    // that by rescheduling them, which put the showdown back to its first beat
+    // halfway through telling it. This one reads elapsed time.
+    const BOARD = 5_000
+    const { result, rerender } = renderHook(
+      ({ v, b }: { v: GameView; b: number }) => useShowdown(v, seats, b),
+      { initialProps: { v: live, b: 0 } },
+    )
+    rerender({ v: shownDown(), b: 0 })
+    act(() => void vi.advanceTimersByTime(onTick(REVEAL_STEP_MS)))
+    expect(result.current.shown(1)).toBe(true)
+
+    // The board's length arrives. Nothing already told may be untold.
+    rerender({ v: shownDown(), b: BOARD })
+    expect(result.current.shown(1)).toBe(true)
+    expect(result.current.done).toBe(false)
+
+    const ends = BOARD + HAND_LIT_DELAY_MS + 4 * HAND_LIT_STEP_MS
+    act(() => void vi.advanceTimersByTime(onTick(ends)))
     expect(result.current.done).toBe(true)
   })
 })

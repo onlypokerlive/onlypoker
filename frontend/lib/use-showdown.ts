@@ -51,8 +51,23 @@ const TICK_MS = 100
 export function useShowdown(
   view: GameView | null,
   seats: PlayerView[],
-  /** Held back while the board is still being dealt out. */
-  waiting = false,
+  /**
+   * When the board will be finished being dealt out, measured from the hand
+   * ending — zero when it arrived complete. See `Runout.boardCompleteMs`.
+   *
+   * This used to be a boolean, `waiting`, and it held *everything* back until
+   * the board landed: the hands stayed face down through the whole run-out. The
+   * reasoning was sound — a winning hand face up next to a river that is still
+   * face down answers the hand before it has been asked — and the conclusion
+   * was backwards. What a run-out is *for* is watching two known hands wait for
+   * a card, which is why every room turns them over first and why an all-in now
+   * gets its lead-in (`RUNOUT_LEAD_IN_MS`).
+   *
+   * So the hands turn over on their own beats from the moment the hand ends,
+   * the board is dealt out over them, and only the part that answers the hand —
+   * the winning five lighting up, the pot going out — waits for this.
+   */
+  boardCompleteMs = 0,
 ): ShowdownBeats {
   const hasView = !!view
   const showdown = !!view?.wentToShowdown && view.phase === 'handover'
@@ -86,7 +101,7 @@ export function useShowdown(
    * a component that sets its own state during a render before committing
    * anything, so starting it here means that frame never exists.
    */
-  const [run, setRun] = useState<{ hand: number; at: number; ends: number } | null>(null)
+  const [run, setRun] = useState<{ hand: number; from: number; at: number } | null>(null)
 
   // The order of the reveal, recomputed freely: it is cheap, and it is derived
   // from the view rather than stored, so a poll landing mid-reveal cannot leave
@@ -107,10 +122,15 @@ export function useShowdown(
    * nothing lit at all. See `HandResult.won`.
    */
   const winners = showdown ? view!.lastResults.filter((r) => r.won > 0) : []
+  // The lighting starts after both of the things it is the answer to: every
+  // hand face up, and every card of the board on the table. On an ordinary
+  // showdown the board is already there and the reveals decide it; on an all-in
+  // the board is still being dealt long after the last hand turned over.
+  const answered = Math.max(lastReveal, boardCompleteMs)
   const lit = showdown
     ? litBeats(
         winners.flatMap((r) => r.handCards ?? []),
-        lastReveal,
+        answered,
       )
     : new Map<string, number>()
   const firstLit = lit.size ? Math.min(...lit.values()) : Infinity
@@ -124,12 +144,12 @@ export function useShowdown(
    */
   const endsAt = Math.max(lastReveal, ...(lit.size ? [...lit.values()] : [0]))
 
-  // Nothing to play until there has been a view before this one, until the
-  // board has finished being dealt, and never for the hand this client opened
-  // the app on. Polling brings the same handover back every 1.2 seconds, so the
-  // hand number is what stops it being started again on each of them.
-  if (arrived !== null && showdown && !waiting && handNumber !== walkedInOn && run?.hand !== handNumber) {
-    setRun({ hand: handNumber, at: 0, ends: endsAt })
+  // Nothing to play until there has been a view before this one, and never for
+  // the hand this client opened the app on. Polling brings the same handover
+  // back every 1.2 seconds, so the hand number is what stops it being started
+  // again on each of them.
+  if (arrived !== null && showdown && handNumber !== walkedInOn && run?.hand !== handNumber) {
+    setRun({ hand: handNumber, from: Date.now(), at: 0 })
   }
 
   const playing = run?.hand === handNumber ? run : null
@@ -138,51 +158,45 @@ export function useShowdown(
   // arithmetic, so one ticking number answers every "has this happened yet"
   // and the whole thing stays testable as pure functions.
   //
-  // Keyed on the hand and on the length it had when it started, so a poll
-  // landing mid-reveal cannot reschedule the ticks and jerk the clock back.
+  // It reads elapsed *time* rather than counting its own ticks, and that is
+  // what lets the end move. `boardCompleteMs` is measured by the other hook and
+  // arrives a render after the handover does, so the last beat of a showdown is
+  // not known when the clock starts. Counting ticks, learning that meant
+  // rescheduling them, and rescheduling them put the clock back to 100ms — the
+  // showdown told from the top, halfway through. Elapsed time does not care
+  // when the timer was set.
   const runHand = playing?.hand ?? null
-  const runEnds = playing?.ends ?? 0
+  const runFrom = playing?.from ?? null
+  const at = playing?.at ?? null
+  const ends = endsAt
+  const ticking = runHand !== null && at !== null && at < ends
   useEffect(() => {
-    if (runHand === null) return
-    const timers: ReturnType<typeof setTimeout>[] = []
-    // Runs as long as this showdown does, and not one tick longer — see
-    // `endsAt`. The last tick lands *on* the final beat, so `at >= beat` is
-    // true for every one of them.
-    const ticks = Math.ceil(runEnds / TICK_MS)
-    for (let t = 1; t <= ticks; t++) {
-      timers.push(
-        setTimeout(() => {
-          setRun((r) => (r && r.hand === runHand ? { ...r, at: t * TICK_MS } : r))
-        }, t * TICK_MS),
-      )
-    }
-    return () => timers.forEach(clearTimeout)
-  }, [runHand, runEnds])
+    if (!ticking) return
+    const timer = setInterval(() => {
+      setRun((r) => (r && r.hand === runHand ? { ...r, at: Date.now() - r.from } : r))
+    }, TICK_MS)
+    return () => clearInterval(timer)
+  }, [ticking, runHand, runFrom])
 
   // No run is "not playing this", and at a showdown that means the view arrived
   // already finished — so everything is simply where it ends up.
-  const at = playing?.at ?? null
-  const ends = playing?.ends ?? endsAt
   return {
-    // Nothing is told while the board is still being dealt — not the hands, not
-    // the lighting, not the pot. `done` said so and these did not, so an all-in
-    // with cards to come put the winner's hand face up next to a river that was
-    // still face down, and then turned every hand back over to reveal them
-    // properly once the board landed.
+    // The hands turn over from the moment the hand ends, board or no board.
+    // Which is the opposite of what this did — see `boardCompleteMs`.
     shown: (index) => {
-      if (!showdown || waiting) return false
+      if (!showdown) return false
       const beat = reveals[index]
       if (beat == null) return false
       return at == null || at >= beat
     },
     lit: (card) => {
-      if (waiting) return false
       const beat = lit.get(card)
       if (beat == null) return false
       return at == null || at >= beat
     },
-    dimming: !waiting && lit.size > 0 && (at == null || at >= firstLit),
-    // Still dealing the board out is still telling it.
-    done: !showdown ? true : waiting ? false : at == null || at >= ends,
+    dimming: lit.size > 0 && (at == null || at >= firstLit),
+    // Still dealing the board out is still telling it — which `answered`, and
+    // therefore `ends`, already accounts for.
+    done: !showdown ? true : at == null || at >= ends,
   }
 }

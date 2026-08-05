@@ -510,7 +510,7 @@ export function PokerTable({
   view,
   revealed = false,
   secondsLeft = null,
-  revealing = false,
+  boardCompleteMs = 0,
   audible = false,
 }: {
   view: GameView
@@ -519,14 +519,14 @@ export function PokerTable({
   /** Seconds left for the player currently to act. */
   secondsLeft?: number | null
   /**
-   * The board is still being dealt out card by card (`use-runout`).
+   * When the board will finish being dealt out card by card (`use-runout`).
    *
-   * The first beat of a showdown is the board completing, so the rest of it —
-   * the hands turning over — has to wait for that to finish. Without this the
-   * winner's hand is face up while the river is still face down, which answers
-   * the hand before it has been asked.
+   * The order of an all-in is hands first, then the board, then the answer: the
+   * hands turn over on their own beats, the run-out plays over them, and only
+   * the winning five lighting up and the pot going out wait for the last card.
+   * See `Runout.boardCompleteMs`.
    */
-  revealing?: boolean
+  boardCompleteMs?: number
   /** Whether the table may make a noise. Off is off. */
   audible?: boolean
 }) {
@@ -581,7 +581,7 @@ export function PokerTable({
 
   // The showdown, beat by beat: which hands have turned over, which of the
   // winning five are lit, and whether the rest should be standing back.
-  const beats = useShowdown(view, ordered, revealing)
+  const beats = useShowdown(view, ordered, boardCompleteMs)
   // Per seat, because they no longer all turn over at once.
   const shownDown = ordered.map((_, i) => showdown && beats.shown(i))
 

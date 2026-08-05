@@ -35,12 +35,67 @@ export function runoutSteps(from: number, to: number): number[] {
 }
 
 /**
- * How long to hold each card.
+ * The beat where the hands are face up and no card has come yet.
  *
- * The server is still counting down to the next deal while this plays — that
- * clock does not know or care that we are mid-reveal. So the whole sequence is
- * fitted inside a fraction of it, and a table with a short pause between hands
- * simply gets a faster run-out rather than one that gets dealt over.
+ * The reason the run-out is worth watching at all. A board dealt out over hole
+ * cards nobody has seen is three cards and no stakes: the tension of an all-in
+ * is entirely in knowing what each player needs, and that is knowledge the
+ * table only has once the hands are turned over. Every room does it this way —
+ * PokerStars went as far as removing the option to hide them, on the grounds
+ * that not sweating the board was the worse game.
+ *
+ * So this is not a pause before the animation. It is the moment the animation
+ * is *for*, and the cards that follow are the payoff.
+ */
+export const RUNOUT_LEAD_IN_MS = 900
+
+/**
+ * How long each street is held.
+ *
+ * Roughly three times an ordinary street, and that is the point: an ordinary
+ * street arrives while somebody is still deciding what to do about it, and this
+ * one arrives with every decision already made. Nobody is being kept waiting —
+ * waiting *is* what everybody is here for. The juice curve puts an all-in in
+ * the "every 10-20 hands" band, which is where the budget starts to exist.
+ *
+ * The exact figures the big rooms use are not published anywhere, so these are
+ * not copied from one. What is copied is the shape: hands up, a beat, then the
+ * board one street at a time with the last one held longest.
+ */
+export const RUNOUT_STREET_MS = 1300
+
+/** And the card that decides it gets half a beat more. See §4.2 of the UX doc. */
+export const RUNOUT_RIVER_EXTRA_MS = 500
+
+/** Below this a card is a flicker rather than a card. */
+const MIN_STREET_MS = 140
+const MIN_LEAD_IN_MS = 200
+
+/**
+ * Two thirds of the pause, so the finished board is on screen for a moment
+ * before the next hand takes it away.
+ */
+const SHARE_OF_PAUSE = 0.66
+
+/** One board size and the moment it lands, measured from the hand ending. */
+export interface RunoutBeat {
+  size: number
+  at: number
+}
+
+/**
+ * The whole run-out as a schedule: when each board size appears.
+ *
+ * One function rather than a step length and a caller that multiplies, because
+ * the beats are not evenly spaced any more — there is a lead-in before the
+ * first card and the river is held longest — and a constant that nothing
+ * computes is a constant that drifts away from the thing it describes.
+ *
+ * `handsUpMs` is how long the hands themselves take to turn over
+ * (`revealBeats`), and it is the one part of this that does **not** compress:
+ * it is a clock `use-showdown` runs on its own, and a board that squeezed under
+ * it would land on cards still face down. Everything else is fitted into what
+ * the pause has left.
  *
  * `pauseSeconds` is the time actually left before the next deal, not the room's
  * setting. Those used to be the same number and are not any more: the pause the
@@ -48,21 +103,39 @@ export function runoutSteps(from: number, to: number): number[] {
  * allowance precisely so this reveal fits. Pacing off the setting would have
  * spent a twelve-second pause as if it were five.
  */
-export function runoutStepMs(steps: number, pauseSeconds: number, preferred = 800): number {
-  if (steps <= 0) return preferred
+export function runoutBeats(
+  from: number,
+  to: number,
+  { pauseSeconds, handsUpMs = 0 }: { pauseSeconds: number; handsUpMs?: number },
+): RunoutBeat[] {
+  const steps = runoutSteps(from, to)
+  if (!steps.length) return []
+
+  // The wait *before* each card, because that is where the tension is: the
+  // river is the card that decides, so what it earns is a longer hold before it
+  // lands and not a longer look at it afterwards. The first card's wait is the
+  // lead-in, so it has no gap of its own.
+  const gaps = steps.map((size, i) =>
+    i === 0 ? 0 : RUNOUT_STREET_MS + (size === 5 ? RUNOUT_RIVER_EXTRA_MS : 0),
+  )
+  const flexible = RUNOUT_LEAD_IN_MS + gaps.reduce((a, b) => a + b, 0)
   // Zero is a real answer here — the deal is already due — and it has to mean
   // "as fast as this is still watchable", not "use the default". `Infinity` is
   // the other real answer, for a table with nothing scheduled, and falls out of
   // the `min` below on its own.
-  const pause = Math.max(0, pauseSeconds) * 1000
-  // Two thirds, so the finished board is on screen for a moment before the
-  // next hand takes it away.
-  return Math.max(120, Math.min(preferred, (pause * 0.66) / steps))
+  const budget = Math.max(0, pauseSeconds) * 1000 * SHARE_OF_PAUSE - handsUpMs
+  const scale = Math.min(1, Math.max(0, budget) / flexible)
+
+  let at = handsUpMs + Math.max(MIN_LEAD_IN_MS, RUNOUT_LEAD_IN_MS * scale)
+  return steps.map((size, i) => {
+    if (i > 0) at += Math.max(MIN_STREET_MS, gaps[i] * scale)
+    return { size, at }
+  })
 }
 
-/** Total time the reveal will take, for checking it fits. */
-export function runoutDurationMs(steps: number, pauseSeconds: number): number {
-  return steps * runoutStepMs(steps, pauseSeconds)
+/** When the board is finally complete, for whatever has to wait for it. */
+export function runoutDurationMs(beats: RunoutBeat[]): number {
+  return beats.length ? beats[beats.length - 1].at : 0
 }
 
 /**

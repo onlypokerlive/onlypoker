@@ -1,20 +1,33 @@
 import { act, renderHook } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
+import { runoutBeats } from '@/lib/runout'
+import { REVEAL_STEP_MS } from '@/lib/showdown'
 import { useRunout } from '@/lib/use-runout'
 import type { GameView } from '@/lib/poker-api'
 
 const FULL = ['As', 'Kd', '7h', '2c', '9s']
 
-function view(board: string[], handNumber = 1): GameView {
+function view(board: string[], handNumber = 1, showOrder: string[] = []): GameView {
   return {
     board,
     handNumber,
+    showOrder,
     autoDealSeconds: 8,
     phase: 'hand',
     players: [],
   } as unknown as GameView
 }
+
+/**
+ * The schedule the hook is running, asked of the same function it asks.
+ *
+ * The alternative is three magic milliseconds in a test file, which is the
+ * shape of every layout bug in this repo: a constant that nothing computes,
+ * drifting away from the thing it describes.
+ */
+const schedule = (handsUpMs = 0) =>
+  runoutBeats(0, 5, { pauseSeconds: 8, handsUpMs }).map((b) => b.at)
 
 beforeEach(() => vi.useFakeTimers())
 afterEach(() => vi.useRealTimers())
@@ -37,6 +50,7 @@ describe('useRunout', () => {
   })
 
   it('deals a whole board out one street at a time', () => {
+    const [flop, turn, river] = schedule()
     const { result, rerender } = renderHook(({ v }) => useRunout(v), {
       initialProps: { v: view([]) },
     })
@@ -45,27 +59,51 @@ describe('useRunout', () => {
     rerender({ v: view(FULL) })
     expect(result.current.board).toEqual([])
     expect(result.current.revealing).toBe(true)
+    expect(result.current.boardCompleteMs).toBe(river)
 
-    act(() => void vi.advanceTimersByTime(800))
+    act(() => void vi.advanceTimersByTime(flop))
     expect(result.current.board).toHaveLength(3)
     expect(result.current.revealing).toBe(true)
 
-    act(() => void vi.advanceTimersByTime(800))
+    act(() => void vi.advanceTimersByTime(turn - flop))
     expect(result.current.board).toHaveLength(4)
 
-    act(() => void vi.advanceTimersByTime(800))
+    act(() => void vi.advanceTimersByTime(river - turn))
     expect(result.current.board).toEqual(FULL)
     expect(result.current.revealing).toBe(false)
+    expect(result.current.boardCompleteMs).toBe(0)
+  })
+
+  it('waits for the hands to turn over before the first card', () => {
+    // Two hands to show, so one step of the reveal, and the board may not
+    // arrive under it. This is the whole point of an all-in: you watch the
+    // board knowing what each of them needs.
+    const order = ['a', 'b']
+    const handsUpMs = REVEAL_STEP_MS * (order.length - 1)
+    const [flop] = schedule(handsUpMs)
+    expect(flop).toBeGreaterThan(handsUpMs)
+
+    const { result, rerender } = renderHook(({ v }) => useRunout(v), {
+      initialProps: { v: view([], 1, order) },
+    })
+    rerender({ v: view(FULL, 1, order) })
+
+    act(() => void vi.advanceTimersByTime(handsUpMs))
+    expect(result.current.board).toEqual([])
+
+    act(() => void vi.advanceTimersByTime(flop - handsUpMs))
+    expect(result.current.board).toHaveLength(3)
   })
 
   it('keeps holding while the table keeps polling', () => {
+    const [flop] = schedule()
     const { result, rerender } = renderHook(({ v }) => useRunout(v), {
       initialProps: { v: view([]) },
     })
     rerender({ v: view(FULL) })
     // A second poll arrives with the same board. It must not restart or cancel
     // the reveal already in flight.
-    act(() => void vi.advanceTimersByTime(800))
+    act(() => void vi.advanceTimersByTime(flop))
     rerender({ v: view(FULL) })
     expect(result.current.board).toHaveLength(3)
     expect(result.current.revealing).toBe(true)
