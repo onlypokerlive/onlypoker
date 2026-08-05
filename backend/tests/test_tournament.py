@@ -772,6 +772,41 @@ def test_a_hand_nobody_showed_is_not_paced_by_what_happened_in_it(client, clock)
     assert main._handover_seconds(room) == main.HANDOVER_FOLD_SECONDS
 
 
+def test_the_hand_nobody_showed_is_the_short_pause(client, clock):
+    """Most hands end this way, and the pause has to be shorter than a showdown.
+
+    Asserted as a relation and not as a number: what matters is that the hand
+    with nothing to look at is not held as long as the one with something to
+    look at, and that it is comfortably under the flat eight seconds this
+    started life with.
+    """
+    assert main.HANDOVER_FOLD_SECONDS < main.HANDOVER_SHOWDOWN_SECONDS
+    assert main.HANDOVER_FOLD_SECONDS <= 5
+
+
+def test_a_table_playing_the_seven_deuce_keeps_its_pause(client, clock):
+    """The bluff is worth money there, and this pause is the only place to claim it.
+
+    Room-level, from the host's own setting — so the length of the pause says
+    nothing about who was holding what, which is the whole reason
+    `_seven_deuce_pending` is answered per viewer.
+    """
+    room = {
+        "autoDealSeconds": main.AUTO_DEAL_SECONDS,
+        "handPlayerIds": ["a", "b"],
+        "foldedSeats": [1],
+        "actionLog": [],
+        "boardResults": [],
+        "lastResults": [],
+        "players": {"a": {"chips": 10}, "b": {"chips": 10}},
+    }
+    assert main._handover_seconds(room) == main.HANDOVER_FOLD_SECONDS
+    room["sevenDeuce"] = 2
+    assert main._handover_seconds(room) == (
+        main.HANDOVER_FOLD_SECONDS + main.HANDOVER_SEVEN_DEUCE_SECONDS
+    )
+
+
 def test_host_can_pause_and_resume_dealing(client, clock):
     room_id, ids = table(client, 2, actionSeconds=0, levelMinutes=0)
     start(client, room_id, ids[0])
