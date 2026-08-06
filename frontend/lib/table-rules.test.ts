@@ -7,8 +7,12 @@ import {
   doorsLabel,
   houseRulesLabel,
   houseSummary,
+  formatBlinds,
+  isBlindCount,
   matchFormat,
+  startingBlinds,
   startingChips,
+  withBlindCount,
   toRulesPayload,
   type TableRules,
 } from '@/lib/table-rules'
@@ -54,16 +58,33 @@ describe('the four formats', () => {
   })
 })
 
-describe('the stack, in blinds', () => {
-  it('turns blinds into chips at the stakes actually chosen', () => {
-    expect(startingChips(rules({ startingBlinds: 100, bigBlind: 10 }))).toBe(1000)
-    expect(startingChips(rules({ startingBlinds: 100, bigBlind: 200 }))).toBe(20_000)
+describe('the stack', () => {
+  it('turns a chosen blind count into chips at the stakes actually chosen', () => {
+    expect(startingChips(withBlindCount(rules({ bigBlind: 10 }), 100))).toBe(1000)
+    expect(startingChips(withBlindCount(rules({ bigBlind: 200 }), 100))).toBe(20_000)
+  })
+
+  it('survives a round trip that nobody asked to change the stack in', () => {
+    // 1000 chips at 150/300 is 3.33 blinds. Held as a blind count it comes
+    // back as 3 — and 900 chips — so a host who opened the sheet to move the
+    // clock would have silently changed the buy-in of their own table.
+    const legacy = rules({ startingChips: 1000, smallBlind: 150, bigBlind: 300 })
+    expect(startingChips(legacy)).toBe(1000)
+    expect(startingBlinds(legacy)).toBeCloseTo(3.33, 2)
+    expect(formatBlinds(startingBlinds(legacy))).toBe('3.3')
+    expect(startingChips({ ...legacy, levelMinutes: 20 })).toBe(1000)
+  })
+
+  it('only calls a count exact when it is exact', () => {
+    const legacy = rules({ startingChips: 1000, bigBlind: 300 })
+    expect(isBlindCount(legacy, 3)).toBe(false)
+    expect(isBlindCount(rules({ startingChips: 900, bigBlind: 300 }), 3)).toBe(true)
   })
 
   it('never opens a table with less than two big blinds in front of anybody', () => {
     // Which is the one thing the server refuses outright, so the sheet cannot
     // build a table it will then be told it cannot have.
-    expect(startingChips(rules({ startingBlinds: 1, bigBlind: 100 }))).toBe(200)
+    expect(startingChips(rules({ startingChips: 100, bigBlind: 100 }))).toBe(200)
   })
 })
 

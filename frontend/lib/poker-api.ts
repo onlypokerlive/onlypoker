@@ -246,6 +246,8 @@ export interface RoomView {
     rebuyChips?: 'start' | 'average' | 'fixed'
     rebuyChipsFixed?: number
     runItTwice?: boolean
+    /** What an edit to the rules has to be based on to be accepted. */
+    rulesVersion?: number
     /** Extra seconds each player gets for the whole tournament. 0 is off. */
     timeBankSeconds: number
     /** Dead money each hand, already scaled to this level. */
@@ -635,7 +637,19 @@ async function req<T>(url: string, options?: RequestInit): Promise<T> {
     let message = `Request failed (${res.status})`
     try {
       const body = await res.json()
-      if (body?.detail) message = body.detail
+      // A 422 from the server's own schema layer answers with a *list* of
+      // field errors, not a sentence. Assigned straight to `Error`, that list
+      // reaches the player as "[object Object]" — which is worse than the
+      // generic message above, because it looks like the app broke rather than
+      // like something they typed.
+      if (Array.isArray(body?.detail)) {
+        const said = body.detail
+          .map((item: { msg?: string }) => item?.msg)
+          .filter(Boolean)
+        if (said.length) message = said.join('. ')
+      } else if (typeof body?.detail === 'string' && body.detail) {
+        message = body.detail
+      }
     } catch {
       // ignore parse errors
     }

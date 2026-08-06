@@ -5541,3 +5541,53 @@ def test_the_lobby_refuses_a_ruleset_it_would_refuse_at_creation(client, clock):
         set_rules(client, room_id, ids[0], startingChips=10, bigBlind=10).status_code
         == 400
     )
+
+
+def test_an_edit_based_on_stale_rules_is_refused_rather_than_applied(client, clock):
+    """A whole ruleset arrives every time, so the last writer wins by default —
+    and losing here is not "my change did not apply", it is "my change reverted
+    somebody else's without telling either of us". The host's own second tab
+    carries the same credential, so this is not a hypothetical other person."""
+    room_id, ids = table(client, 2)
+    read = state(client, room_id, ids[0])["room"]["rulesVersion"]
+
+    # Tab B sets Chaos.
+    assert set_rules(
+        client, room_id, ids[0], sevenDeuce=5, straddle=True, basedOn=read
+    ).status_code == 200
+
+    # Tab A, still holding the ruleset it opened with, saves one unrelated tweak.
+    stale = set_rules(client, room_id, ids[0], levelMinutes=20, basedOn=read)
+    assert stale.status_code == 409
+    assert "changed while you were editing" in stale.json()["detail"]
+
+    room = client.portal.call(main.load_room, room_id)
+    assert room["sevenDeuce"] == 5 and room["straddle"] is True
+
+
+def test_a_fresh_read_saves_over_the_change_it_can_see(client, clock):
+    room_id, ids = table(client, 2)
+    assert set_rules(client, room_id, ids[0], sevenDeuce=5).status_code == 200
+    fresh = state(client, room_id, ids[0])["room"]["rulesVersion"]
+    assert set_rules(
+        client, room_id, ids[0], levelMinutes=20, basedOn=fresh
+    ).status_code == 200
+    room = client.portal.call(main.load_room, room_id)
+    assert room["levelMinutes"] == 20
+
+
+def test_the_rules_version_moves_on_every_write_and_starts_somewhere(client, clock):
+    room_id, ids = table(client, 2)
+    first = state(client, room_id, ids[0])["room"]["rulesVersion"]
+    assert first >= 1
+    set_rules(client, room_id, ids[0], levelMinutes=20)
+    assert state(client, room_id, ids[0])["room"]["rulesVersion"] == first + 1
+
+
+def test_rooms_made_before_versioning_accept_the_first_edit(client, clock):
+    room_id, ids = table(client, 2)
+    room = client.portal.call(main.load_room, room_id)
+    del room["rulesVersion"]
+    client.portal.call(main.save_room, room)
+    assert state(client, room_id, ids[0])["room"]["rulesVersion"] == 0
+    assert set_rules(client, room_id, ids[0], levelMinutes=20, basedOn=0).status_code == 200

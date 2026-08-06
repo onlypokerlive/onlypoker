@@ -34,15 +34,21 @@ export const BLIND_LADDER_CHOICES: {
 ]
 
 /**
- * The night, before it is chips.
+ * The night.
  *
- * The stack is held in big blinds and not in chips, because "1000" is a number
- * that means nothing without the blinds next to it — 1000 at 5/10 is a hundred
- * blinds and a tournament, and 1000 at 100/200 is five and a coin flip. It is
- * translated on the way out, in `toCreateInput`.
+ * The stack is held in chips, which is what the server stores, and *asked for*
+ * in big blinds — because "1000" is a number that means nothing without the
+ * blinds next to it: 1000 at 5/10 is a hundred blinds and a tournament, and
+ * 1000 at 100/200 is five and a coin flip.
+ *
+ * Held in chips and not in blinds because the two are not interchangeable. A
+ * table carrying 1000 chips at 150/300 is 3.33 blinds, and a rules type that
+ * could only say "3" would hand it back as 900 — quietly changing the buy-in
+ * of a table whose host had come here to move the clock. Tables made before
+ * this screen existed, and every rematch, arrive at exactly those numbers.
  */
 export interface TableRules {
-  startingBlinds: number
+  startingChips: number
   smallBlind: number
   bigBlind: number
   levelMinutes: number
@@ -71,7 +77,7 @@ export interface TableRules {
 
 /** The table you get for saying nothing: Classic. */
 export const DEFAULT_RULES: TableRules = {
-  startingBlinds: 100,
+  startingChips: 1000,
   smallBlind: 5,
   bigBlind: 10,
   levelMinutes: 10,
@@ -124,7 +130,7 @@ export const FORMATS: TableFormat[] = [
     blurb: 'Short stacks and blinds that bite',
     rules: {
       ...DEFAULT_RULES,
-      startingBlinds: 50,
+      startingChips: 500,
       levelMinutes: 5,
       blindLadder: 'beast',
     },
@@ -168,9 +174,36 @@ function sameRules(a: TableRules, b: TableRules): boolean {
   return (Object.keys(a) as (keyof TableRules)[]).every((key) => a[key] === b[key])
 }
 
-/** Chips, from the stack the host actually chose. */
+/** The stack the server will accept: never under two big blinds, which it refuses. */
 export function startingChips(rules: TableRules): number {
-  return Math.max(rules.bigBlind * 2, rules.startingBlinds * rules.bigBlind)
+  return Math.max(rules.bigBlind * 2, rules.startingChips)
+}
+
+/**
+ * The stack said in blinds, which is how it is chosen and read back.
+ *
+ * Not rounded. A legacy table at 1000 chips and 150/300 is 3.33 blinds, and
+ * saying "3" is how its buy-in silently became 900.
+ */
+export function startingBlinds(rules: TableRules): number {
+  return rules.bigBlind > 0 ? rules.startingChips / rules.bigBlind : 0
+}
+
+/** Whether the stack is exactly this many big blinds. */
+export function isBlindCount(rules: TableRules, blinds: number): boolean {
+  return rules.startingChips === blinds * rules.bigBlind
+}
+
+/**
+ * Choose the stack in blinds. The only thing that rewrites the chip count.
+ *
+ * No floor here on purpose: a minimum enforced per keystroke fights whoever is
+ * typing, because clearing the box to type 150 passes through 0 first and
+ * comes back as the minimum. Two big blinds is enforced where it matters — by
+ * `startingChips` on the way out, and by the sheet refusing to save below it.
+ */
+export function withBlindCount(rules: TableRules, blinds: number): TableRules {
+  return { ...rules, startingChips: Math.max(0, blinds) * rules.bigBlind }
 }
 
 /**
@@ -199,6 +232,11 @@ export interface SummaryLine {
   value: string
 }
 
+/** A blind count, with the decimal only when there is one. */
+export function formatBlinds(blinds: number): string {
+  return Number.isInteger(blinds) ? String(blinds) : blinds.toFixed(1)
+}
+
 /**
  * The night read back in six lines.
  *
@@ -210,7 +248,7 @@ export function houseSummary(rules: TableRules): SummaryLine[] {
   return [
     {
       label: 'Chips',
-      value: `${startingChips(rules).toLocaleString()} · ${rules.startingBlinds} blinds`,
+      value: `${startingChips(rules).toLocaleString()} · ${formatBlinds(startingBlinds(rules))} blinds`,
     },
     {
       label: 'Blinds',
@@ -277,9 +315,14 @@ function lateWindow(rules: TableRules): string {
  * are the kind of conversion that gets done twice, differently, by two call
  * sites that each think they own it.
  */
-export function toRulesPayload(rules: TableRules, name: string) {
+export function toRulesPayload(rules: TableRules, name: string, basedOn?: number) {
   return {
     name,
+    // The version these rules were read from. The server refuses the write if
+    // the table has moved on since — two of the host's own devices, or two
+    // tabs, are one credential, and without this the older draft wins by
+    // arriving second and silently undoes the newer one.
+    basedOn,
     startingChips: startingChips(rules),
     smallBlind: rules.smallBlind,
     bigBlind: rules.bigBlind,
@@ -307,18 +350,11 @@ export function toRulesPayload(rules: TableRules, name: string) {
   }
 }
 
-/**
- * The rules back out of a table that already exists.
- *
- * The stack comes back as chips and has to be divided into blinds again. The
- * division is exact for anything the sheet can produce; anything else is a
- * table made before this screen existed, and rounding it is better than
- * showing the host a number their own table does not have.
- */
+/** The rules back out of a table that already exists, chip for chip. */
 export function rulesFromView(view: GameView): TableRules {
   const room = view.room
   return {
-    startingBlinds: Math.max(1, Math.round(room.startingChips / room.bigBlind)),
+    startingChips: room.startingChips,
     smallBlind: room.smallBlind,
     bigBlind: room.bigBlind,
     levelMinutes: room.levelMinutes,

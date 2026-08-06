@@ -963,6 +963,13 @@ class SetRulesBody(TableRules):
     """The same rules again, from the lobby, by whoever is holding the table."""
 
     playerId: str = Field(min_length=1, max_length=64)
+    # Which version of the rules this edit was made against. A whole ruleset is
+    # sent every time, so an edit that started before somebody else's finished
+    # would silently undo it by arriving second — and "somebody else" is not
+    # hypothetical here: the host's own second tab, or a recovered device,
+    # carries the same credential. None means "I have not read them", which
+    # only the tests and a first write have any business saying.
+    basedOn: int | None = None
 
 
 class JoinBody(BaseModel):
@@ -3110,6 +3117,8 @@ def _build_view(room: dict[str, Any], viewer_id: str | None) -> dict[str, Any]:
             "rebuyChips": room.get("rebuyChips") or "start",
             "rebuyChipsFixed": int(room.get("rebuyChipsFixed") or 0),
             "runItTwice": bool(room.get("runItTwice")),
+            # What an edit has to be based on to be accepted. See ``set_rules``.
+            "rulesVersion": int(room.get("rulesVersion") or 0),
             # The ladders themselves, as multipliers, so the lobby can show the
             # host what each one does to *their* stakes as they type them —
             # without a second copy of these numbers living in the frontend,
@@ -3338,6 +3347,9 @@ def _apply_rules(room: dict[str, Any], rules: TableRules) -> None:
     room["timeBankSeconds"] = rules.timeBankSeconds
     room["runItTwice"] = rules.runItTwice
     _restack(room, rules.startingChips)
+    # Bumped last, so anything holding an older number knows it is holding a
+    # ruleset that no longer describes this table. See ``set_rules``.
+    room["rulesVersion"] = int(room.get("rulesVersion") or 0) + 1
 
 
 @app.post("/rooms")
@@ -3462,6 +3474,16 @@ async def set_rules(
         if room["phase"] != "lobby":
             raise fastapi.HTTPException(
                 400, "The rules are set before the first hand, not during."
+            )
+        # A whole ruleset arrives every time, so the last writer wins by
+        # definition — and losing here is not "my change did not apply", it is
+        # "my change reverted somebody else's without telling either of us".
+        if (
+            body.basedOn is not None
+            and body.basedOn != int(room.get("rulesVersion") or 0)
+        ):
+            raise fastapi.HTTPException(
+                409, "The rules changed while you were editing them. Reopen and try again."
             )
         _check_rules(body)
         _apply_rules(room, body)

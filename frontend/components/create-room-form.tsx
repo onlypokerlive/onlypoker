@@ -64,9 +64,10 @@ function openingRules(preset: CreateRoomPreset): TableRules {
     ...DEFAULT_RULES,
     smallBlind: preset.smallBlind ?? DEFAULT_RULES.smallBlind,
     bigBlind,
-    startingBlinds: preset.startingChips
-      ? Math.max(1, Math.round(preset.startingChips / bigBlind))
-      : DEFAULT_RULES.startingBlinds,
+    // Chip for chip. A rematch inherits the stacks of a real night, which are
+    // rarely a round number of blinds, and turning those into a blind count
+    // and back is how "same again" quietly becomes "nearly the same".
+    startingChips: preset.startingChips ?? DEFAULT_RULES.startingChips,
     levelMinutes: preset.levelMinutes ?? DEFAULT_RULES.levelMinutes,
     actionSeconds: preset.actionSeconds ?? DEFAULT_RULES.actionSeconds,
     baize: preset.baize ?? DEFAULT_RULES.baize,

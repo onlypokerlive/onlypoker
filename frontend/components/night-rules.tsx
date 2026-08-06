@@ -59,6 +59,10 @@ export function NightRules({
         toRulesPayload(
           { ...format.rules, baize: rules.baize, deck: rules.deck },
           view.roomName,
+          // Read fresh from the poll, so this only fails if the table moved
+          // between the last poll and the tap — which is the case worth
+          // failing on.
+          view.room.rulesVersion ?? 0,
         ),
         session.token,
       )

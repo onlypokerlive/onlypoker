@@ -4,7 +4,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { NightRules } from './night-rules'
 import { gameView, session } from '@/lib/test-fixtures'
-import { pokerApi } from '@/lib/poker-api'
+import { ApiError, pokerApi } from '@/lib/poker-api'
 import type { GameView } from '@/lib/poker-api'
 
 const mocks = vi.hoisted(() => ({ setRules: vi.fn() }))
@@ -147,5 +147,90 @@ describe('the detail sheet', () => {
     await waitFor(() => expect(pokerApi.setRules).toHaveBeenCalled())
     const [, , payload] = vi.mocked(pokerApi.setRules).mock.calls[0]
     expect(payload).toMatchObject({ actionSeconds: 0, timeBankSeconds: 0 })
+  })
+})
+
+describe('two of the host\u2019s own surfaces', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+    mocks.setRules.mockResolvedValue({ room: lobby().room, players: [] })
+  })
+
+  it('stamps every write with the rules it was read from', async () => {
+    // Without it the older draft wins by arriving second, and reverts the
+    // newer one without telling either device.
+    renderRules(lobby({ rulesVersion: 7 }))
+    await userEvent.click(screen.getByRole('button', { name: /Chaos/ }))
+    await waitFor(() => expect(pokerApi.setRules).toHaveBeenCalled())
+    expect(vi.mocked(pokerApi.setRules).mock.calls[0][2]).toMatchObject({ basedOn: 7 })
+  })
+
+  it('shows the rules that won when the server refuses a stale save', async () => {
+    mocks.setRules.mockRejectedValue(
+      new ApiError('The rules changed while you were editing them.', 409),
+    )
+    renderRules(lobby({ rulesVersion: 3 }))
+    await userEvent.click(screen.getByRole('button', { name: 'Adjust the detail' }))
+    const sheet = screen.getByRole('dialog')
+    await userEvent.click(within(sheet).getByRole('button', { name: '200 blinds' }))
+    await userEvent.click(within(sheet).getByRole('button', { name: 'Save' }))
+
+    // The draft is dropped rather than left on screen unsaveable.
+    await waitFor(() =>
+      expect(within(sheet).getByText('1,000 chips at 5/10.')).toBeVisible(),
+    )
+  })
+})
+
+describe('a table this screen did not build', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+    mocks.setRules.mockResolvedValue({ room: lobby().room, players: [] })
+  })
+
+  it('does not change a buy-in the host never touched', async () => {
+    // 1000 chips at 150/300 is 3.33 blinds. Rounded to 3 and multiplied back
+    // it is 900 \u2014 a silently changed buy-in on a table whose host came here
+    // to move the clock.
+    renderRules(lobby({ startingChips: 1000, smallBlind: 150, bigBlind: 300 }))
+    await userEvent.click(screen.getByRole('button', { name: 'Adjust the detail' }))
+    const sheet = screen.getByRole('dialog')
+    expect(within(sheet).getByText('1,000 chips at 150/300.')).toBeVisible()
+    expect(
+      within(sheet).getByLabelText('What everybody starts with, exact value'),
+    ).toHaveValue('3.3')
+
+    await userEvent.click(within(sheet).getByRole('button', { name: 'Save' }))
+    await waitFor(() => expect(pokerApi.setRules).toHaveBeenCalled())
+    expect(vi.mocked(pokerApi.setRules).mock.calls[0][2]).toMatchObject({
+      startingChips: 1000,
+    })
+  })
+
+  it('refuses to save blinds the server would reject, and says why', async () => {
+    // Cleared to be retyped, the field passes through 0. Sent, that comes back
+    // as a schema error list \u2014 which reaches the host as "[object Object]".
+    renderRules()
+    await userEvent.click(screen.getByRole('button', { name: 'Adjust the detail' }))
+    const sheet = screen.getByRole('dialog')
+    await userEvent.clear(within(sheet).getByLabelText('Small blind'))
+
+    expect(within(sheet).getByRole('alert')).toHaveTextContent('Both blinds need a number.')
+    expect(within(sheet).getByRole('button', { name: 'Save' })).toBeDisabled()
+    expect(pokerApi.setRules).not.toHaveBeenCalled()
+  })
+
+  it('will not let the big blind sink to the small one', async () => {
+    renderRules()
+    await userEvent.click(screen.getByRole('button', { name: 'Adjust the detail' }))
+    const sheet = screen.getByRole('dialog')
+    const big = within(sheet).getByLabelText('Big blind')
+    await userEvent.clear(big)
+    await userEvent.type(big, '5')
+
+    expect(within(sheet).getByRole('alert')).toHaveTextContent(
+      'The big blind has to be larger than the small blind.',
+    )
+    expect(within(sheet).getByRole('button', { name: 'Save' })).toBeDisabled()
   })
 })

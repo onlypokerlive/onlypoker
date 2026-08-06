@@ -11,7 +11,7 @@ import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Field, FieldLabel } from '@/components/ui/field'
 import { recordCustomizeOpened } from '@/lib/growth'
-import { pokerApi, toGameView, type GameView, type Session } from '@/lib/poker-api'
+import { ApiError, pokerApi, toGameView, type GameView, type Session } from '@/lib/poker-api'
 import {
   BLIND_LADDER_CHOICES,
   LEVEL_MINUTE_CHOICES,
@@ -19,10 +19,14 @@ import {
   anteLabel,
   blindPreview,
   doorsLabel,
+  formatBlinds,
   houseRulesLabel,
+  isBlindCount,
   rulesFromView,
+  startingBlinds,
   startingChips,
   toRulesPayload,
+  withBlindCount,
   type TableRules,
 } from '@/lib/table-rules'
 import { BAIZES, DECKS } from '@/lib/table-style'
@@ -89,6 +93,12 @@ export function RulesSheet({
   const [name, setName] = useState(view.roomName)
   const [rules, setRules] = useState<TableRules>(() => rulesFromView(view))
   const [saving, setSaving] = useState(false)
+  // The version this draft was read from, and what the server checks it
+  // against. Captured on open and deliberately not refreshed by polling: the
+  // point is to notice that the table moved under this draft.
+  const [basedOn, setBasedOn] = useState(view.room.rulesVersion ?? 0)
+  // "Other" on the stack is a mode, not a value — see the control below.
+  const [freeStack, setFreeStack] = useState(false)
   const panelRef = useRef<HTMLDivElement>(null)
   const closeRef = useRef<HTMLButtonElement>(null)
   const opened = useRef(false)
@@ -100,6 +110,8 @@ export function RulesSheet({
     if (!open) return
     setName(view.roomName)
     setRules(rulesFromView(view))
+    setBasedOn(view.room.rulesVersion ?? 0)
+    setFreeStack(false)
     if (!opened.current) {
       opened.current = true
       recordCustomizeOpened()
@@ -134,26 +146,56 @@ export function RulesSheet({
   const set = <K extends keyof TableRules>(key: K, value: TableRules[K]) =>
     setRules((current) => ({ ...current, [key]: value }))
 
+  // The free field is open either because the host asked for it, or because
+  // the stack they already have is not one of the offered counts — which is
+  // every table made before this screen existed, and every rematch.
+  const stackIsFree =
+    freeStack || !STARTING_BLIND_CHOICES.some((n) => isBlindCount(rules, n))
+
   const ladders = view.room.blindLadders
   const preview = useMemo(
     () => blindPreview(ladders, rules.blindLadder, rules),
     [ladders, rules],
   )
 
+  /**
+   * What the server would refuse, said here instead.
+   *
+   * These three are the schema's own bounds, and a schema rejection comes back
+   * as a list of field errors rather than a sentence — so a host who cleared
+   * the small blind to retype it and hit Save would be told nothing useful
+   * about a table they can plainly see is wrong.
+   */
+  const problem =
+    rules.smallBlind < 1 || rules.bigBlind < 1
+      ? 'Both blinds need a number.'
+      : rules.bigBlind <= rules.smallBlind
+        ? 'The big blind has to be larger than the small blind.'
+        : rules.startingChips < rules.bigBlind * 2
+          ? 'Nobody can start with less than two big blinds.'
+          : null
+
   async function save() {
-    if (!session || !view.you) return
+    if (!session || !view.you || problem) return
     setSaving(true)
     try {
       const raw = await pokerApi.setRules(
         roomId,
         view.you.id,
-        toRulesPayload(rules, name.trim() || view.roomName),
+        toRulesPayload(rules, name.trim() || view.roomName, basedOn),
         session.token,
       )
       onSaved(toGameView(raw, view.you.id))
       onClose()
     } catch (error) {
       toast.error(error instanceof Error ? error.message : 'Could not save the rules.')
+      // Somebody else's edit landed first. Show theirs rather than leaving a
+      // draft on screen that can no longer be saved.
+      if (error instanceof ApiError && error.status === 409) {
+        setRules(rulesFromView(view))
+        setName(view.roomName)
+        setBasedOn(view.room.rulesVersion ?? 0)
+      }
     } finally {
       setSaving(false)
     }
@@ -208,25 +250,70 @@ export function RulesSheet({
             summary={`${startingChips(rules).toLocaleString()} chips · ${rules.smallBlind}/${rules.bigBlind}`}
             defaultOpen
           >
-            {/* The stack is asked for in blinds and not in chips, because
-                "1000" says nothing without the blinds beside it: a hundred
-                blinds at 5/10 is a tournament, and five at 100/200 is a coin
-                flip. The chips are shown live underneath. */}
-            <NumberChoice
-              label="What everybody starts with"
-              hint="In big blinds — the only unit that means the same thing at every stake"
-              value={rules.startingBlinds}
-              choices={STARTING_BLIND_CHOICES.map((n) => ({ value: n, label: `${n} blinds` }))}
-              // Not clamped on the way in: a minimum enforced per keystroke
-              // fights whoever is typing, because clearing the box to type 150
-              // passes through 0 first and comes back as the minimum. The
-              // floor that matters — two big blinds, which the server refuses
-              // below — lives in `startingChips`.
-              onChange={(next) => set('startingBlinds', next)}
-              unit="blinds"
-              translate={() => `· ${startingChips(rules).toLocaleString()} chips`}
-              min={1}
-            />
+            {/* Asked for in blinds and not in chips, because "1000" says
+                nothing without the blinds beside it: a hundred blinds at 5/10
+                is a tournament, and five at 100/200 is a coin flip.
+
+                Kept in chips, though, and only rewritten when somebody
+                actually chooses a stack. A table carrying 1000 at 150/300 is
+                3.33 blinds; round-tripping that through "3" is how the buy-in
+                of a table whose host came here to move the clock silently
+                became 900. Tapping "Other" therefore does not touch it. */}
+            <div className="flex flex-col gap-1.5">
+              <span className="flex flex-col">
+                <span className="text-sm font-semibold text-foreground">
+                  What everybody starts with
+                </span>
+                <span className="text-xs text-muted-foreground">
+                  In big blinds — the only unit that means the same thing at every stake
+                </span>
+              </span>
+              <div
+                role="group"
+                aria-label="What everybody starts with"
+                className="grid grid-cols-4 gap-2"
+              >
+                {STARTING_BLIND_CHOICES.map((n) => (
+                  <Button
+                    key={n}
+                    type="button"
+                    variant={isBlindCount(rules, n) ? 'secondary' : 'outline'}
+                    aria-pressed={isBlindCount(rules, n)}
+                    onClick={() => {
+                      setFreeStack(false)
+                      setRules((current) => withBlindCount(current, n))
+                    }}
+                    className="h-auto whitespace-normal px-1 py-2 text-xs"
+                  >
+                    {n} blinds
+                  </Button>
+                ))}
+                <Button
+                  type="button"
+                  variant={stackIsFree ? 'secondary' : 'outline'}
+                  aria-pressed={stackIsFree}
+                  onClick={() => setFreeStack(true)}
+                  className="h-auto whitespace-normal px-1 py-2 text-xs"
+                >
+                  Other
+                </Button>
+              </div>
+              {stackIsFree ? (
+                <div className="flex items-center gap-2">
+                  <Input
+                    inputMode="numeric"
+                    className="w-24"
+                    aria-label="What everybody starts with, exact value"
+                    value={formatBlinds(startingBlinds(rules))}
+                    onChange={(event) => {
+                      const digits = event.target.value.replace(/[^0-9]/g, '')
+                      setRules((current) => withBlindCount(current, Number(digits || 0)))
+                    }}
+                  />
+                  <span className="text-xs text-muted-foreground">blinds</span>
+                </div>
+              ) : null}
+            </div>
             <p className="text-xs text-muted-foreground">
               {startingChips(rules).toLocaleString()} chips at {rules.smallBlind}/
               {rules.bigBlind}.
@@ -576,7 +663,17 @@ export function RulesSheet({
         </div>
 
         <div className="border-t border-border/50 p-3">
-          <Button size="lg" className="w-full" disabled={saving} onClick={save}>
+          {problem ? (
+            <p role="alert" className="mb-2 text-center text-xs text-destructive">
+              {problem}
+            </p>
+          ) : null}
+          <Button
+            size="lg"
+            className="w-full"
+            disabled={saving || !!problem}
+            onClick={save}
+          >
             {saving ? 'Saving…' : 'Save'}
           </Button>
         </div>
