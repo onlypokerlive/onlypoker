@@ -81,15 +81,29 @@ describe('asking for the lead-in rather than being handed it', () => {
 describe('a hand run twice', () => {
   const OTHER_FLOP = ['Qs', 'Jd', '3h']
 
-  it('lands both boards on the same beats', () => {
-    // Two flops arriving three cards apart is two events. Arriving together it
-    // is one flop, twice — which is the thing being watched.
+  it('deals the second board out even though the first has stopped moving', () => {
+    // The case that matters, and the one that was broken. The boards run one
+    // after the other, so the second one's flop lands while the first has been
+    // sitting on five cards for a second. Asked whether *the first* board had
+    // grown, nothing had — and the whole second board appeared with no
+    // animation at all, which is the difference between a board being dealt
+    // and a board simply being there.
+    const FULL = [...TURN, '9s']
     const { result, rerender } = renderHook(({ b }) => useBoardsEntrance(b), {
       initialProps: { b: [[], []] as string[][] },
     })
-    rerender({ b: [FLOP, OTHER_FLOP] })
-    expect(result.current[0]).toEqual([0, DEAL_STEP_MS, DEAL_STEP_MS * 2])
-    expect(result.current[1]).toEqual(result.current[0])
+
+    rerender({ b: [FULL, []] })
+    expect(result.current[0]).toHaveLength(5)
+    expect(result.current[1]).toEqual([])
+
+    rerender({ b: [FULL, OTHER_FLOP] })
+    expect(result.current[1]).toEqual([0, DEAL_STEP_MS, DEAL_STEP_MS * 2])
+    // And the first board is not re-dealt on the way past.
+    expect(result.current[0]).toEqual([null, null, null, null, null])
+
+    rerender({ b: [FULL, [...OTHER_FLOP, '4c']] })
+    expect(result.current[1]).toEqual([null, null, null, 0])
   })
 
   it('does not deal boards that were already on the table', () => {

@@ -3235,7 +3235,16 @@ def _build_view(room: dict[str, Any], viewer_id: str | None) -> dict[str, Any]:
         # Every clock is an absolute server timestamp; the client subtracts
         # serverTime to stay correct even when a device's clock is off.
         "actionDeadline": room.get("actionDeadline"),
-        "autoDealAt": room.get("autoDealAt"),
+        # When this handover ends, whichever way it ends.
+        #
+        # It is the same pause either way — `_handover_seconds` decides both —
+        # but the last hand of the night schedules `finishAt` instead of
+        # another deal, and only the deal was ever published. So the client
+        # paced the run-out against nothing on exactly the hand that had the
+        # most to show: the run-out of the hand that ends the tournament was
+        # squeezed into the eight-second default and then sat still for the
+        # twenty the server was actually waiting.
+        "autoDealAt": room.get("autoDealAt") or _scheduled_finish(room),
         # When the table starts itself again, or None if it is not on a break.
         "breakUntil": room.get("breakUntil"),
         # The moment this view describes. Sent back with a decision so an order

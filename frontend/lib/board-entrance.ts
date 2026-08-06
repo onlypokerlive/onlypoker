@@ -77,21 +77,58 @@ export function useBoardEntrance(
 /**
  * The same, for a hand being run twice.
  *
- * One hook rather than one per board, because a board is a list and hooks are
- * not allowed to be. It keys off the first board's length: both boards are
- * dealt to the same street on the same beat (`use-runout`), so one of them
- * knowing a street has landed is all of them knowing it.
- *
- * Every board's cards land on the *same* beats, not staggered one board after
- * the other. Two flops arriving three cards apart is two events; arriving
- * together it is one flop, twice — which is the thing being watched.
+ * One hook rather than one per board, because a board is a list and the number
+ * of hooks a component calls is not allowed to be — and each board has to be
+ * watched **on its own**. They are dealt one after the other: the second one's
+ * flop lands while the first has been sitting on five cards for a second, so a
+ * version of this that asked the first board whether anything had arrived saw
+ * nothing and dealt the whole second board with no animation at all. Which is
+ * the entire difference between a board being dealt and a board appearing.
  */
 export function useBoardsEntrance(
   boards: string[][],
   leadInMs: number | (() => number) = 0,
 ): (number | null)[][] {
-  const first = useBoardEntrance(boards[0] ?? [], leadInMs)
-  return boards.map((board, b) =>
-    b === 0 ? first : board.map((_, i) => first[i] ?? null),
-  )
+  const seen = useRef<number[] | null>(null)
+  const [fresh, setFresh] = useState<
+    { board: number; from: number; to: number; lead: number }[]
+  >([])
+  // Keyed by the lengths themselves and not by the array: `boards` is built
+  // fresh on every render, so an effect that depended on it would run on every
+  // render — and one that then set state would never stop.
+  const key = boards.map((board) => board.length).join(',')
+
+  useEffect(() => {
+    const lengths = key ? key.split(',').map(Number) : []
+    const previous = seen.current
+    seen.current = lengths
+
+    // The first boards this component ever sees are the state of the world,
+    // not an event in it.
+    if (previous === null) return
+    // A new hand clears the felt; that is not cards arriving.
+    if (lengths.some((length, b) => length < (previous[b] ?? 0))) {
+      setFresh([])
+      return
+    }
+    // Read once, here, and kept with the cards it belongs to — see the
+    // single-board version above.
+    const lead = typeof leadInMs === 'function' ? leadInMs() : leadInMs
+    const arrived = lengths.flatMap((length, board) => {
+      const was = previous[board] ?? 0
+      return length > was ? [{ board, from: was, to: length, lead }] : []
+    })
+    if (arrived.length) setFresh(arrived)
+    // The lead-in is an argument to this arrival, not a reason to have one.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [key])
+
+  return boards.map((board, b) => {
+    const landing = fresh.find((f) => f.board === b)
+    return board.map((_, i) =>
+      landing && i >= landing.from && i < landing.to
+        ? landing.lead + (i - landing.from) * DEAL_STEP_MS
+        : null,
+    )
+  })
 }
