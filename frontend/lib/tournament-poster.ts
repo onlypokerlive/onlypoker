@@ -1,4 +1,5 @@
 import type { GameView, Standing } from '@/lib/poker-api'
+import { APP_NAME } from '@/lib/app-name'
 
 export interface PosterAward {
   label: string
@@ -113,7 +114,7 @@ export async function renderTournamentPoster(view: GameView): Promise<Blob> {
   context.textAlign = 'center'
   context.fillStyle = '#d7b65e'
   context.font = '600 24px ui-monospace, monospace'
-  context.fillText('FELT & GOLD  ·  FINAL TABLE', 540, 92)
+  context.fillText(`${APP_NAME.toUpperCase()}  ·  FINAL TABLE`, 540, 92)
 
   context.fillStyle = '#f4efe3'
   fittedText(context, model.roomName, 900, 78, 700, 'Georgia, serif', 242)
@@ -213,7 +214,7 @@ export async function shareTournamentPoster(
   const file = new File([blob], posterFileName(view.roomName), { type: 'image/png' })
   const data: ShareData = {
     title: `${view.roomName} · Final table`,
-    text: `${view.standings[0]?.name ?? 'A champion'} took down ${view.roomName}. Open your own table on Felt & Gold.`,
+    text: `${view.standings[0]?.name ?? 'A champion'} took down ${view.roomName}. Open your own table on ${APP_NAME}.`,
     url: window.location.origin,
     files: [file],
   }

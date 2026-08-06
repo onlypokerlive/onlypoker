@@ -14,6 +14,7 @@ import {
 import { buttonVariants } from '@/components/ui/button'
 import { cn } from '@/lib/utils'
 import { getRoomPreview, getRoomPreviewResult } from '@/lib/room-preview'
+import { APP_NAME } from '@/lib/app-name'
 
 type JoinPageProps = {
   params: Promise<{ roomId: string }>
@@ -40,7 +41,7 @@ export async function generateMetadata({ params }: JoinPageProps): Promise<Metad
   const description = inviteDescription(preview, roomId)
 
   return {
-    title: `Join ${roomName} · Felt & Gold`,
+    title: `Join ${roomName} · ${APP_NAME}`,
     description,
     openGraph: {
       title: `You’re invited to ${roomName}`,
@@ -68,7 +69,7 @@ export default async function JoinPage({ params }: JoinPageProps) {
           className="mb-6 inline-flex min-h-11 items-center gap-2 text-sm text-muted-foreground transition-colors hover:text-foreground"
         >
           <Spade className="size-4 text-primary" aria-hidden />
-          Felt &amp; Gold
+          {APP_NAME}
         </Link>
 
         {result.status === 'missing' ? (
