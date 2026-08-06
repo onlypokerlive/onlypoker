@@ -117,18 +117,6 @@ test.describe('responsive host-conversion journey', () => {
     await expect(host.page.getByRole('button', { name: 'Invite players' })).toBeVisible()
     await expect(guest.page.getByRole('button', { name: 'Invite players' })).toBeVisible()
 
-    await expect
-      .poll(async () =>
-        (await host.page.getByRole('button', { name: /^All-in/ }).isVisible()) ||
-        (await guest.page.getByRole('button', { name: /^All-in/ }).isVisible()),
-      )
-      .toBe(true)
-    const firstActorIsHost = await host.page
-      .getByRole('button', { name: /^All-in/ })
-      .isVisible()
-    const firstActor = firstActorIsHost ? host.page : guest.page
-    const firstActorName = firstActorIsHost ? 'Alex' : 'Sam'
-    const secondActor = firstActorIsHost ? guest.page : host.page
     const waitForAction = (page: Page) =>
       page.waitForResponse(
         (response) =>
@@ -136,21 +124,67 @@ test.describe('responsive host-conversion journey', () => {
           new URL(response.url()).pathname.endsWith(`/rooms/${host.roomId}/action`),
       )
 
-    const allInResponse = waitForAction(firstActor)
-    await firstActor.getByRole('button', { name: /^All-in/ }).click()
-    expect((await allInResponse).ok()).toBe(true)
+    /** One hand, both players in for everything. */
+    const shoveAndCall = async () => {
+      const firstActorIsHost = await host.page
+        .getByRole('button', { name: /^All-in/ })
+        .isVisible()
+      const firstActor = firstActorIsHost ? host.page : guest.page
+      const firstActorName = firstActorIsHost ? 'Alex' : 'Sam'
+      const secondActor = firstActorIsHost ? guest.page : host.page
 
-    // The fixed mobile action zone can briefly retain the previous poll's
-    // controls. Wait until this browser has observed the all-in before using
-    // its freshly rendered call action.
-    await expect(
-      secondActor.getByText(new RegExp(`${firstActorName} is all-in for`)),
-    ).toBeVisible()
-    const call = secondActor.getByRole('button', { name: /^Call/ })
-    await expect(call).toBeEnabled()
-    const callResponse = waitForAction(secondActor)
-    await call.click()
-    expect((await callResponse).ok()).toBe(true)
+      const allInResponse = waitForAction(firstActor)
+      await firstActor.getByRole('button', { name: /^All-in/ }).click()
+      expect((await allInResponse).ok()).toBe(true)
+
+      // The fixed mobile action zone can briefly retain the previous poll's
+      // controls. Wait until this browser has observed the all-in before using
+      // its freshly rendered call action.
+      await expect(
+        secondActor.getByText(new RegExp(`${firstActorName} is all-in for`)),
+      ).toBeVisible()
+      const call = secondActor.getByRole('button', { name: /^Call/ })
+      await expect(call).toBeEnabled()
+      const callResponse = waitForAction(secondActor)
+      await call.click()
+      expect((await callResponse).ok()).toBe(true)
+    }
+
+    /**
+     * All-in until somebody is out, and not once.
+     *
+     * A preflop all-in between two equal stacks does not always end the night:
+     * a board that plays for both of them is a chop, both players get back
+     * exactly what they put in, and the table correctly deals the next hand.
+     * It is a couple of percent a hand and it failed this journey twice in one
+     * afternoon — a test that is right 97% of the time is a test that fails
+     * for a reason that has nothing to do with what it is checking.
+     *
+     * What this journey is about starts at the results screen, so getting
+     * there is allowed to take more than one hand.
+     */
+    const finished = host.page.getByText('Keep the night going')
+    // Whichever comes first, and never one before the other: waiting for the
+    // button first hangs on the hand that ended the night, and waiting for the
+    // ending first hangs on the hand that chopped.
+    const appears = (locator: ReturnType<typeof finished.first>) =>
+      locator.waitFor({ state: 'visible', timeout: 25_000 }).then(
+        () => true,
+        () => false,
+      )
+    for (let hand = 0; hand < 6; hand++) {
+      const next = await Promise.race([
+        appears(finished).then((seen) => (seen ? 'over' : 'nothing')),
+        appears(host.page.getByRole('button', { name: /^All-in/ })).then((seen) =>
+          seen ? 'act' : 'nothing',
+        ),
+        appears(guest.page.getByRole('button', { name: /^All-in/ })).then((seen) =>
+          seen ? 'act' : 'nothing',
+        ),
+      ])
+      if (next !== 'act') break
+      await shoveAndCall()
+    }
 
     await expect(host.page.getByText('Keep the night going')).toBeVisible({ timeout: 25_000 })
     await expect(guest.page.getByText('Keep the night going')).toBeVisible({ timeout: 25_000 })

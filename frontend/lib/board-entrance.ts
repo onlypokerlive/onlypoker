@@ -73,3 +73,25 @@ export function useBoardEntrance(
       : null,
   )
 }
+
+/**
+ * The same, for a hand being run twice.
+ *
+ * One hook rather than one per board, because a board is a list and hooks are
+ * not allowed to be. It keys off the first board's length: both boards are
+ * dealt to the same street on the same beat (`use-runout`), so one of them
+ * knowing a street has landed is all of them knowing it.
+ *
+ * Every board's cards land on the *same* beats, not staggered one board after
+ * the other. Two flops arriving three cards apart is two events; arriving
+ * together it is one flop, twice — which is the thing being watched.
+ */
+export function useBoardsEntrance(
+  boards: string[][],
+  leadInMs: number | (() => number) = 0,
+): (number | null)[][] {
+  const first = useBoardEntrance(boards[0] ?? [], leadInMs)
+  return boards.map((board, b) =>
+    b === 0 ? first : board.map((_, i) => first[i] ?? null),
+  )
+}

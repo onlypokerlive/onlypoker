@@ -183,7 +183,12 @@ export function RoomClient({ roomId }: { roomId: string }) {
     audible: soundMode !== "off",
   })
   // An all-in arrives as a finished board in one response. Deal it out.
-  const { board: shownBoard, revealing, boardCompleteMs } = useRunout(view)
+  const {
+    board: shownBoard,
+    boards: shownBoards,
+    revealing,
+    boardCompleteMs,
+  } = useRunout(view)
 
   // Host authority can move without an account. Keep this device's persisted
   // session aligned with the server while never restoring an invalidated
@@ -540,7 +545,7 @@ export function RoomClient({ roomId }: { roomId: string }) {
             className="relative flex min-h-0 flex-1 items-center justify-center"
           >
             <PokerTable
-              view={{ ...view, board: shownBoard }}
+              view={{ ...view, board: shownBoard, boards: shownBoards }}
               revealed={revealed}
               secondsLeft={secondsLeft}
               // The hands go face up first and the board is dealt out over

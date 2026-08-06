@@ -4,6 +4,7 @@ import {
   HAND_LIT_DELAY_MS,
   HAND_LIT_STEP_MS,
   REVEAL_STEP_MS,
+  boardWinner,
   litBeats,
   revealBeats,
   showdownDurationMs,
@@ -104,5 +105,29 @@ describe('when the hand has finished being told', () => {
     // and the one it is wrong for is the full table — where the pot used to
     // cross the felt while four hands were still face down.
     expect(showdownDurationMs(9)).toBeGreaterThan(showdownDurationMs(2))
+  })
+})
+
+describe('who took which board', () => {
+  // The one thing dealing twice puts on the table that the stacks cannot say:
+  // winning both and chopping both come out to the same chips.
+  const results = [
+    { cards: [], winners: ['Blinsky'] },
+    { cards: [], winners: ['Andylon', 'Alvariki'] },
+  ]
+
+  it('names the winner of each board', () => {
+    expect(boardWinner(results, 0)).toBe('Blinsky')
+  })
+
+  it('says a chop was a chop rather than listing everybody', () => {
+    // Two names do not fit next to five cards on a 320px phone, and the
+    // interesting fact about a split board is that it was split.
+    expect(boardWinner(results, 1)).toBe('Split')
+  })
+
+  it('says nothing at all while the hand is still being played', () => {
+    expect(boardWinner([], 0)).toBeNull()
+    expect(boardWinner(results, 5)).toBeNull()
   })
 })

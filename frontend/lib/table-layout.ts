@@ -991,6 +991,20 @@ export const BOARD_CARD_W = 30
 export const BOARD_CARD_H = 40
 
 /**
+ * The line under a board naming whoever took it, when a hand is run twice.
+ *
+ * Under the row and not beside it, and that is a measurement rather than a
+ * preference. Beside the cards it is 64 units of extra width, five cards are
+ * already the widest thing in the middle, and the middle is the narrowest part
+ * of the ring: the collision matrix failed at **every phone width in it** and
+ * passed only from 640px up. Under the row it costs twelve units of height,
+ * and it passes everywhere.
+ *
+ * Exported so the component draws the same figure the model reserves.
+ */
+export const BOARD_WINNER_H = 12
+
+/**
  * How wide the table box is allowed to get, phone and desktop.
  *
  * The phone cap is high enough not to bite on any phone — a 430px screen should
@@ -1107,11 +1121,23 @@ export function estimateCentreBox(
   {
     pots = 1,
     seats = 9,
+    boardRows = 1,
   }: {
     /** How many pots are being shown. Side pots make the block taller. */
     pots?: number
     /** How many are round the table. A crowded one gets a flatter pot mound. */
     seats?: number
+    /**
+     * How many boards are on the felt. Two when the hand is being run twice.
+     *
+     * Reserved rather than discovered, and reserved from the moment the second
+     * board exists — which is before its first card lands, because the engine
+     * sends both finished boards in one response and `use-runout` deals them
+     * out. A middle that grows a row halfway through a run-out is a middle
+     * every seat was placed against a moment ago, and the run-out is the one
+     * moment of the night nobody is looking anywhere else.
+     */
+    boardRows?: number
   } = {},
 ): Box {
   const u = tableScale(table)
@@ -1162,10 +1188,20 @@ export function estimateCentreBox(
   )
 
   const w = Math.max(96 * u, cards, potW)
+  // Every board on the felt, and the same 4-unit gap between two rows as
+  // between two cards — the figure comes from the row the component draws
+  // rather than from a second number written down here.
+  const rows = Math.max(1, boardRows)
+  // Two boards also each carry a line naming whoever took it — see
+  // `BOARD_WINNER_H`. Reserved from the moment the second board exists rather
+  // than when the name appears, because the name appears at the end of the
+  // run-out and a middle that grows then is a middle every seat was placed
+  // against several seconds ago.
+  const rowH = cardH + (rows > 1 ? BOARD_WINNER_H * u : 0)
+  const boardH = boardCards > 0 ? rows * rowH + (rows - 1) * 4 * u : 20 * u
   // The voice, the pot and the board, with a gap between each — the three rows
   // `poker-table.tsx` draws, in the order it draws them.
-  const h =
-    (SAID_H + 8) * u + potH + 8 * u + (boardCards > 0 ? cardH : 20 * u) + pileH
+  const h = (SAID_H + 8) * u + potH + 8 * u + boardH + pileH
   return boxAt({ x: table.w / 2, y: (table.h * LAYOUT.BOARD_CY) / 100 }, { w, h })
 }
 
@@ -1368,6 +1404,8 @@ export interface TableLayoutInput {
   hands?: SeatHand[]
   /** How many pots are on the table. More than one makes the middle taller. */
   pots?: number
+  /** How many boards are out. Two when the hand is being run twice. */
+  boardRows?: number
 }
 
 export interface PlacedBox {
@@ -1391,7 +1429,7 @@ export interface TableLayout {
  * not an optimisation, it is the reason each layer can see the one before it.
  */
 export function layoutTable(input: TableLayoutInput): TableLayout {
-  const { width, seats, board, revealed = false, pots = 1 } = input
+  const { width, seats, board, revealed = false, pots = 1, boardRows = 1 } = input
   const table = tableBox(width, input.available)
 
   // Per seat, because a real table is never all one thing: some players are in
@@ -1405,7 +1443,7 @@ export function layoutTable(input: TableLayoutInput): TableLayout {
       estimateSeatSize({ table, seats, revealed, hand: input.hands?.[i] }),
     ),
   )
-  const centre = estimateCentreBox(table, board, { pots, seats })
+  const centre = estimateCentreBox(table, board, { pots, seats, boardRows })
 
   const boxes: PlacedBox[] = [
     { what: 'centre', seat: null, box: centre },

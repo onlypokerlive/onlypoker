@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import { renderHook } from '@testing-library/react'
 
-import { useBoardEntrance, DEAL_STEP_MS } from '@/lib/board-entrance'
+import { useBoardEntrance, useBoardsEntrance, DEAL_STEP_MS } from '@/lib/board-entrance'
 
 const FLOP = ['As', 'Kd', '7h']
 const TURN = [...FLOP, '2c']
@@ -75,5 +75,36 @@ describe('asking for the lead-in rather than being handed it', () => {
     lead = 900
     rerender({ b: FLOP })
     expect(result.current).toEqual([900, 900 + DEAL_STEP_MS, 900 + DEAL_STEP_MS * 2])
+  })
+})
+
+describe('a hand run twice', () => {
+  const OTHER_FLOP = ['Qs', 'Jd', '3h']
+
+  it('lands both boards on the same beats', () => {
+    // Two flops arriving three cards apart is two events. Arriving together it
+    // is one flop, twice — which is the thing being watched.
+    const { result, rerender } = renderHook(({ b }) => useBoardsEntrance(b), {
+      initialProps: { b: [[], []] as string[][] },
+    })
+    rerender({ b: [FLOP, OTHER_FLOP] })
+    expect(result.current[0]).toEqual([0, DEAL_STEP_MS, DEAL_STEP_MS * 2])
+    expect(result.current[1]).toEqual(result.current[0])
+  })
+
+  it('does not deal boards that were already on the table', () => {
+    const { result } = renderHook(() => useBoardsEntrance([FLOP, OTHER_FLOP]))
+    expect(result.current).toEqual([
+      [null, null, null],
+      [null, null, null],
+    ])
+  })
+
+  it('is the ordinary board, unchanged, when there is only one', () => {
+    const { result, rerender } = renderHook(({ b }) => useBoardsEntrance(b), {
+      initialProps: { b: [[]] as string[][] },
+    })
+    rerender({ b: [FLOP] })
+    expect(result.current).toEqual([[0, DEAL_STEP_MS, DEAL_STEP_MS * 2]])
   })
 })

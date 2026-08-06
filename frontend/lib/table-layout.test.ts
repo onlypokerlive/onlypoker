@@ -1,8 +1,12 @@
 import { describe, expect, it } from 'vitest'
 
 import {
+  BOARD_CARD_H,
+  BOARD_WINNER_H,
   boxAt,
   collisions,
+  estimateCentreBox,
+  tableScale,
   feltRadius,
   layoutTable,
   MIN_TABLE_ROOM,
@@ -518,5 +522,76 @@ describe('the rule: the table is the constant', () => {
     // card at the one frame the whole gesture exists for.
     expect(ownZoneHeight(568) - PEEK_BAND_H).toBeGreaterThan(0)
     expect(ownZoneHeight(400)).toBeGreaterThan(PEEK_BAND_H)
+  })
+})
+
+describe('a hand run twice', () => {
+  // Two boards is a second row of cards in the middle of the felt, and the
+  // middle is the narrowest part of the ring. A row that nothing reserved is a
+  // row the flank seats are sitting on — and it appears during the run-out,
+  // which is the one moment of the night nobody is looking anywhere else.
+  for (const width of WIDTHS) {
+    it(`${width}px · two boards still cover nothing`, () => {
+      const bad: string[] = []
+      for (const seats of SEATS) {
+        for (const board of BOARDS) {
+          for (const pots of POTS) {
+            for (const revealed of [false, true]) {
+              const layout = layoutTable({
+                width,
+                seats,
+                board,
+                revealed,
+                pots,
+                boardRows: 2,
+                ...ragged(seats),
+              })
+              for (const hit of collisions(layout)) {
+                bad.push(`${seats} seats · board ${board} · ${pots} pots · ${hit}`)
+              }
+            }
+          }
+        }
+      }
+      expect(bad).toEqual([])
+    })
+  }
+
+  const tall = (b: { top: number; bottom: number }) => b.bottom - b.top
+  const wide = (b: { left: number; right: number }) => b.right - b.left
+
+  it('reserves exactly one more card row, and only when there are cards', () => {
+    const table = { w: 360, h: 420 }
+    const u = tableScale(table)
+    const one = estimateCentreBox(table, 5, { boardRows: 1 })
+    const two = estimateCentreBox(table, 5, { boardRows: 2 })
+    // The row plus the same 4-unit gap the cards already sit apart by. Derived
+    // from the card the component draws, not a second number written here.
+    // A card row, the gap the cards already sit apart by, and a line under
+    // each of the two rows naming whoever took it.
+    expect(tall(two) - tall(one)).toBeCloseTo(
+      (BOARD_CARD_H + 4) * u + 2 * BOARD_WINNER_H * u,
+      5,
+    )
+    // And no wider. The name goes under the cards precisely because beside
+    // them it made the middle 40% wider, and the middle is the narrowest part
+    // of the ring: this same matrix failed at every phone width there is.
+    expect(wide(two)).toBe(wide(one))
+
+    // An empty felt has one line of text however many boards are coming.
+    expect(tall(estimateCentreBox(table, 0, { boardRows: 2 }))).toBe(
+      tall(estimateCentreBox(table, 0, { boardRows: 1 })),
+    )
+  })
+
+  it('leaves the ordinary hand exactly where it was', () => {
+    // The default has to be the old behaviour to the pixel, or every table
+    // that never runs twice moves because of a feature it does not use.
+    for (const width of [320, 390, 430]) {
+      const table = { w: width, h: 420 }
+      expect(estimateCentreBox(table, 5, { boardRows: 1 })).toEqual(
+        estimateCentreBox(table, 5),
+      )
+    }
   })
 })

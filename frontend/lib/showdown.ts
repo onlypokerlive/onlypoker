@@ -89,6 +89,28 @@ export function litBeats(
  * has to wait for them before it deals the first card of an all-in. A board
  * that landed under a hand still face down would be the run-out told backwards.
  */
+/**
+ * Who took one of two boards, short enough to sit on the felt beside it.
+ *
+ * The one thing dealing twice puts on the table that the stacks cannot say:
+ * winning both and chopping both come out to the same chips. And it is the one
+ * thing the winning-five lighting cannot say either — with two boards the same
+ * player usually has two different hands, so the server sends no `handCards`
+ * at all and nothing lights up.
+ *
+ * A chop is "Split" rather than both names: two names do not fit next to five
+ * cards on a 320px phone, and the interesting fact about a split board is that
+ * it was split.
+ */
+export function boardWinner(
+  results: { winners: string[] }[],
+  index: number,
+): string | null {
+  const winners = results[index]?.winners ?? []
+  if (!winners.length) return null
+  return winners.length === 1 ? winners[0] : 'Split'
+}
+
 export function revealDurationMs(hands: number): number {
   return Math.max(0, hands - 1) * REVEAL_STEP_MS
 }

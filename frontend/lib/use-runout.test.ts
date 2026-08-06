@@ -131,3 +131,36 @@ describe('useRunout', () => {
     expect(result.current.board).toEqual([])
   })
 })
+
+describe('a hand run twice', () => {
+  const OTHER = ['Qs', 'Jd', '3h', '4c', 'Td']
+
+  function twoBoards(board: string[], boards: string[][]): GameView {
+    return { ...view(board), boards } as GameView
+  }
+
+  it('holds both boards to the same street', () => {
+    // Together and not one after the other: the whole reason for dealing twice
+    // is watching the same card come for one board and not the other, which
+    // you can only do side by side.
+    const { result, rerender } = renderHook(({ v }) => useRunout(v), {
+      initialProps: { v: twoBoards([], [[], []]) },
+    })
+    rerender({ v: twoBoards(FULL, [FULL, OTHER]) })
+
+    expect(result.current.boards).toEqual([[], []])
+    const at = schedule()
+    act(() => vi.advanceTimersByTime(at[0]))
+    expect(result.current.boards.map((b) => b.length)).toEqual([3, 3])
+    act(() => vi.advanceTimersByTime(at[1] - at[0]))
+    expect(result.current.boards.map((b) => b.length)).toEqual([4, 4])
+    act(() => vi.advanceTimersByTime(at[2] - at[1]))
+    expect(result.current.boards).toEqual([FULL, OTHER])
+  })
+
+  it('still answers with one board on every ordinary hand', () => {
+    const { result } = renderHook(() => useRunout(view(FULL)))
+    expect(result.current.boards).toEqual([FULL])
+    expect(result.current.board).toEqual(FULL)
+  })
+})
