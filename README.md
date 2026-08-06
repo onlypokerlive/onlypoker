@@ -5,8 +5,14 @@ and play from your phones — no accounts, no downloads.
 
 ## How a game runs
 
-- **Blinds climb on a clock.** The host picks the opening blinds and how long a
-  level lasts. Blinds move up one rung of the ladder each level; a level that
+- **The rules are agreed in the lobby.** Making a table asks for a name, a
+  password and who you are. What kind of night it is — stakes, pace, antes,
+  house rules, doors — is set afterwards, with the people it applies to already
+  in the room, off four formats and a sheet for the night that wants one thing
+  changed. The host can change it until the first hand is dealt and not after.
+- **Blinds climb on a clock.** The host picks the opening blinds, how long a
+  level lasts, and how far the blinds go up when they go up — gentle, standard
+  or beast. Blinds move one rung of that ladder each level; a level that
   expires mid-hand takes effect on the next deal.
 - **Every decision has a shot clock.** 20 seconds by default. Running out checks
   when checking is free, and folds otherwise, so one player looking away never

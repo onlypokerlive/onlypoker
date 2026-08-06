@@ -97,7 +97,10 @@ async function frame(page: Page) {
   return page.evaluate(() => {
     const outside = (selector: string) =>
       [...document.querySelectorAll(selector)].filter(
-        (el) => !el.closest('[data-testid="board"]') && !el.closest('[data-peek-band]'),
+        // `[data-board]` and not the first board's test id: a hand run twice
+        // puts a second row on the felt, and its five cards are not somebody's
+        // hand.
+        (el) => !el.closest('[data-board]') && !el.closest('[data-peek-band]'),
       )
     return {
       board: Number(

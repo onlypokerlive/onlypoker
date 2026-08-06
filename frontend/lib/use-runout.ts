@@ -9,6 +9,15 @@ import type { GameView } from '@/lib/poker-api'
 export interface Runout {
   /** The board to draw right now. */
   board: string[]
+  /**
+   * Every board being dealt, each held to the same street.
+   *
+   * Together and not one after the other. Two boards run in sequence is eight
+   * seconds of a table nobody can act on, and it also answers the question
+   * twice: the whole reason for dealing twice is watching the same card come
+   * for one board and not the other, which you can only do side by side.
+   */
+  boards: string[][]
   /** Whether the reveal is still running. */
   revealing: boolean
   /**
@@ -112,8 +121,15 @@ export function useRunout(view: GameView | null): Runout {
   }, [view])
 
   const revealing = heldTo !== null
+  // The same street on every board. Both are the same length at every beat, so
+  // one held-to answers all of them — which is also what keeps `runoutBeats`
+  // unchanged: the beats are about how far the board has got, not how many
+  // there are.
+  const held = (cards: string[]) => (revealing ? cards.slice(0, heldTo!) : cards)
+  const dealt = view?.boards?.length ? view.boards : view?.board ? [view.board] : []
   return {
-    board: view && revealing ? view.board.slice(0, heldTo!) : (view?.board ?? []),
+    board: view ? held(view.board) : [],
+    boards: dealt.map(held),
     revealing,
     // Not `revealing ? duration : 0` — see the field. Cleared where it becomes
     // untrue, which is the next hand, and nowhere else.

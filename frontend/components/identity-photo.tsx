@@ -23,12 +23,19 @@ export function IdentityPhoto({
   onNameChange,
   onAvatarUrlChange,
   onRememberGuestNickname,
+  layout = 'block',
 }: {
   name: string
   onNameChange: (value: string) => void
   onAvatarUrlChange: (url: string | null) => void
   /** Lets the parent stash the guest's chosen name on submit. */
   onRememberGuestNickname?: (setter: (nickname: string) => void) => void
+  /**
+   * `disc` is the photo on its own, to sit in the line before the name field.
+   * The prefill and the guest plumbing are identical — this only decides how
+   * much vertical room the control asks for.
+   */
+  layout?: 'block' | 'disc'
 }) {
   const { user, profile, loading } = useAuth()
   const guest = useGuestIdentity()
@@ -70,6 +77,36 @@ export function IdentityPhoto({
   useEffect(() => {
     if (!signedIn) onRememberGuestNickname?.(guest.setNickname)
   }, [signedIn, guest.setNickname, onRememberGuestNickname])
+
+  if (layout === 'disc') {
+    // Signed in, the photo is the profile's and is changed on the profile
+    // page, so the disc is a link there rather than a second uploader.
+    if (signedIn) {
+      return (
+        <Link
+          href="/profile"
+          aria-label="Edit your profile photo"
+          className="tactile shrink-0 rounded-full focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring"
+        >
+          <PlayerAvatar
+            src={avatarUrl}
+            name={profile?.nickname || profile?.fullName || name}
+            size="lg"
+          />
+        </Link>
+      )
+    }
+    return (
+      <PhotoUpload
+        scope="guest"
+        layout="disc"
+        name={name}
+        currentUrl={guest.photoUrl}
+        onUploaded={(photo) => guest.setPhoto(photo)}
+        onCleared={() => guest.setPhoto(null)}
+      />
+    )
+  }
 
   // Signed-in: show profile avatar in the same PhotoUpload-sized slot so the
   // form dimensions are identical regardless of auth state.

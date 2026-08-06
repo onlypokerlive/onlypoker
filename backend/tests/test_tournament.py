@@ -232,7 +232,7 @@ def test_a_long_gap_skips_straight_to_the_right_level(client, clock):
     start(client, room_id, ids[0])
     view = state(client, room_id, ids[0])
     assert view["level"]["number"] == 6
-    assert view["room"]["bigBlind"] == main.BLIND_MULTIPLIERS[5] * 10
+    assert view["room"]["bigBlind"] == main.BLIND_LADDERS["standard"][5] * 10
 
 
 def test_level_zero_minutes_freezes_the_blinds(client, clock):
@@ -5323,3 +5323,271 @@ def test_a_new_deal_forgets_who_had_to_show(client, clock):
     showdown_between(client, room_id, ids, {0: ["As", "Ks"]})
     start(client, room_id, ids[0])
     assert client.portal.call(main.load_room, room_id)["showSeats"] == []
+
+
+# --------------------------------------------------------------------------- #
+# The rules the host sets, and changes their mind about
+# --------------------------------------------------------------------------- #
+def set_rules(client, room_id, host_id, **overrides):
+    body = {
+        "playerId": host_id,
+        "name": "Test table",
+        "startingChips": 1000,
+        "smallBlind": 5,
+        "bigBlind": 10,
+        "levelMinutes": 10,
+        "actionSeconds": 20,
+    }
+    body.update(overrides)
+    return client.post(
+        f"/api/rooms/{room_id}/rules", headers=auth(host_id), json=body
+    )
+
+
+def test_the_three_ladders_climb_at_three_speeds(client, clock):
+    """The point of the choice: same clock, three different nights."""
+    fifth = {}
+    for ladder in ("gentle", "standard", "beast"):
+        room_id, ids = table(client, 2, blindLadder=ladder, levelMinutes=1)
+        room = client.portal.call(main.load_room, room_id)
+        # The opening level is the stakes the host typed, on every ladder.
+        assert room["blindSchedule"][0] == {"smallBlind": 5, "bigBlind": 10}
+        fifth[ladder] = room["blindSchedule"][4]["bigBlind"]
+    assert fifth["gentle"] < fifth["standard"] < fifth["beast"]
+
+
+def test_every_rung_of_every_ladder_is_a_whole_chip(client):
+    """A blind nobody can build out of the chips in front of them is a rule the
+    table has to house-rule around, so no ladder is allowed to produce one."""
+    for ladder in main.BLIND_LADDERS:
+        schedule = main.build_blind_schedule(5, 10, ladder)
+        assert all(
+            isinstance(level["smallBlind"], int) and isinstance(level["bigBlind"], int)
+            for level in schedule
+        )
+        # And it only ever goes up, or a level would be a discount.
+        rises = [level["bigBlind"] for level in schedule]
+        assert rises == sorted(rises) and len(set(rises)) == len(rises)
+
+
+def test_an_unknown_ladder_is_refused_rather_than_guessed(client):
+    res = client.post(
+        "/api/rooms",
+        json={
+            "name": "Test table",
+            "hostName": "Host",
+            "startingChips": 1000,
+            "smallBlind": 5,
+            "bigBlind": 10,
+            "password": "secret",
+            "blindLadder": "vertical",
+        },
+    )
+    assert res.status_code == 422
+
+
+def test_rooms_made_before_the_choice_keep_climbing_the_standard_ladder(client):
+    room_id, ids = table(client, 2)
+    room = client.portal.call(main.load_room, room_id)
+    del room["blindLadder"]
+    client.portal.call(main.save_room, room)
+    assert state(client, room_id, ids[0])["room"]["blindLadder"] == "standard"
+
+
+def test_a_rebuy_can_pay_the_average_rather_than_the_opening_stack(client, clock):
+    """By level nine an opening stack is a handful of big blinds, which is a
+    rebuy nobody takes. The average is what keeps buying back in worth doing."""
+    room_id, ids = table(
+        client,
+        3,
+        rebuyLevels=4,
+        rebuysPerPlayer=2,
+        rebuyChips="average",
+        levelMinutes=10,
+        actionSeconds=0,
+    )
+    start(client, room_id, ids[0])
+    fold_until_hand_over(client, room_id, ids)
+    bust(client, room_id, ids[2])
+    # The two still in are carrying 1500 each after taking the third stack.
+    assert buy(client, room_id, ids[2]).status_code == 200
+    room = client.portal.call(main.load_room, room_id)
+    assert room["players"][ids[2]]["chips"] == 1500
+    assert books_balance(client, room_id)
+
+
+def test_a_rebuy_never_pays_less_than_the_opening_stack(client, clock):
+    """Somebody buying back into a table that has been bleeding chips off it
+    should not be handed less than they sat down with the first time."""
+    room_id, ids = table(
+        client, 3, rebuyLevels=4, rebuyChips="average", levelMinutes=10, actionSeconds=0
+    )
+    room = client.portal.call(main.load_room, room_id)
+    for pid in ids[:2]:
+        room["players"][pid]["chips"] = 200
+    # Three stacks of 1000 were issued; 400 are left on the table.
+    room["chipsWithdrawn"] = 2600
+    room["players"][ids[2]]["chips"] = 0
+    client.portal.call(main.save_room, room)
+    assert buy(client, room_id, ids[2]).status_code == 200
+    room = client.portal.call(main.load_room, room_id)
+    assert room["players"][ids[2]]["chips"] == 1000
+    assert books_balance(client, room_id)
+
+
+def test_a_fixed_rebuy_pays_exactly_what_the_host_set(client, clock):
+    room_id, ids = table(
+        client,
+        3,
+        rebuyLevels=4,
+        rebuyChips="fixed",
+        rebuyChipsFixed=2500,
+        levelMinutes=10,
+        actionSeconds=0,
+    )
+    bust(client, room_id, ids[2])
+    assert buy(client, room_id, ids[2]).status_code == 200
+    room = client.portal.call(main.load_room, room_id)
+    assert room["players"][ids[2]]["chips"] == 2500
+    assert books_balance(client, room_id)
+
+
+def test_the_add_on_is_still_the_opening_stack_however_rebuys_are_priced(
+    client, clock
+):
+    """An add-on tops up a stack that is still alive, so it has no reason to
+    ask what a fresh stack is worth at this level. Only a rebuy does."""
+    room_id, ids = table(
+        client,
+        3,
+        rebuyLevels=4,
+        addOn=True,
+        rebuyChips="fixed",
+        rebuyChipsFixed=9000,
+        levelMinutes=10,
+        actionSeconds=0,
+    )
+    had = client.portal.call(main.load_room, room_id)["players"][ids[1]]["chips"]
+    assert buy(client, room_id, ids[1], "add-on").status_code == 200
+    room = client.portal.call(main.load_room, room_id)
+    assert room["players"][ids[1]]["chips"] == had + 1000
+    assert books_balance(client, room_id)
+
+
+def test_the_host_can_change_the_rules_in_the_lobby(client, clock):
+    room_id, ids = table(client, 3)
+    res = set_rules(
+        client,
+        room_id,
+        ids[0],
+        name="Chaos",
+        startingChips=2000,
+        smallBlind=25,
+        bigBlind=50,
+        blindLadder="beast",
+        sevenDeuce=5,
+        straddle=True,
+        bombPotEvery=8,
+        runItTwice=True,
+    )
+    assert res.status_code == 200, res.text
+    view = res.json()["room"]
+    assert view["name"] == "Chaos"
+    assert (view["smallBlind"], view["bigBlind"]) == (25, 50)
+    assert view["blindLadder"] == "beast"
+    assert view["sevenDeuce"] == 5
+    assert view["straddle"] is True
+    assert view["bombPotEvery"] == 8
+    assert view["runItTwice"] is True
+
+
+def test_changing_the_stack_in_the_lobby_restacks_everybody_and_the_books(
+    client, clock
+):
+    """Three players sat down behind 1000 each. Doubling the buy-in has to move
+    all three stacks *and* the issue count, or the ledger stops adding up."""
+    room_id, ids = table(client, 3)
+    assert set_rules(client, room_id, ids[0], startingChips=2000).status_code == 200
+    room = client.portal.call(main.load_room, room_id)
+    assert [room["players"][pid]["chips"] for pid in ids] == [2000, 2000, 2000]
+    assert room["chipsIssued"] == 6000
+    assert books_balance(client, room_id)
+
+
+def test_only_the_host_sets_the_rules(client, clock):
+    room_id, ids = table(client, 3)
+    res = set_rules(client, room_id, ids[1], startingChips=5000)
+    assert res.status_code == 403
+    assert "Only the host" in res.json()["detail"]
+
+
+def test_the_rules_stop_being_settable_once_the_cards_are_out(client, clock):
+    """A host who can move the blinds up mid-tournament is a host who can move
+    them up on the hand they are losing, and a table of friends should never
+    have to wonder about that."""
+    room_id, ids = table(client, 3, actionSeconds=0, levelMinutes=0)
+    start(client, room_id, ids[0])
+    res = set_rules(client, room_id, ids[0], smallBlind=100, bigBlind=200)
+    assert res.status_code == 400
+    assert "before the first hand" in res.json()["detail"]
+    room = client.portal.call(main.load_room, room_id)
+    assert (room["smallBlind"], room["bigBlind"]) == (5, 10)
+
+
+def test_the_lobby_refuses_a_ruleset_it_would_refuse_at_creation(client, clock):
+    room_id, ids = table(client, 2)
+    assert set_rules(client, room_id, ids[0], smallBlind=50, bigBlind=20).status_code == 400
+    assert (
+        set_rules(client, room_id, ids[0], startingChips=10, bigBlind=10).status_code
+        == 400
+    )
+
+
+def test_an_edit_based_on_stale_rules_is_refused_rather_than_applied(client, clock):
+    """A whole ruleset arrives every time, so the last writer wins by default —
+    and losing here is not "my change did not apply", it is "my change reverted
+    somebody else's without telling either of us". The host's own second tab
+    carries the same credential, so this is not a hypothetical other person."""
+    room_id, ids = table(client, 2)
+    read = state(client, room_id, ids[0])["room"]["rulesVersion"]
+
+    # Tab B sets Chaos.
+    assert set_rules(
+        client, room_id, ids[0], sevenDeuce=5, straddle=True, basedOn=read
+    ).status_code == 200
+
+    # Tab A, still holding the ruleset it opened with, saves one unrelated tweak.
+    stale = set_rules(client, room_id, ids[0], levelMinutes=20, basedOn=read)
+    assert stale.status_code == 409
+    assert "changed while you were editing" in stale.json()["detail"]
+
+    room = client.portal.call(main.load_room, room_id)
+    assert room["sevenDeuce"] == 5 and room["straddle"] is True
+
+
+def test_a_fresh_read_saves_over_the_change_it_can_see(client, clock):
+    room_id, ids = table(client, 2)
+    assert set_rules(client, room_id, ids[0], sevenDeuce=5).status_code == 200
+    fresh = state(client, room_id, ids[0])["room"]["rulesVersion"]
+    assert set_rules(
+        client, room_id, ids[0], levelMinutes=20, basedOn=fresh
+    ).status_code == 200
+    room = client.portal.call(main.load_room, room_id)
+    assert room["levelMinutes"] == 20
+
+
+def test_the_rules_version_moves_on_every_write_and_starts_somewhere(client, clock):
+    room_id, ids = table(client, 2)
+    first = state(client, room_id, ids[0])["room"]["rulesVersion"]
+    assert first >= 1
+    set_rules(client, room_id, ids[0], levelMinutes=20)
+    assert state(client, room_id, ids[0])["room"]["rulesVersion"] == first + 1
+
+
+def test_rooms_made_before_versioning_accept_the_first_edit(client, clock):
+    room_id, ids = table(client, 2)
+    room = client.portal.call(main.load_room, room_id)
+    del room["rulesVersion"]
+    client.portal.call(main.save_room, room)
+    assert state(client, room_id, ids[0])["room"]["rulesVersion"] == 0
+    assert set_rules(client, room_id, ids[0], levelMinutes=20, basedOn=0).status_code == 200

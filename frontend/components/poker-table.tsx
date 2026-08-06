@@ -8,7 +8,8 @@ import { PotDisplay } from "@/components/pot-display"
 import { ChipStack } from "@/components/chip-stack"
 import { latestLine } from "@/lib/action-line"
 import { announce } from "@/lib/sound"
-import { useBoardEntrance } from "@/lib/board-entrance"
+import { useBoardsEntrance } from "@/lib/board-entrance"
+import { boardWinner } from "@/lib/showdown"
 import { baizeOf, deckOf } from "@/lib/table-style"
 import { closedByABet, diffViews, newActions, potGrowth } from "@/lib/table-events"
 import { dealBeats } from "@/lib/deal"
@@ -29,6 +30,7 @@ import {
   BET_CHIPS,
   BOARD_CARD_H,
   BOARD_CARD_W,
+  BOARD_WINNER_H,
   betLabel,
   betSpot,
   boxAt,
@@ -584,11 +586,28 @@ export function PokerTable({
   // cards face up for whoever is sitting next to them.
   const showdown = view.wentToShowdown
 
+  /**
+   * Every board on the felt — one on almost every hand, two when it is run
+   * twice.
+   *
+   * Read from `boards` and not from `board`, and this is the whole of what was
+   * missing: the server has always sent both, and the felt has always drawn
+   * `boards[0]`. A hand run twice showed one run-out and then a results panel
+   * announcing that the other half of the pot went somewhere else, on the
+   * strength of five cards nobody ever saw dealt.
+   */
+  const boards = view.boards?.length ? view.boards : [view.board]
+  const boardRows = boards.length
+
   // The showdown, beat by beat: which hands have turned over, which of the
   // winning five are lit, and whether the rest should be standing back.
   const beats = useShowdown(view, ordered, boardCompleteMs)
   // Per seat, because they no longer all turn over at once.
   const shownDown = ordered.map((_, i) => showdown && beats.shown(i))
+  // Named once the hand has finished being told, and not before: the results
+  // arrive from the server while `use-runout` is still holding the river back,
+  // so read straight they would announce the winner over an unfinished board.
+  const boardWinners = boards.map((_, b) => boardWinner(view.boardResults ?? [], b))
 
   /**
    * A hand coming face up, heard.
@@ -711,11 +730,11 @@ export function PokerTable({
       window.removeEventListener('resize', measure)
       window.visualViewport?.removeEventListener('resize', measure)
     }
-    // The four things that move everything: the board growing, the table
-    // emptying, a bet changing width — and a seat changing size, which is the
-    // one that gets left out.
+    // The five things that move everything: the board growing, a *second*
+    // board appearing under it, the table emptying, a bet changing width — and
+    // a seat changing size, which is the one that gets left out.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [view.board.length, total, bets, shown, measured])
+  }, [view.board.length, boardRows, total, bets, shown, measured])
 
   const table = box
   const live = room.w > 0 && measured
@@ -831,7 +850,7 @@ export function PokerTable({
   // Which board cards are landing right now, and on what beat. Null for the
   // ones that were already there — somebody opening the app mid-hand is
   // looking at a flop, not watching one being dealt.
-  const arriving = useBoardEntrance(view.board, () => boardLead.current)
+  const arriving = useBoardsEntrance(boards, () => boardLead.current)
   const [flights, setFlights] = useState<Flight[]>([])
   const dropFlight = useCallback(
     (key: string) => setFlights((all) => all.filter((f) => f.key !== key)),
@@ -1280,39 +1299,81 @@ export function PokerTable({
             live={view.phase === "hand"}
             u={u}
           />
+          {/* One row per board, and the same gap between two rows as between
+              two cards — `estimateCentreBox` reserves exactly this. */}
           <div
-            data-testid="board"
-            data-cards={view.board.length}
-            className="flex flex-wrap items-center justify-center"
-            style={{
-              gap: 4 * u,
-              // A card's height when there are cards, and the height of the
-              // line of text when there are not — the two cases
-              // `estimateCentreBox` reserves for.
-              minHeight: (view.board.length > 0 ? BOARD_CARD_H : 20) * u,
-            }}
+            className="flex flex-col items-center"
+            style={{ gap: 4 * u }}
           >
-            {view.board.length > 0 ? (
-              // Small on narrow phones: five cards at the sm size leave a
-              // nine-handed table no room between the board and the seats.
-              view.board.map((c, i) => (
-                <BoardCard
-                  key={i}
-                  card={c}
-                  delay={arriving[i]}
-                  u={u}
-                  lit={beats.lit(c)}
-                  dim={beats.dimming}
-                />
-              ))
-            ) : (
-              <span
-                className="text-muted-foreground/70"
-                style={{ fontSize: 12 * u }}
-              >
-                {view.phase === "hand" ? "Community cards" : "Waiting for next hand"}
-              </span>
-            )}
+            {boards.map((cards, b) => (
+              <div key={b} className="flex flex-col items-center">
+                <div
+                  data-testid={b === 0 ? "board" : `board-${b + 1}`}
+                  // Both rows carry this, so a check in a real browser can ask
+                  // "is this card on a board" without knowing how many there are.
+                  data-board={b}
+                  data-cards={cards.length}
+                  className="flex flex-wrap items-center justify-center"
+                  style={{
+                    gap: 4 * u,
+                    // A card's height when there are cards, and the height of
+                    // the line of text when there are not — the two cases
+                    // `estimateCentreBox` reserves for.
+                    minHeight: (cards.length > 0 ? BOARD_CARD_H : 20) * u,
+                  }}
+                >
+                  {cards.length > 0 ? (
+                    // Small on narrow phones: five cards at the sm size leave
+                    // a nine-handed table no room between board and seats.
+                    cards.map((c, i) => (
+                      <BoardCard
+                        key={i}
+                        card={c}
+                        delay={arriving[b]?.[i] ?? null}
+                        u={u}
+                        lit={beats.lit(c)}
+                        dim={beats.dimming}
+                      />
+                    ))
+                  ) : (
+                    <span
+                      className="text-muted-foreground/70"
+                      style={{ fontSize: 12 * u }}
+                    >
+                      {view.phase === "hand" ? "Community cards" : "Waiting for next hand"}
+                    </span>
+                  )}
+                </div>
+                {/* Who took this one. With two boards the same player usually
+                    has two different hands, so the server sends no `handCards`
+                    at all and nothing lights up — which leaves the one question
+                    the second board exists to answer unanswered on the felt.
+                    See `use-showdown`.
+
+                    Under the row and not beside it, and that is a measurement:
+                    beside the cards it made the middle 40% wider and the
+                    collision matrix failed at every phone width there is. The
+                    line is reserved whenever there are two boards, whether or
+                    not it has a name in it yet — the name arrives at the end of
+                    the run-out, and a middle that grows then is a middle every
+                    seat was placed against several seconds ago. */}
+                {boardRows > 1 ? (
+                  <span
+                    data-testid={`board-winner-${b + 1}`}
+                    className="truncate font-semibold text-primary"
+                    style={{
+                      fontSize: 10 * u,
+                      // The figure the model reserves — see `BOARD_WINNER_H`.
+                      height: BOARD_WINNER_H * u,
+                      lineHeight: `${BOARD_WINNER_H * u}px`,
+                      maxWidth: BOARD_CARD_W * 5 * u,
+                    }}
+                  >
+                    {beats.done ? boardWinners[b] : ""}
+                  </span>
+                ) : null}
+              </div>
+            ))}
           </div>
 
           {/* The pot, as chips, under the board — where a dealer stacks it.

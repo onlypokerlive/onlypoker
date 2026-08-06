@@ -46,36 +46,34 @@ describe('quick table creation', () => {
     localStorage.clear()
   })
 
-  it('keeps advanced rules collapsed until the host asks for them', async () => {
+  it('asks four things, and none of them is a rule of the game', async () => {
     render(<CreateRoomForm />)
 
+    expect(screen.getByLabelText(/Your profile/)).toBeVisible()
+    expect(screen.getByLabelText('Table name')).toBeVisible()
+    expect(screen.getByLabelText('Password')).toBeVisible()
     expect(screen.getByRole('button', { name: 'Create table' })).toBeVisible()
-    // Not merely hidden: the customization panel is not rendered at all until
-    // it is asked for. It used to be a `<details>` that shipped every field to
-    // every host and hid them with CSS.
-    expect(screen.queryByLabelText('Chips per player')).toBeNull()
-    expect(screen.getByLabelText('Table setup')).toBeVisible()
-    expect(screen.getByText(/5\/10 blinds · 1,000 chips/)).toBeVisible()
 
-    await userEvent.click(screen.getByText('Customize the night'))
-    expect(screen.getByText('Starting stack and opening blinds')).toBeVisible()
-    expect(screen.getByLabelText('Chips per player')).not.toBeVisible()
-    await userEvent.click(screen.getByText('Stakes'))
-    expect(screen.getByLabelText('Chips per player')).toBeVisible()
+    // The night itself is agreed in the lobby, with the people it applies to.
+    // Every one of these lived on this screen and pushed the button that does
+    // the thing below the fold on every phone.
+    expect(screen.queryByText(/Customize the night/)).toBeNull()
+    expect(screen.queryByLabelText(/blind/i)).toBeNull()
+    expect(screen.queryByText(/bomb pot/i)).toBeNull()
   })
 
-  it('creates with defaults and records the originating conversion path', async () => {
+  it('creates with the standard table and records the originating path', async () => {
     const session = { roomId: 'ABC123', playerId: 'host', token: 'token', isHost: true }
     vi.mocked(pokerApi.createRoom).mockResolvedValue(session)
     render(<CreateRoomForm source="finished-table" />)
 
-    await userEvent.type(screen.getByLabelText('Your name'), 'Alex')
-    await userEvent.type(screen.getByLabelText('Room password'), 'secret')
+    await userEvent.type(screen.getByLabelText(/Your profile/), 'Alex')
+    await userEvent.type(screen.getByLabelText('Password'), 'secret')
     await userEvent.click(screen.getByRole('button', { name: 'Create table' }))
 
     expect(pokerApi.createRoom).toHaveBeenCalledWith(
       expect.objectContaining({
-        name: 'Friday Night Poker',
+        name: 'Poker Night',
         hostName: 'Alex',
         password: 'secret',
         smallBlind: 5,
@@ -91,10 +89,36 @@ describe('quick table creation', () => {
     expect(mocks.push).toHaveBeenCalledWith('/room/ABC123')
   })
 
+  it('carries the stakes of the night a rematch is repeating', async () => {
+    // "Same again" is the whole of what that button means, and sending the
+    // host to the lobby to rebuild the table by hand is the opposite of it.
+    const session = { roomId: 'ABC123', playerId: 'host', token: 'token', isHost: true }
+    vi.mocked(pokerApi.createRoom).mockResolvedValue(session)
+    render(
+      <CreateRoomForm
+        source="rematch"
+        preset={{ smallBlind: 25, bigBlind: 50, startingChips: 10_000, levelMinutes: 20 }}
+      />,
+    )
+
+    await userEvent.type(screen.getByLabelText(/Your profile/), 'Alex')
+    await userEvent.type(screen.getByLabelText('Password'), 'secret')
+    await userEvent.click(screen.getByRole('button', { name: 'Create rematch' }))
+
+    expect(pokerApi.createRoom).toHaveBeenCalledWith(
+      expect.objectContaining({
+        smallBlind: 25,
+        bigBlind: 50,
+        startingChips: 10_000,
+        levelMinutes: 20,
+      }),
+    )
+  })
+
   it('associates validation with the field and moves focus to the correction', async () => {
     render(<CreateRoomForm />)
 
-    const hostName = screen.getByLabelText('Your name')
+    const hostName = screen.getByLabelText(/Your profile/)
     await userEvent.click(screen.getByRole('button', { name: 'Create table' }))
 
     await waitFor(() => expect(hostName).toHaveFocus())
@@ -102,12 +126,10 @@ describe('quick table creation', () => {
     expect(screen.getByText('Enter your display name.')).toHaveAttribute('id', 'hostName-error')
   })
 
-  it('keeps the primary create action before progressive customization in tab order', () => {
+  it('says "table" everywhere, because that is what the button makes', () => {
+    // "Room password" used to sit two lines above "Create table". One screen,
+    // two words for the same thing.
     render(<CreateRoomForm />)
-    const create = screen.getByRole('button', { name: 'Create table' })
-    const customize = screen.getByText('Customize the night').closest('button')!
-
-    expect(create.compareDocumentPosition(customize) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
-    expect(screen.getByText(/60 sec time bank/)).toBeVisible()
+    expect(screen.queryByText(/room/i)).toBeNull()
   })
 })

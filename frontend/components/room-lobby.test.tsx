@@ -26,7 +26,14 @@ function lobby(players = [host]) {
 
 describe('RoomLobby', () => {
   it('makes inviting the next action while the table is one player short', () => {
-    render(<RoomLobby view={lobby()} onStart={vi.fn()} busy={false} />)
+    render(<RoomLobby
+        view={lobby()}
+        roomId="ABC123"
+        session={null}
+        onStart={vi.fn()}
+        onRulesSaved={vi.fn()}
+        busy={false}
+      />)
 
     expect(screen.getByRole('img', { name: '1 of 9 seats filled' })).toBeInTheDocument()
     expect(screen.getByRole('button', { name: 'Invite players' })).toBeEnabled()
@@ -37,7 +44,14 @@ describe('RoomLobby', () => {
   it('unlocks the host start action once another chair is occupied', async () => {
     const onStart = vi.fn()
     const guest = player({ id: 'guest', name: 'Sam', seat: 4, isYou: false })
-    render(<RoomLobby view={lobby([host, guest])} onStart={onStart} busy={false} />)
+    render(<RoomLobby
+        view={lobby([host, guest])}
+        roomId="ABC123"
+        session={null}
+        onStart={onStart}
+        onRulesSaved={vi.fn()}
+        busy={false}
+      />)
 
     expect(screen.getByRole('img', { name: '2 of 9 seats filled' })).toBeInTheDocument()
     await userEvent.click(screen.getByRole('button', { name: 'Start game' }))

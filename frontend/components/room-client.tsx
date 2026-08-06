@@ -183,7 +183,12 @@ export function RoomClient({ roomId }: { roomId: string }) {
     audible: soundMode !== "off",
   })
   // An all-in arrives as a finished board in one response. Deal it out.
-  const { board: shownBoard, revealing, boardCompleteMs } = useRunout(view)
+  const {
+    board: shownBoard,
+    boards: shownBoards,
+    revealing,
+    boardCompleteMs,
+  } = useRunout(view)
 
   // Host authority can move without an account. Keep this device's persisted
   // session aligned with the server while never restoring an invalidated
@@ -486,7 +491,14 @@ export function RoomClient({ roomId }: { roomId: string }) {
       {view.phase === "lobby" ? (
         <div className="flex flex-1 items-center justify-center overflow-y-auto">
           <div className="flex w-full max-w-md flex-col gap-3">
-            <RoomLobby view={view} onStart={handleStart} busy={busy} />
+            <RoomLobby
+              view={view}
+              roomId={roomId}
+              session={session}
+              onStart={handleStart}
+              onRulesSaved={showFresh}
+              busy={busy}
+            />
             {/* The moment you actually need this is before the cards come out:
                 somebody joined the wrong table, or took the last seat. */}
             <HostPanel view={view} roomId={roomId} onDone={refresh} session={session} />
@@ -533,7 +545,7 @@ export function RoomClient({ roomId }: { roomId: string }) {
             className="relative flex min-h-0 flex-1 items-center justify-center"
           >
             <PokerTable
-              view={{ ...view, board: shownBoard }}
+              view={{ ...view, board: shownBoard, boards: shownBoards }}
               revealed={revealed}
               secondsLeft={secondsLeft}
               // The hands go face up first and the board is dealt out over

@@ -24,16 +24,31 @@ async function createTable(
   const form = page.locator('#create-table form')
   await expect(form).toHaveCount(1)
   await expect(form).toHaveAttribute('data-ready', 'true')
-  await form.getByLabel('Your name').fill('Alex')
-  await form.getByLabel('Room password').fill(PASSWORD)
-
-  // A one-hand table keeps the browser journey deterministic without bypassing
-  // the product UI: one all-in and call produces a real final table.
-  await form.getByText('Customize the night').click()
-  await form.getByText('Stakes', { exact: true }).click()
-  await form.getByLabel('Chips per player').fill('20')
+  await form.getByLabel(/Your profile/).fill('Alex')
+  await form.getByLabel('Password').fill(PASSWORD)
   await form.getByRole('button', { name: 'Create table' }).click()
   await page.waitForURL(/\/room\/[A-Z0-9]+$/)
+
+  // A one-hand table keeps the browser journey deterministic without bypassing
+  // the product UI: one all-in and call produces a real final table. The rules
+  // now live in the lobby, so this is where the stack is cut down to two big
+  // blinds — through the sheet a host would use, not through the API.
+  await page.getByRole('button', { name: 'Adjust the detail' }).click()
+  const sheet = page.getByRole('dialog', { name: 'Adjust the detail' })
+  const stack = sheet.getByRole('group', { name: 'What everybody starts with' })
+  await stack.getByRole('button', { name: 'Other' }).click()
+  await sheet.getByLabel('What everybody starts with, exact value').fill('2')
+  // And the door shut behind whoever busts. Every format buys back in twice by
+  // default, and a table that can still be rejoined correctly refuses to crown
+  // anybody — which is right, and is not the journey under test here.
+  await sheet.getByText('Doors and rebuys').click()
+  await sheet
+    .getByRole('group', { name: 'Buying back in' })
+    .getByRole('button', { name: 'No' })
+    .click()
+  await sheet.getByRole('button', { name: 'Save' }).click()
+  await expect(sheet).toHaveCount(0)
+  await expect(page.getByText('20 · 2 blinds')).toBeVisible()
 
   return {
     context,
@@ -73,17 +88,17 @@ test.describe('responsive host-conversion journey', () => {
       await expect(form).toHaveCount(1)
       await expect(form).toHaveAttribute('data-ready', 'true')
       const create = form.getByRole('button', { name: 'Create table' })
-      const customize = form.getByText('Customize the night')
       await expect(create).toBeVisible()
-      const [buttonBox, customizeBox] = await Promise.all([
-        create.boundingBox(),
-        customize.boundingBox(),
-      ])
+      const buttonBox = await create.boundingBox()
 
       expect(buttonBox).not.toBeNull()
-      expect(customizeBox).not.toBeNull()
       expect(buttonBox!.y + buttonBox!.height).toBeLessThanOrEqual(viewport.height)
-      expect(buttonBox!.y).toBeLessThan(customizeBox!.y)
+
+      // And nothing on this screen is a rule of the game. The button used to
+      // be pushed under the fold by twenty controls that belong in the lobby,
+      // so "it fits" is only half the claim worth holding.
+      await expect(form.getByText('Customize the night')).toHaveCount(0)
+      await expect(form.getByRole('textbox')).toHaveCount(3)
     })
   }
 
@@ -102,18 +117,6 @@ test.describe('responsive host-conversion journey', () => {
     await expect(host.page.getByRole('button', { name: 'Invite players' })).toBeVisible()
     await expect(guest.page.getByRole('button', { name: 'Invite players' })).toBeVisible()
 
-    await expect
-      .poll(async () =>
-        (await host.page.getByRole('button', { name: /^All-in/ }).isVisible()) ||
-        (await guest.page.getByRole('button', { name: /^All-in/ }).isVisible()),
-      )
-      .toBe(true)
-    const firstActorIsHost = await host.page
-      .getByRole('button', { name: /^All-in/ })
-      .isVisible()
-    const firstActor = firstActorIsHost ? host.page : guest.page
-    const firstActorName = firstActorIsHost ? 'Alex' : 'Sam'
-    const secondActor = firstActorIsHost ? guest.page : host.page
     const waitForAction = (page: Page) =>
       page.waitForResponse(
         (response) =>
@@ -121,21 +124,67 @@ test.describe('responsive host-conversion journey', () => {
           new URL(response.url()).pathname.endsWith(`/rooms/${host.roomId}/action`),
       )
 
-    const allInResponse = waitForAction(firstActor)
-    await firstActor.getByRole('button', { name: /^All-in/ }).click()
-    expect((await allInResponse).ok()).toBe(true)
+    /** One hand, both players in for everything. */
+    const shoveAndCall = async () => {
+      const firstActorIsHost = await host.page
+        .getByRole('button', { name: /^All-in/ })
+        .isVisible()
+      const firstActor = firstActorIsHost ? host.page : guest.page
+      const firstActorName = firstActorIsHost ? 'Alex' : 'Sam'
+      const secondActor = firstActorIsHost ? guest.page : host.page
 
-    // The fixed mobile action zone can briefly retain the previous poll's
-    // controls. Wait until this browser has observed the all-in before using
-    // its freshly rendered call action.
-    await expect(
-      secondActor.getByText(new RegExp(`${firstActorName} is all-in for`)),
-    ).toBeVisible()
-    const call = secondActor.getByRole('button', { name: /^Call/ })
-    await expect(call).toBeEnabled()
-    const callResponse = waitForAction(secondActor)
-    await call.click()
-    expect((await callResponse).ok()).toBe(true)
+      const allInResponse = waitForAction(firstActor)
+      await firstActor.getByRole('button', { name: /^All-in/ }).click()
+      expect((await allInResponse).ok()).toBe(true)
+
+      // The fixed mobile action zone can briefly retain the previous poll's
+      // controls. Wait until this browser has observed the all-in before using
+      // its freshly rendered call action.
+      await expect(
+        secondActor.getByText(new RegExp(`${firstActorName} is all-in for`)),
+      ).toBeVisible()
+      const call = secondActor.getByRole('button', { name: /^Call/ })
+      await expect(call).toBeEnabled()
+      const callResponse = waitForAction(secondActor)
+      await call.click()
+      expect((await callResponse).ok()).toBe(true)
+    }
+
+    /**
+     * All-in until somebody is out, and not once.
+     *
+     * A preflop all-in between two equal stacks does not always end the night:
+     * a board that plays for both of them is a chop, both players get back
+     * exactly what they put in, and the table correctly deals the next hand.
+     * It is a couple of percent a hand and it failed this journey twice in one
+     * afternoon — a test that is right 97% of the time is a test that fails
+     * for a reason that has nothing to do with what it is checking.
+     *
+     * What this journey is about starts at the results screen, so getting
+     * there is allowed to take more than one hand.
+     */
+    const finished = host.page.getByText('Keep the night going')
+    // Whichever comes first, and never one before the other: waiting for the
+    // button first hangs on the hand that ended the night, and waiting for the
+    // ending first hangs on the hand that chopped.
+    const appears = (locator: ReturnType<typeof finished.first>) =>
+      locator.waitFor({ state: 'visible', timeout: 25_000 }).then(
+        () => true,
+        () => false,
+      )
+    for (let hand = 0; hand < 6; hand++) {
+      const next = await Promise.race([
+        appears(finished).then((seen) => (seen ? 'over' : 'nothing')),
+        appears(host.page.getByRole('button', { name: /^All-in/ })).then((seen) =>
+          seen ? 'act' : 'nothing',
+        ),
+        appears(guest.page.getByRole('button', { name: /^All-in/ })).then((seen) =>
+          seen ? 'act' : 'nothing',
+        ),
+      ])
+      if (next !== 'act') break
+      await shoveAndCall()
+    }
 
     await expect(host.page.getByText('Keep the night going')).toBeVisible({ timeout: 25_000 })
     await expect(guest.page.getByText('Keep the night going')).toBeVisible({ timeout: 25_000 })
@@ -147,14 +196,14 @@ test.describe('responsive host-conversion journey', () => {
     const posterDownload = host.page.waitForEvent('download')
     await host.page.getByRole('button', { name: 'Share the night' }).click()
     await expect((await posterDownload).suggestedFilename()).toBe(
-      'friday-night-poker-final-table.png',
+      'poker-night-final-table.png',
     )
 
     await guest.page.getByRole('button', { name: 'Create your table' }).click()
     const nextTableForm = guest.page.locator('#create-table form')
     await expect(nextTableForm).toHaveAttribute('data-ready', 'true')
-    await nextTableForm.getByLabel('Your name').fill('Sam')
-    await nextTableForm.getByLabel('Room password').fill(PASSWORD)
+    await nextTableForm.getByLabel(/Your profile/).fill('Sam')
+    await nextTableForm.getByLabel('Password').fill(PASSWORD)
     await nextTableForm.getByRole('button', { name: 'Create table' }).click()
     await guest.page.waitForURL(/\/room\/[A-Z0-9]+$/)
     await expect(guest.page.getByRole('button', { name: 'Invite players' })).toBeVisible()

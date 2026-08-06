@@ -17,8 +17,8 @@ import {
 const STEPS = [
   {
     icon: Spade,
-    title: 'Configure the table',
-    body: 'Use the dealt setup or customize the stakes, pace, and house rules.',
+    title: 'Name the table',
+    body: 'Your name, a table name and a password. That is the whole of it.',
   },
   {
     icon: Link2,
@@ -60,12 +60,11 @@ export default function HomePage() {
           </div>
 
           <h1 className="compact-phone-title mt-4 max-w-xl text-pretty font-serif text-4xl font-extrabold leading-[1.08] sm:text-5xl lg:mt-5 lg:text-6xl">
-            Your poker night starts with{' '}
-            <span className="text-primary">one link.</span>
+            Your game starts with <span className="text-primary">a link.</span>
           </h1>
 
           <p className="compact-phone-copy mt-3 max-w-md text-pretty text-sm leading-relaxed text-muted-foreground sm:text-base lg:mt-4">
-            Name the table, send one link, and deal. The usual setup is ready.
+            Poker with friends, in seconds, from anywhere.
           </p>
 
           <div className="compact-phone-cards mt-3 flex items-center gap-2 lg:mt-6" aria-hidden>
@@ -86,7 +85,8 @@ export default function HomePage() {
                 Create a table
               </CardTitle>
               <CardDescription className="compact-phone-card-description">
-                You’ll be the host. Share the invitation on the next screen.
+                You’ll be the host. Share the invitation and set the rules on the
+                next screen.
               </CardDescription>
             </CardHeader>
             <CardContent>
