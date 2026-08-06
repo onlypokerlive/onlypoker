@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { generateMetadata } from './page'
+import { APP_NAME } from '@/lib/app-name'
 import { getRoomPreview } from '@/lib/room-preview'
 
 vi.mock('@/lib/room-preview', () => ({ getRoomPreview: vi.fn() }))
@@ -22,7 +23,7 @@ describe('room invitation metadata', () => {
 
     const metadata = await generateMetadata({ params: Promise.resolve({ roomId: 'ABC123' }) })
 
-    expect(metadata.title).toBe('Join Thursday Poker · Felt & Gold')
+    expect(metadata.title).toBe(`Join Thursday Poker · ${APP_NAME}`)
     expect(metadata.description).toContain('3/9 seats filled')
     expect(metadata.openGraph).toMatchObject({ title: 'You’re invited to Thursday Poker' })
     expect(metadata.twitter).toMatchObject({ card: 'summary_large_image' })
@@ -33,7 +34,7 @@ describe('room invitation metadata', () => {
 
     const metadata = await generateMetadata({ params: Promise.resolve({ roomId: 'ABC123' }) })
 
-    expect(metadata.title).toBe('Join Private poker table · Felt & Gold')
+    expect(metadata.title).toBe(`Join Private poker table · ${APP_NAME}`)
     expect(metadata.description).toContain('ABC123')
   })
 })

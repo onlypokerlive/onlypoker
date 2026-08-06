@@ -1198,7 +1198,15 @@ export function estimateCentreBox(
   // run-out and a middle that grows then is a middle every seat was placed
   // against several seconds ago.
   const rowH = cardH + (rows > 1 ? BOARD_WINNER_H * u : 0)
-  const boardH = boardCards > 0 ? rows * rowH + (rows - 1) * 4 * u : 20 * u
+  // Reserved whenever there are two boards, **including before either has a
+  // card on it**. That case is not hypothetical: it is the first beat of the
+  // run-out, `heldTo = [0, 0]`, and it lasts for the whole lead-in. Treating
+  // it as an empty felt reserved one line of text where the component was
+  // already drawing two full rows and their two name lines — 108 units against
+  // 20 — which is the model and the DOM disagreeing by more than three times
+  // the clearance the tightest phone has.
+  const boardH =
+    boardCards > 0 || rows > 1 ? rows * rowH + (rows - 1) * 4 * u : 20 * u
   // The voice, the pot and the board, with a gap between each — the three rows
   // `poker-table.tsx` draws, in the order it draws them.
   const h = (SAID_H + 8) * u + potH + 8 * u + boardH + pileH

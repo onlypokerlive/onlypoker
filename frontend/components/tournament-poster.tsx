@@ -4,6 +4,7 @@ import { cn } from '@/lib/utils'
 import { buildTournamentPosterModel } from '@/lib/tournament-poster'
 import type { GameView } from '@/lib/poker-api'
 import type { Standing } from '@/lib/poker-api'
+import { APP_NAME } from '@/lib/app-name'
 
 const PLACE_TONE = [
   'border-primary/60 bg-primary text-primary-foreground',
@@ -32,7 +33,7 @@ export function TournamentPoster({ view }: { view: GameView }) {
 
       <header className="text-center">
         <p className="font-mono text-[9px] font-bold uppercase tracking-[0.22em] text-primary">
-          Felt & Gold · Final table
+          {APP_NAME} · Final table
         </p>
         <h2 className="mt-2 truncate font-serif text-2xl font-bold text-[#f4efe3]">
           {model.roomName}

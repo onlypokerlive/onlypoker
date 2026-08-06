@@ -1,8 +1,9 @@
 import { ImageResponse } from 'next/og'
 
+import { APP_NAME } from '@/lib/app-name'
 import { getRoomPreview } from '@/lib/room-preview'
 
-export const alt = 'A private Felt & Gold poker table invitation'
+export const alt = `A private ${APP_NAME} poker table invitation`
 export const size = { width: 1200, height: 630 }
 export const contentType = 'image/png'
 export const revalidate = 15

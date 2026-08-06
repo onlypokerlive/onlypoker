@@ -1,7 +1,7 @@
 import { act, renderHook } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
-import { runoutBeats } from '@/lib/runout'
+import { CARD_ARRIVAL_MS, RUNOUT_SECOND_BOARD_MS, runoutBeats, runoutDurationMs } from '@/lib/runout'
 import { REVEAL_STEP_MS } from '@/lib/showdown'
 import { useRunout } from '@/lib/use-runout'
 import type { GameView } from '@/lib/poker-api'
@@ -59,7 +59,7 @@ describe('useRunout', () => {
     rerender({ v: view(FULL) })
     expect(result.current.board).toEqual([])
     expect(result.current.revealing).toBe(true)
-    expect(result.current.boardCompleteMs).toBe(river)
+    expect(result.current.boardCompleteMs).toBe(river + CARD_ARRIVAL_MS)
 
     act(() => void vi.advanceTimersByTime(flop))
     expect(result.current.board).toHaveLength(3)
@@ -76,7 +76,7 @@ describe('useRunout', () => {
     // measured from it, and everything after the river — the winning five
     // lighting up, the pot going out — is still to come. Dropped to zero here,
     // all of that moved into a past the clock had gone by and fired at once.
-    expect(result.current.boardCompleteMs).toBe(river)
+    expect(result.current.boardCompleteMs).toBe(river + CARD_ARRIVAL_MS)
   })
 
   it('waits for the hands to turn over before the first card', () => {
@@ -139,23 +139,64 @@ describe('a hand run twice', () => {
     return { ...view(board), boards } as GameView
   }
 
-  it('holds both boards to the same street', () => {
-    // Together and not one after the other: the whole reason for dealing twice
-    // is watching the same card come for one board and not the other, which
-    // you can only do side by side.
+  it('runs the first board out, then the second', () => {
+    // The order a card room deals them in. Side by side they are one event
+    // that happens to have ten cards in it; in sequence they are two answers
+    // to the same question, and the second is read against one everybody
+    // already has.
     const { result, rerender } = renderHook(({ v }) => useRunout(v), {
       initialProps: { v: twoBoards([], [[], []]) },
     })
     rerender({ v: twoBoards(FULL, [FULL, OTHER]) })
 
-    expect(result.current.boards).toEqual([[], []])
-    const at = schedule()
-    act(() => vi.advanceTimersByTime(at[0]))
-    expect(result.current.boards.map((b) => b.length)).toEqual([3, 3])
-    act(() => vi.advanceTimersByTime(at[1] - at[0]))
-    expect(result.current.boards.map((b) => b.length)).toEqual([4, 4])
-    act(() => vi.advanceTimersByTime(at[2] - at[1]))
+    const at = runoutBeats(0, 5, { pauseSeconds: 8, boards: 2 }).map((b) => b.at)
+    expect(at).toHaveLength(6)
+    const sizes = () => result.current.boards.map((b) => b.length)
+    // Stepped to absolute moments, not by adding up gaps: the beats are floats
+    // and a sum of differences lands a fraction short of the last one, which
+    // leaves its timer unfired and reads as a board that never finished.
+    let now = 0
+    const beat = (i: number) => {
+      const to = Math.ceil(at[i])
+      act(() => vi.advanceTimersByTime(to - now))
+      now = to
+    }
+
+    expect(sizes()).toEqual([0, 0])
+    // The first board, alone. The second is empty and not absent — its room
+    // was reserved the moment it came into existence.
+    beat(0)
+    expect(sizes()).toEqual([3, 0])
+    beat(1)
+    expect(sizes()).toEqual([4, 0])
+    beat(2)
+    expect(sizes()).toEqual([5, 0])
+
+    // And only then the second, over a first board that stays finished.
+    beat(3)
+    expect(sizes()).toEqual([5, 3])
+    beat(4)
+    expect(sizes()).toEqual([5, 4])
+    beat(5)
     expect(result.current.boards).toEqual([FULL, OTHER])
+  })
+
+  it('holds the finished board before starting the next one', () => {
+    // Long enough for somebody to say "well, that half is yours".
+    const at = runoutBeats(0, 5, { pauseSeconds: Infinity, boards: 2 })
+    const firstRiver = at[2]
+    const secondFlop = at[3]
+    expect(secondFlop.board).toBe(1)
+    expect(secondFlop.at - firstRiver.at).toBe(RUNOUT_SECOND_BOARD_MS)
+  })
+
+  it('takes twice as long, and says so, so the rest of the ending waits', () => {
+    // `boardCompleteMs` is what `use-showdown` waits on before lighting the
+    // winning cards and paying the pot. Told the one-board figure it would put
+    // the answer on screen while the second board was still being dealt.
+    const one = runoutDurationMs(runoutBeats(0, 5, { pauseSeconds: Infinity }))
+    const two = runoutDurationMs(runoutBeats(0, 5, { pauseSeconds: Infinity, boards: 2 }))
+    expect(two).toBeGreaterThan(one * 1.8)
   })
 
   it('still answers with one board on every ordinary hand', () => {

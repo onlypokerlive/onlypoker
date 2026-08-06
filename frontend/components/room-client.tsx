@@ -552,6 +552,7 @@ export function RoomClient({ roomId }: { roomId: string }) {
               // them; what waits for the last card is the answer — the winning
               // five lighting up and the pot going out.
               boardCompleteMs={boardCompleteMs}
+              revealing={revealing}
               // A hand turning over is a sound the table makes, and the table
               // is the only thing that knows when one does — the reveal runs
               // on a clock here, not on anything the server said.

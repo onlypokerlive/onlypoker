@@ -10,12 +10,13 @@ export interface Runout {
   /** The board to draw right now. */
   board: string[]
   /**
-   * Every board being dealt, each held to the same street.
+   * Every board being dealt, each held to its own street.
    *
-   * Together and not one after the other. Two boards run in sequence is eight
-   * seconds of a table nobody can act on, and it also answers the question
-   * twice: the whole reason for dealing twice is watching the same card come
-   * for one board and not the other, which you can only do side by side.
+   * One after the other, which is how a card room deals them: the first board
+   * runs out, the table reacts, and only then does the second come. The row
+   * waiting its turn is empty rather than absent — its room was reserved when
+   * the second board came into existence, because a middle that grows halfway
+   * through a run-out is a middle every seat was placed against a moment ago.
    */
   boards: string[][]
   /** Whether the reveal is still running. */
@@ -54,7 +55,10 @@ export interface Runout {
  * three cards and no stakes.
  */
 export function useRunout(view: GameView | null): Runout {
-  const [heldTo, setHeldTo] = useState<number | null>(null)
+  // How many cards of each board to show, or null once the whole run-out is
+  // over and the table is simply looking at what it dealt. One entry per board:
+  // while the first is running the second is still at zero.
+  const [heldTo, setHeldTo] = useState<number[] | null>(null)
   const [duration, setDuration] = useState(0)
   const seenLength = useRef(0)
   const seenHand = useRef(0)
@@ -99,6 +103,7 @@ export function useRunout(view: GameView | null): Runout {
     // times the reveal from, so the two clocks cannot disagree about when the
     // last hand landed face up.
     const handsUpMs = revealDurationMs(view.showOrder?.length ?? 0)
+    const boards = Math.max(1, view.boards?.length ?? 1)
     const beats: RunoutBeat[] = runoutBeats(from, length, {
       pauseSeconds: runoutPauseSeconds(
         view.autoDealAtMs,
@@ -107,28 +112,42 @@ export function useRunout(view: GameView | null): Runout {
         view.paused,
       ),
       handsUpMs,
+      boards,
     })
     if (!beats.length) return
 
+    /**
+     * Where every board stands at one beat.
+     *
+     * The boards behind the one being dealt are finished, the one being dealt
+     * is at this street, and the ones still to come are empty — not missing.
+     * `from` and not zero for the boards behind: a run-out that begins on the
+     * turn shares the cards that were already out.
+     */
+    const at = (beat: RunoutBeat) =>
+      Array.from({ length: boards }, (_, b) =>
+        b < beat.board ? length : b === beat.board ? beat.size : from,
+      )
+
     clearTimers()
-    setHeldTo(from)
+    setHeldTo(Array.from({ length: boards }, () => from))
     setDuration(runoutDurationMs(beats))
     beats.forEach((beat, i) => {
       timers.current.push(
-        setTimeout(() => setHeldTo(i === beats.length - 1 ? null : beat.size), beat.at),
+        setTimeout(() => setHeldTo(i === beats.length - 1 ? null : at(beat)), beat.at),
       )
     })
   }, [view])
 
   const revealing = heldTo !== null
-  // The same street on every board. Both are the same length at every beat, so
-  // one held-to answers all of them — which is also what keeps `runoutBeats`
-  // unchanged: the beats are about how far the board has got, not how many
-  // there are.
-  const held = (cards: string[]) => (revealing ? cards.slice(0, heldTo!) : cards)
   const dealt = view?.boards?.length ? view.boards : view?.board ? [view.board] : []
+  // Each board to its own street. The first board is the one the rest of the
+  // table reads from — `board` is what everything outside this hook still
+  // asks for — so it takes index 0's length.
+  const held = (cards: string[], b: number) =>
+    revealing ? cards.slice(0, heldTo![b] ?? 0) : cards
   return {
-    board: view ? held(view.board) : [],
+    board: view ? held(view.board, 0) : [],
     boards: dealt.map(held),
     revealing,
     // Not `revealing ? duration : 0` — see the field. Cleared where it becomes

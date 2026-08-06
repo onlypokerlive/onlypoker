@@ -183,7 +183,12 @@ HANDOVER_SHOWDOWN_SECONDS = 9
 # and no stakes. See `runoutBeats`.
 HANDOVER_ALL_IN_SECONDS = 8
 # A second board is a second answer to who won, and it gets read separately.
-HANDOVER_SECOND_BOARD_SECONDS = 3
+#
+# Eight and not three, and the same eight as the all-in above, because it now
+# buys the same thing: the second board is *dealt out*, one street at a time,
+# after the first one has finished — which is the order a card room deals them
+# in. Three seconds paid for looking at five cards that were already there.
+HANDOVER_SECOND_BOARD_SECONDS = 8
 # Somebody left the tournament: the one thing at this table that does not happen
 # again, and the only reason to hold everybody a moment longer.
 HANDOVER_BUST_SECONDS = 4
@@ -200,9 +205,15 @@ HANDOVER_BUST_SECONDS = 4
 #
 # What the client actually needs on that hand: eight hands turning over is 3.4s,
 # the lead-in and three streets 4.0s, the winning five 1.5s — 8.9s before anyone
-# has begun to take it in. Twenty-two leaves that hand the same room to be read
-# in that an ordinary showdown gets, and it is the rarest hand of the night.
-HANDOVER_MAX_SECONDS = 22
+# has begun to take it in.
+#
+# Twenty-seven and not twenty-two, and again it is arithmetic. The second board
+# is dealt out now instead of appearing finished, so that same hand needs a beat
+# between the boards and three more streets: 1.1 + 3.0, call it 4.1s, for 13.0s
+# of telling. Twenty-two would have left it 9 seconds to be read in where an
+# ordinary showdown gets 13.1 — which is the cap quietly rewriting the reasons
+# above it again, and on the rarest hand of the night.
+HANDOVER_MAX_SECONDS = 27
 # Missing this many decisions in a row sits a player out, so one person who
 # walked away stops costing everyone else the full shot clock every hand.
 AUTO_SIT_OUT_TIMEOUTS = 3
@@ -3224,7 +3235,16 @@ def _build_view(room: dict[str, Any], viewer_id: str | None) -> dict[str, Any]:
         # Every clock is an absolute server timestamp; the client subtracts
         # serverTime to stay correct even when a device's clock is off.
         "actionDeadline": room.get("actionDeadline"),
-        "autoDealAt": room.get("autoDealAt"),
+        # When this handover ends, whichever way it ends.
+        #
+        # It is the same pause either way — `_handover_seconds` decides both —
+        # but the last hand of the night schedules `finishAt` instead of
+        # another deal, and only the deal was ever published. So the client
+        # paced the run-out against nothing on exactly the hand that had the
+        # most to show: the run-out of the hand that ends the tournament was
+        # squeezed into the eight-second default and then sat still for the
+        # twenty the server was actually waiting.
+        "autoDealAt": room.get("autoDealAt") or _scheduled_finish(room),
         # When the table starts itself again, or None if it is not on a break.
         "breakUntil": room.get("breakUntil"),
         # The moment this view describes. Sent back with a decision so an order

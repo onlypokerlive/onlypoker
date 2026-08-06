@@ -518,6 +518,7 @@ export function PokerTable({
   revealed = false,
   secondsLeft = null,
   boardCompleteMs = 0,
+  revealing = false,
   audible = false,
 }: {
   view: GameView
@@ -534,6 +535,14 @@ export function PokerTable({
    * See `Runout.boardCompleteMs`.
    */
   boardCompleteMs?: number
+  /**
+   * The board is still being dealt out from a hand the server has settled.
+   *
+   * The table has to know, because everything the server sends about a hand
+   * arrives at once: the result is on this view while the cards that produced
+   * it are still on their way to the felt.
+   */
+  revealing?: boolean
   /** Whether the table may make a noise. Off is off. */
   audible?: boolean
 }) {
@@ -795,8 +804,16 @@ export function PokerTable({
   // real table says out loud and the app used to swallow, which is why nobody
   // who was looking at their own cards knew where the action was. Once the
   // hand is settled the only thing worth saying is who won it.
+  //
+  // `revealing` counts as "during a hand" even though the server has settled
+  // it. The result arrives in the same response as the finished board, so the
+  // table was announcing who won while the board that decided it was still
+  // being dealt — reading the answer out over its own run-out. It was there
+  // with one board and it is unmissable with two, which take twice as long.
   const said =
-    view.phase === "hand" ? latestLine(view.actions, view.players) : view.message
+    view.phase === "hand" || revealing
+      ? latestLine(view.actions, view.players)
+      : view.message
 
   // ---- Movement ----
   //
@@ -1319,7 +1336,16 @@ export function PokerTable({
                     // A card's height when there are cards, and the height of
                     // the line of text when there are not — the two cases
                     // `estimateCentreBox` reserves for.
-                    minHeight: (cards.length > 0 ? BOARD_CARD_H : 20) * u,
+                    //
+                    // Except on a hand being run twice, where an empty row is
+                    // a board whose turn has not come and still stands a card
+                    // tall. Measured at 320px: without this the block is 40px
+                    // shorter while the first board runs alone, so the first
+                    // board slides up the felt the moment the second starts —
+                    // in the middle of the one sequence nobody is looking away
+                    // from.
+                    minHeight:
+                      (cards.length > 0 || boardRows > 1 ? BOARD_CARD_H : 20) * u,
                   }}
                 >
                   {cards.length > 0 ? (
@@ -1335,14 +1361,19 @@ export function PokerTable({
                         dim={beats.dimming}
                       />
                     ))
-                  ) : (
+                  ) : b === 0 ? (
                     <span
                       className="text-muted-foreground/70"
                       style={{ fontSize: 12 * u }}
                     >
                       {view.phase === "hand" ? "Community cards" : "Waiting for next hand"}
                     </span>
-                  )}
+                  ) : null}
+                  {/* A second board with nothing on it yet says nothing at
+                      all. It is not an empty felt waiting for a deal, it is a
+                      board whose turn has not come — and the line meant for
+                      between hands read as "this table is over" while the
+                      first board was still being played out under it. */}
                 </div>
                 {/* Who took this one. With two boards the same player usually
                     has two different hands, so the server sends no `handCards`

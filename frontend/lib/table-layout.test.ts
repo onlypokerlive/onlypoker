@@ -578,9 +578,14 @@ describe('a hand run twice', () => {
     // of the ring: this same matrix failed at every phone width there is.
     expect(wide(two)).toBe(wide(one))
 
-    // An empty felt has one line of text however many boards are coming.
-    expect(tall(estimateCentreBox(table, 0, { boardRows: 2 }))).toBe(
-      tall(estimateCentreBox(table, 0, { boardRows: 1 })),
+    // And two boards with no cards on either is **not** an empty felt: it is
+    // the first beat of the run-out, and it lasts the whole lead-in. The
+    // component is already drawing two full rows and their two name lines
+    // there, so the reservation has to be the same as with cards on them.
+    expect(tall(estimateCentreBox(table, 0, { boardRows: 2 }))).toBe(tall(two))
+    // One board and no cards is still one line of text: the felt between hands.
+    expect(tall(estimateCentreBox(table, 0, { boardRows: 1 }))).toBeLessThan(
+      tall(one),
     )
   })
 
