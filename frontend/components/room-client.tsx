@@ -489,8 +489,8 @@ export function RoomClient({ roomId }: { roomId: string }) {
       </header>
 
       {view.phase === "lobby" ? (
-        <div className="flex flex-1 items-center justify-center overflow-y-auto">
-          <div className="flex w-full max-w-md flex-col gap-3">
+        <div className="flex min-h-0 flex-1 justify-center">
+          <div className="flex min-h-0 w-full max-w-md flex-col">
             <RoomLobby
               view={view}
               roomId={roomId}
@@ -498,10 +498,14 @@ export function RoomClient({ roomId }: { roomId: string }) {
               onStart={handleStart}
               onRulesSaved={showFresh}
               busy={busy}
-            />
-            {/* The moment you actually need this is before the cards come out:
-                somebody joined the wrong table, or took the last seat. */}
-            <HostPanel view={view} roomId={roomId} onDone={refresh} session={session} />
+            >
+              {/* Inside the lobby's scroll area rather than under it: the
+                  moment you actually need this is before the cards come out —
+                  somebody joined the wrong table, or took the last seat — and
+                  a panel below a screen that already fills the phone is a
+                  panel nobody reaches. */}
+              <HostPanel view={view} roomId={roomId} onDone={refresh} session={session} />
+            </RoomLobby>
           </div>
         </div>
       ) : finished ? (

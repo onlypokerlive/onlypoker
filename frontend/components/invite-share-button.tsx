@@ -22,6 +22,7 @@ export function InviteShareButton({
   surface,
   compact = false,
   emphasis = false,
+  size = 'lg',
 }: {
   roomId: string
   roomName: string
@@ -31,6 +32,15 @@ export function InviteShareButton({
   surface: Exclude<ShareSurface, 'results'>
   compact?: boolean
   emphasis?: boolean
+  /**
+   * How loud the button is where it stands.
+   *
+   * In the lobby it is the quiet one under the empty seats, because the loud
+   * one on that screen is the button that deals the cards. `sm` is still 44px
+   * tall here — this repo floors every button at the tap target and only
+   * changes the type and the padding.
+   */
+  size?: 'sm' | 'lg'
 }) {
   const [shared, setShared] = useState(false)
   const [busy, setBusy] = useState(false)
@@ -64,7 +74,7 @@ export function InviteShareButton({
       <Button
         type="button"
         variant={emphasis ? 'default' : 'outline'}
-        size={compact ? 'icon-lg' : 'lg'}
+        size={compact ? 'icon-lg' : size}
         onClick={handleShare}
         disabled={busy}
         aria-label={compact ? (busy ? 'Opening share options' : 'Invite players') : undefined}

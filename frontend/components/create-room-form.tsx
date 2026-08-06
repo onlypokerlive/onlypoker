@@ -191,9 +191,9 @@ export function CreateRoomForm({
 
   return (
     <form ref={formRef} onSubmit={handleSubmit} aria-busy={loading} noValidate>
-      <FieldGroup className="gap-3">
-        <Field data-invalid={issue?.field === 'hostName'}>
-          <FieldLabel htmlFor="hostName">
+      <FieldGroup className="gap-2">
+        <Field className="gap-1.5" data-invalid={issue?.field === 'hostName'}>
+          <FieldLabel className="text-[12.5px]" htmlFor="hostName">
             Your profile{' '}
             <span className="font-medium text-primary/85">· you’re the host</span>
           </FieldLabel>
@@ -231,9 +231,9 @@ export function CreateRoomForm({
           ) : null}
         </Field>
 
-        <div className="grid grid-cols-2 gap-3">
-          <Field data-invalid={issue?.field === 'roomName'}>
-            <FieldLabel htmlFor="roomName">Table name</FieldLabel>
+        <div className="grid grid-cols-2 gap-2">
+          <Field className="gap-1.5" data-invalid={issue?.field === 'roomName'}>
+            <FieldLabel className="text-[12.5px]" htmlFor="roomName">Table name</FieldLabel>
             <Input
               id="roomName"
               value={roomName}
@@ -250,8 +250,8 @@ export function CreateRoomForm({
               <FieldError id="roomName-error">{issue.message}</FieldError>
             ) : null}
           </Field>
-          <Field data-invalid={issue?.field === 'password'}>
-            <FieldLabel htmlFor="password">Password</FieldLabel>
+          <Field className="gap-1.5" data-invalid={issue?.field === 'password'}>
+            <FieldLabel className="text-[12.5px]" htmlFor="password">Password</FieldLabel>
             <Input
               id="password"
               type="password"
@@ -295,8 +295,12 @@ export function CreateRoomForm({
             </>
           )}
         </Button>
-        <p className="text-center text-xs leading-relaxed text-muted-foreground">
-          You set the rules on the next screen. No account, no download, no real money.
+        {/* One line, and the three things that are actually different about
+            this. "You set the rules on the next screen" went: the button says
+            where it goes, and the two lines it took were two lines the table
+            above needed to keep its shape on a 568px phone. */}
+        <p className="text-center text-[11px] leading-snug text-muted-foreground">
+          No account, no download, no real money.
         </p>
       </FieldGroup>
     </form>

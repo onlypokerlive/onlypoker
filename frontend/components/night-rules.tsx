@@ -75,18 +75,20 @@ export function NightRules({
   }
 
   return (
-    <section className="flex flex-col gap-2.5 rounded-xl border border-border/50 bg-background/30 p-3">
-      <div>
-        <h3 className="text-sm font-semibold text-foreground">The rules of the night</h3>
-        <p className="text-xs text-muted-foreground">
+    <section className="flex flex-col gap-2">
+      <div className="flex flex-col gap-0.5">
+        <h3 className="text-[10.5px] font-bold uppercase tracking-[0.13em] text-muted-foreground">
+          The rules of the night
+        </h3>
+        <p className="text-[11.5px] leading-snug text-muted-foreground">
           {view.isHost
-            ? 'You set them. Pick a format and adjust it below.'
+            ? 'You set them. Pick a preset and adjust it below to taste.'
             : 'The host sets them before the first hand.'}
         </p>
       </div>
 
       {view.isHost ? (
-        <div className="grid grid-cols-2 gap-2">
+        <div className="grid grid-cols-2 gap-[7px]">
           {FORMATS.map((format) => (
             <Button
               key={format.id}
@@ -95,15 +97,20 @@ export function NightRules({
               aria-pressed={current === format.id}
               disabled={busy}
               onClick={() => pick(format)}
-              className="h-auto flex-col items-start gap-0 whitespace-normal px-2.5 py-2 text-left"
+              className={cn(
+                'h-auto flex-col items-start gap-0.5 whitespace-normal rounded-[13px] px-2.5 py-2 text-left',
+                current === format.id ? 'border-primary/60' : '',
+              )}
             >
-              <span className="flex w-full items-baseline justify-between gap-1">
-                <span className="text-sm font-semibold">{format.label}</span>
-                <span className="font-mono text-[10px] font-normal opacity-70">
-                  {format.duration}
-                </span>
+              {/* Name, how long a night of it runs, and what it is. Stacked
+                  rather than name-and-duration on one line: the duration is
+                  the number that decides which of the four you tap, and on a
+                  narrow phone it was being squeezed against the name. */}
+              <span className="text-[13.5px] font-bold leading-tight">{format.label}</span>
+              <span className="font-mono text-[10.5px] font-normal leading-none text-primary">
+                {format.duration}
               </span>
-              <span className="text-[10px] font-normal leading-snug opacity-70">
+              <span className="text-[10.5px] font-normal leading-snug opacity-70">
                 {format.blurb}
               </span>
             </Button>
@@ -115,29 +122,30 @@ export function NightRules({
           "No extras". A row that vanishes when its rule is off reads as a row
           that failed to load, and this list is what somebody scans to check
           they got the night they meant. */}
-      <dl
-        className={cn(
-          'grid gap-x-3 gap-y-1 rounded-lg border border-primary/15 bg-primary/5 px-2.5 py-2',
-          'grid-cols-[auto_minmax(0,1fr)]',
-        )}
-      >
-        {summary.map((line) => (
-          <div key={line.label} className="contents">
-            <dt className="text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
-              {line.label}
-            </dt>
-            {/* Wraps rather than truncating. Chaos has four extras on and the
-                one line worth reading was ending in an ellipsis. */}
-            <dd className="min-w-0 text-xs text-card-foreground">{line.value}</dd>
-          </div>
-        ))}
-      </dl>
+      <div className="flex flex-col gap-[7px] rounded-[14px] border border-primary/30 bg-primary/[0.07] px-3 py-2.5">
+        <h4 className="font-serif text-[14.5px] font-bold leading-none text-foreground">
+          The house plays like this
+        </h4>
+        <dl className="grid grid-cols-[auto_minmax(0,1fr)] gap-x-2.5 gap-y-[3px]">
+          {summary.map((line) => (
+            <div key={line.label} className="contents">
+              <dt className="text-[11.5px] text-muted-foreground">{line.label}</dt>
+              {/* Wraps rather than truncating. Chaos has four extras on and the
+                  one line worth reading was ending in an ellipsis. */}
+              <dd className="min-w-0 text-right font-mono text-[11.5px] tabular-nums text-card-foreground">
+                {line.value}
+              </dd>
+            </div>
+          ))}
+        </dl>
+      </div>
 
       {view.isHost ? (
         <Button
           type="button"
           variant="outline"
-          className="w-full justify-start"
+          size="sm"
+          className="w-full"
           onClick={() => setOpen(true)}
         >
           <Settings2 data-icon="inline-start" />
