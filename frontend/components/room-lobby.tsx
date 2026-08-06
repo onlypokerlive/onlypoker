@@ -68,6 +68,7 @@ export function RoomLobby({
   onStart,
   onRulesSaved,
   busy,
+  children,
 }: {
   view: GameView
   roomId: string
@@ -75,15 +76,32 @@ export function RoomLobby({
   onStart: () => void
   onRulesSaved: (next: GameView) => void
   busy: boolean
+  /** Rendered with the rest of the scrolling contents — see the layout note. */
+  children?: React.ReactNode
 }) {
   const seated = view.players.length
   const canStart = seated >= 2
 
+  /*
+   * The invite and the start button are pinned; everything above them scrolls.
+   *
+   * This screen grew a whole card of house rules and nothing was holding it to
+   * the phone it is played on. Measured at 320x568 before the fix: the seat
+   * ring was cropped 133px off the top, "Invite players" sat at 598 on a
+   * 568-tall screen — and `scrollHeight === clientHeight`, so it could not even
+   * be scrolled to. Centring a flex child taller than its container clips it at
+   * *both* ends, and `overflow-y-auto` cannot reach past the top edge.
+   *
+   * So the action is a footer that never shrinks, and the rest is a scroll
+   * area. Same shape as the rules sheet, and the same reason: the button that
+   * does the thing is not allowed to depend on how much is above it.
+   */
   return (
-    <section className="room-panel w-full rounded-[1.6rem] p-3.5 sm:p-5">
+    <section className="room-panel flex min-h-0 w-full flex-1 flex-col rounded-[1.6rem] p-3.5 sm:p-5">
       <h2 className="sr-only">Table lobby</h2>
 
-      <div className="grid items-center gap-4 md:grid-cols-[minmax(0,1.15fr)_minmax(18rem,0.85fr)] md:gap-5">
+      <div className="-mx-1 flex min-h-0 flex-1 flex-col gap-3 overflow-y-auto px-1">
+      <div className="grid items-start gap-4 md:grid-cols-[minmax(0,1.15fr)_minmax(18rem,0.85fr)] md:gap-5">
         <LobbySeatRail players={view.players} maxSeats={view.maxSeats} />
 
         <div className="flex min-w-0 flex-col gap-3">
@@ -143,41 +161,44 @@ export function RoomLobby({
             onSaved={onRulesSaved}
           />
 
-          <div className="mt-auto flex flex-col gap-2">
-            <InviteShareButton
-              roomId={view.roomId}
-              roomName={view.roomName}
-              phase="lobby"
-              isHost={view.isHost}
-              playerCount={seated}
-              surface="lobby"
-              emphasis={!canStart}
-            />
-
-            {view.isHost ? (
-              canStart ? (
-                <Button onClick={onStart} disabled={busy} className="w-full" size="lg">
-                  Start game
-                </Button>
-              ) : (
-                <div
-                  role="status"
-                  className="flex min-h-11 items-center justify-center gap-2 rounded-xl border border-dashed border-border/70 bg-muted/25 px-3 text-sm text-muted-foreground"
-                >
-                  <UsersRound className="size-4 text-primary/70" aria-hidden />
-                  One more player is needed to deal in
-                </div>
-              )
-            ) : (
-              <div
-                role="status"
-                className="flex min-h-11 items-center justify-center rounded-xl border border-border/60 bg-muted/25 px-3 text-center text-sm text-muted-foreground"
-              >
-                Waiting for the host to start the game…
-              </div>
-            )}
-          </div>
         </div>
+      </div>
+      {children}
+      </div>
+
+      <div className="mt-3 flex shrink-0 flex-col gap-2 border-t border-border/40 pt-3">
+        <InviteShareButton
+          roomId={view.roomId}
+          roomName={view.roomName}
+          phase="lobby"
+          isHost={view.isHost}
+          playerCount={seated}
+          surface="lobby"
+          emphasis={!canStart}
+        />
+
+        {view.isHost ? (
+          canStart ? (
+            <Button onClick={onStart} disabled={busy} className="w-full" size="lg">
+              Start game
+            </Button>
+          ) : (
+            <div
+              role="status"
+              className="flex min-h-11 items-center justify-center gap-2 rounded-xl border border-dashed border-border/70 bg-muted/25 px-3 text-sm text-muted-foreground"
+            >
+              <UsersRound className="size-4 text-primary/70" aria-hidden />
+              One more player is needed to deal in
+            </div>
+          )
+        ) : (
+          <div
+            role="status"
+            className="flex min-h-11 items-center justify-center rounded-xl border border-border/60 bg-muted/25 px-3 text-center text-sm text-muted-foreground"
+          >
+            Waiting for the host to start the game…
+          </div>
+        )}
       </div>
     </section>
   )
