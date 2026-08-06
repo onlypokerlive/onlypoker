@@ -142,6 +142,21 @@ async function felt(page: Page) {
       winners: [...document.querySelectorAll('[data-testid^="board-winner-"]')].map(
         (el) => el.textContent?.trim() ?? '',
       ),
+      /* How much of the last board card is still its back.
+         `data-cards=5` says React inserted the river; it does not say the river
+         can be read. `card-arrive` takes 420ms to fly it in, turn it edge-on
+         and open it, and the back sits over the face for the first half of
+         that. Anything that announces the result has to wait for this to reach
+         zero — the winner's name coming up over a face-down river is the
+         ending read out on top of itself. */
+      riverBack: (() => {
+        const rows = [...document.querySelectorAll('[data-board]')]
+        const last = rows[rows.length - 1]
+        if (!last) return null
+        const cards = [...last.querySelectorAll('.card-arriving, [data-piece="board-card"]')]
+        const back = cards[cards.length - 1]?.querySelector('.card-arriving-back')
+        return back ? Number(getComputedStyle(back).opacity) : 0
+      })(),
     }
   })
 }
@@ -238,5 +253,19 @@ for (const viewport of [
     const named = shots.filter((s) => s.winners.length === 2).at(-1)
     expect(named, 'neither board was ever named').toBeTruthy()
     expect(named!.winners.every((w) => w.length > 0)).toBe(true)
+
+    /* And nobody was named while the last river was still face down.
+       `boardCompleteMs` used to end the moment React inserted the fifth card,
+       which is where the river *starts* — `card-arrive` spends another 420ms
+       flying it in and turning it over. With two boards there are usually no
+       `handCards` to light, so the showdown finished exactly on that number:
+       the winner's name came up and the pot left the middle over a card that
+       was still showing its back. */
+    const firstNamed = shots.find((s) => s.winners.some((w) => w.length > 0))
+    expect(firstNamed, 'nobody was ever named').toBeTruthy()
+    expect(
+      firstNamed!.riverBack,
+      `the river was ${firstNamed!.riverBack} back when the winner was named, at ${firstNamed!.at}ms`,
+    ).toBeLessThan(0.01)
   })
 }

@@ -82,6 +82,20 @@ export const RUNOUT_RIVER_EXTRA_MS = 500
  */
 export const RUNOUT_SECOND_BOARD_MS = 1100
 
+/**
+ * How long a card takes to arrive after it appears.
+ *
+ * `card-arrive` in globals.css: the card flies in from the deck, turns edge-on
+ * and opens face up, and none of that is instant. React inserting the fifth
+ * board card is the *start* of the river, not the end of it.
+ *
+ * It has to be counted, because everything that waits for the board waits for
+ * the card to be readable and not for the element to exist. Without it the
+ * winning hand lit up and the pot left the middle while the river was still
+ * face down — an ending told over the top of itself.
+ */
+export const CARD_ARRIVAL_MS = 420
+
 /** Below this a card is a flicker rather than a card. */
 const MIN_STREET_MS = 140
 const MIN_LEAD_IN_MS = 200
@@ -157,7 +171,11 @@ export function runoutBeats(
   // "as fast as this is still watchable", not "use the default". `Infinity` is
   // the other real answer, for a table with nothing scheduled, and falls out of
   // the `min` below on its own.
-  const budget = Math.max(0, pauseSeconds) * 1000 * SHARE_OF_PAUSE - handsUpMs
+  // The last card's arrival comes out of the budget too. It was not reserved,
+  // so the run-out was being fitted to the pause by the moment its last card
+  // *appeared* and then overran by 420ms while that card was still turning.
+  const budget =
+    Math.max(0, pauseSeconds) * 1000 * SHARE_OF_PAUSE - handsUpMs - CARD_ARRIVAL_MS
   const scale = Math.min(1, Math.max(0, budget) / flexible)
 
   let at = handsUpMs + Math.max(MIN_LEAD_IN_MS, RUNOUT_LEAD_IN_MS * scale)
@@ -167,9 +185,16 @@ export function runoutBeats(
   })
 }
 
-/** When the board is finally complete, for whatever has to wait for it. */
+/**
+ * When the board is finally complete, for whatever has to wait for it.
+ *
+ * The last card's *arrival*, not its insertion — see `CARD_ARRIVAL_MS`. There
+ * is only one definition of "the board is done" on purpose: two of them, one
+ * of which was 420ms short, is how the pot came out from under a face-down
+ * river.
+ */
 export function runoutDurationMs(beats: RunoutBeat[]): number {
-  return beats.length ? beats[beats.length - 1].at : 0
+  return beats.length ? beats[beats.length - 1].at + CARD_ARRIVAL_MS : 0
 }
 
 /**

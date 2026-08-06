@@ -6,6 +6,7 @@ import {
   RUNOUT_STREET_MS,
   runoutBeats,
   runoutDurationMs,
+  CARD_ARRIVAL_MS,
   runoutPauseSeconds,
   runoutSteps,
 } from '@/lib/runout'
@@ -77,7 +78,9 @@ describe('runoutBeats', () => {
   })
 
   it('always finishes before the next hand is dealt', () => {
-    for (const autoDeal of [1, 2, 3, 5, 8, 12, 20]) {
+    // Threes and up. Below that there is no arrangement of cards that is still
+    // a run-out — see the floors, and the test under this one.
+    for (const autoDeal of [3, 5, 8, 12, 20]) {
       for (const [from, to] of [
         [0, 5],
         [0, 4],
@@ -99,6 +102,19 @@ describe('runoutBeats', () => {
     const beats = runoutBeats(0, 5, { pauseSeconds: 0 })
     expect(beats[0].at).toBeGreaterThan(0)
     for (const gap of gaps(beats)) expect(gap).toBeGreaterThanOrEqual(120)
+
+    /* And it says so honestly: under about 1.2 seconds the run-out cannot be
+       compressed any further, so it overruns the deal rather than turning into
+       a flicker. The deadline losing is the deliberate half of that trade — the
+       part that was not deliberate was measuring the overrun from the moment
+       the last card appeared, which quietly hid 420ms of it. */
+    // The lead-in floor, then one street floor per card after the first, then
+    // the last card's arrival. Three beats and not five: a board runs out in
+    // flop, turn, river.
+    const floor = 200 + (beats.length - 1) * 140 + CARD_ARRIVAL_MS
+    expect(beats).toHaveLength(3)
+    expect(runoutDurationMs(beats)).toBe(floor)
+    expect(runoutDurationMs(runoutBeats(0, 5, { pauseSeconds: 1 }))).toBe(floor)
   })
 
   it('has nothing to say about an ordinary street', () => {

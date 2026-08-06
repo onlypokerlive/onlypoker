@@ -1,7 +1,7 @@
 import { act, renderHook } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
-import { RUNOUT_SECOND_BOARD_MS, runoutBeats, runoutDurationMs } from '@/lib/runout'
+import { CARD_ARRIVAL_MS, RUNOUT_SECOND_BOARD_MS, runoutBeats, runoutDurationMs } from '@/lib/runout'
 import { REVEAL_STEP_MS } from '@/lib/showdown'
 import { useRunout } from '@/lib/use-runout'
 import type { GameView } from '@/lib/poker-api'
@@ -59,7 +59,7 @@ describe('useRunout', () => {
     rerender({ v: view(FULL) })
     expect(result.current.board).toEqual([])
     expect(result.current.revealing).toBe(true)
-    expect(result.current.boardCompleteMs).toBe(river)
+    expect(result.current.boardCompleteMs).toBe(river + CARD_ARRIVAL_MS)
 
     act(() => void vi.advanceTimersByTime(flop))
     expect(result.current.board).toHaveLength(3)
@@ -76,7 +76,7 @@ describe('useRunout', () => {
     // measured from it, and everything after the river — the winning five
     // lighting up, the pot going out — is still to come. Dropped to zero here,
     // all of that moved into a past the clock had gone by and fired at once.
-    expect(result.current.boardCompleteMs).toBe(river)
+    expect(result.current.boardCompleteMs).toBe(river + CARD_ARRIVAL_MS)
   })
 
   it('waits for the hands to turn over before the first card', () => {
