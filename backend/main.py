@@ -3110,6 +3110,17 @@ def _build_view(room: dict[str, Any], viewer_id: str | None) -> dict[str, Any]:
             "rebuyChips": room.get("rebuyChips") or "start",
             "rebuyChipsFixed": int(room.get("rebuyChipsFixed") or 0),
             "runItTwice": bool(room.get("runItTwice")),
+            # The ladders themselves, as multipliers, so the lobby can show the
+            # host what each one does to *their* stakes as they type them —
+            # without a second copy of these numbers living in the frontend,
+            # which is the copy that would quietly stop matching. Only while
+            # there is still a choice to make: after the first deal it is a
+            # couple of hundred bytes on every poll of a settled question.
+            **(
+                {"blindLadders": {k: list(v) for k, v in BLIND_LADDERS.items()}}
+                if room["phase"] == "lobby"
+                else {}
+            ),
         },
         # The decision on the table is being paid for out of the actor's bank.
         # Everybody sees it, because "they are into their time bank" is what

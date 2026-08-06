@@ -486,7 +486,14 @@ export function RoomClient({ roomId }: { roomId: string }) {
       {view.phase === "lobby" ? (
         <div className="flex flex-1 items-center justify-center overflow-y-auto">
           <div className="flex w-full max-w-md flex-col gap-3">
-            <RoomLobby view={view} onStart={handleStart} busy={busy} />
+            <RoomLobby
+              view={view}
+              roomId={roomId}
+              session={session}
+              onStart={handleStart}
+              onRulesSaved={showFresh}
+              busy={busy}
+            />
             {/* The moment you actually need this is before the cards come out:
                 somebody joined the wrong table, or took the last seat. */}
             <HostPanel view={view} roomId={roomId} onDone={refresh} session={session} />

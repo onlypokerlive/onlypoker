@@ -43,9 +43,66 @@ export function player(overrides: Partial<PlayerView> = {}): PlayerView {
   }
 }
 
-export function gameView(overrides: Partial<GameView> = {}): GameView {
-  const you = player({ id: 'me', name: 'You', isYou: true })
+/**
+ * The room block, rebuilt from the view a test actually asked for.
+ *
+ * `GameView` keeps the hot fields flat and the settings under `room`, so the
+ * same number lives in two places. Deriving one from the other here is what
+ * stops a test from setting `bigBlind: 50` and being handed a `room` that
+ * still says 10 — a fixture that disagrees with itself is worse than no
+ * fixture, because the assertion still passes.
+ */
+function roomFrom(view: Omit<GameView, 'room'>): GameView['room'] {
   return {
+    id: view.roomId,
+    name: view.roomName,
+    phase: view.phase,
+    smallBlind: view.smallBlind,
+    bigBlind: view.bigBlind,
+    startingChips: view.startingChips,
+    handNumber: view.handNumber,
+    tournamentNumber: view.tournamentNumber,
+    maxSeats: view.maxSeats,
+    actionSeconds: view.actionSeconds,
+    levelMinutes: view.levelMinutes,
+    blindLadder: 'standard',
+    autoDealSeconds: view.autoDealSeconds,
+    paused: view.paused,
+    breakEveryLevels: 0,
+    breakMinutes: 5,
+    lastHand: view.lastHand,
+    allowLeaving: view.allowLeaving,
+    lateEntryOpen: true,
+    lateEntryLevels: 4,
+    lateEntryChips: 'start',
+    rebuyOpen: view.rebuyOpen,
+    rebuyLevels: 4,
+    rebuysPerPlayer: 2,
+    rebuyChips: 'start',
+    rebuyChipsFixed: 0,
+    addOn: view.addOn,
+    timeBankSeconds: 60,
+    ante: view.ante,
+    anteMode: 'off',
+    straddle: false,
+    bombPotEvery: 0,
+    bombPot: view.bombPot,
+    sevenDeuce: 0,
+    runItTwice: false,
+    baize: view.baize,
+    deck: view.deck,
+  }
+}
+
+export function gameView(
+  overrides: Partial<Omit<GameView, 'room'>> & {
+    /** Merged over the derived block, so a test names only what it cares about. */
+    room?: Partial<GameView['room']>
+  } = {},
+): GameView {
+  const you = player({ id: 'me', name: 'You', isYou: true })
+  const { room, ...rest } = overrides
+  const flat: Omit<GameView, 'room'> = {
     roomId: 'ABC123',
     roomName: 'Test table',
     phase: 'hand',
@@ -99,8 +156,9 @@ export function gameView(overrides: Partial<GameView> = {}): GameView {
     runoutEndsAtMs: null,
     message: null,
     legal: null,
-    ...overrides,
+    ...rest,
   }
+  return { ...flat, room: { ...roomFrom(flat), ...room } }
 }
 
 export const session: Session = {

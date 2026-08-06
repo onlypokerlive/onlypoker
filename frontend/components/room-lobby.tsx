@@ -1,34 +1,10 @@
 import { Button } from "@/components/ui/button"
-import { Coins, Layers3, Timer, TrendingUp, UsersRound } from "lucide-react"
+import { UsersRound } from "lucide-react"
 import { cn } from "@/lib/utils"
-import type { GameView, PlayerView } from "@/lib/poker-api"
+import type { GameView, Session, PlayerView } from "@/lib/poker-api"
 import { InviteShareButton } from "@/components/invite-share-button"
+import { NightRules } from "@/components/night-rules"
 import { PlayerAvatar } from "@/components/player-avatar"
-
-function Stat({
-  icon: Icon,
-  value,
-  label,
-}: {
-  icon: typeof Coins
-  value: string
-  label: string
-}) {
-  return (
-    <div
-      className="flex min-w-0 flex-col items-center justify-center gap-1 rounded-xl border border-border/45 bg-background/35 px-1.5 py-2.5 text-center"
-      aria-label={`${label}: ${value}`}
-    >
-      <Icon className="size-3.5 text-primary/85" aria-hidden />
-      <span className="font-mono text-xs font-semibold tabular-nums text-card-foreground sm:text-sm">
-        {value}
-      </span>
-      <span className="text-[9px] font-semibold uppercase tracking-[0.12em] text-muted-foreground">
-        {label}
-      </span>
-    </div>
-  )
-}
 
 function seatPosition(seat: number, maxSeats: number) {
   const angle = Math.PI / 2 + (seat / maxSeats) * Math.PI * 2
@@ -87,11 +63,17 @@ function LobbySeatRail({ players, maxSeats }: { players: PlayerView[]; maxSeats:
 
 export function RoomLobby({
   view,
+  roomId,
+  session,
   onStart,
+  onRulesSaved,
   busy,
 }: {
   view: GameView
+  roomId: string
+  session: Session | null
   onStart: () => void
+  onRulesSaved: (next: GameView) => void
   busy: boolean
 }) {
   const seated = view.players.length
@@ -101,22 +83,7 @@ export function RoomLobby({
     <section className="room-panel w-full rounded-[1.6rem] p-3.5 sm:p-5">
       <h2 className="sr-only">Table lobby</h2>
 
-      <div className="grid grid-cols-4 gap-1.5 sm:gap-2">
-        <Stat icon={Coins} value={`${view.smallBlind}/${view.bigBlind}`} label="Blinds" />
-        <Stat icon={Layers3} value={view.startingChips.toLocaleString()} label="Starting" />
-        <Stat
-          icon={TrendingUp}
-          value={view.levelMinutes > 0 ? `${view.levelMinutes} min` : "Fixed"}
-          label="Levels"
-        />
-        <Stat
-          icon={Timer}
-          value={view.actionSeconds > 0 ? `${view.actionSeconds}s` : "None"}
-          label="Action"
-        />
-      </div>
-
-      <div className="mt-3 grid items-center gap-4 md:grid-cols-[minmax(0,1.15fr)_minmax(18rem,0.85fr)] md:gap-5">
+      <div className="grid items-center gap-4 md:grid-cols-[minmax(0,1.15fr)_minmax(18rem,0.85fr)] md:gap-5">
         <LobbySeatRail players={view.players} maxSeats={view.maxSeats} />
 
         <div className="flex min-w-0 flex-col gap-3">
@@ -165,6 +132,16 @@ export function RoomLobby({
               </li>
             ))}
           </ul>
+
+          {/* The night is agreed here and not on the home screen, with the
+              people it applies to in the room and "we've got two hours"
+              already said out loud. */}
+          <NightRules
+            view={view}
+            roomId={roomId}
+            session={session}
+            onSaved={onRulesSaved}
+          />
 
           <div className="mt-auto flex flex-col gap-2">
             <InviteShareButton

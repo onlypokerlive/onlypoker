@@ -208,6 +208,15 @@ export interface RoomView {
     actionSeconds: number
     /** Minutes per blind level. 0 means the blinds never move. */
     levelMinutes: number
+    /** How far the blinds move when they move, as opposed to how often. */
+    blindLadder?: 'gentle' | 'standard' | 'beast'
+    /**
+     * Every ladder, as multipliers of the opening stakes. Sent only in the
+     * lobby, where the host can still change their mind — so that the sheet
+     * can preview a ladder against their own blinds without keeping a second
+     * copy of the engine's numbers.
+     */
+    blindLadders?: Record<string, number[]>
     /** Pause between hands before the next is dealt automatically. */
     autoDealSeconds: number
     /** The table is stopped: no deals, and the blind clock is held still. */
@@ -225,6 +234,18 @@ export interface RoomView {
     rebuyOpen: boolean
     /** Whether this table offers the one-per-player top-up. */
     addOn: boolean
+    /**
+     * The settings themselves, not only what they currently allow. The lobby
+     * reads the rules back to the host and lets them change their mind, so the
+     * numbers they chose have to survive the round trip.
+     */
+    lateEntryLevels?: number
+    lateEntryChips?: 'start' | 'average'
+    rebuyLevels?: number
+    rebuysPerPlayer?: number
+    rebuyChips?: 'start' | 'average' | 'fixed'
+    rebuyChipsFixed?: number
+    runItTwice?: boolean
     /** Extra seconds each player gets for the whole tournament. 0 is off. */
     timeBankSeconds: number
     /** Dead money each hand, already scaled to this level. */
@@ -381,6 +402,17 @@ export interface GameView {
   /** What the table is made of — see `lib/table-style.ts`. */
   baize: string
   deck: string
+  /**
+   * The room block as the server sent it.
+   *
+   * The fields above are the ones the table reads on every frame, hoisted so
+   * that drawing a hand is not a walk through two objects. This is everything
+   * else: the settings the host chose, which only the lobby reads and only
+   * while there is still a choice to make. Flattening those too would add
+   * fifteen names to a type that thirty components already import, to be read
+   * by one screen.
+   */
+  room: RoomView['room']
   players: PlayerView[]
   board: string[]
   boards: string[][]
@@ -520,6 +552,7 @@ export function toGameView(v: RoomView, playerId: string | null): GameView {
     bombPot: v.room.bombPot,
     baize: v.room.baize,
     deck: v.room.deck,
+    room: v.room,
     players,
     board: v.board,
     pot: v.pot,
@@ -622,6 +655,8 @@ export interface CreateRoomInput {
   password: string
   /** Minutes per blind level; 0 keeps the blinds fixed. */
   levelMinutes: number
+  /** How far the blinds move when they move: gentle, standard or beast. */
+  blindLadder?: 'gentle' | 'standard' | 'beast'
   /** Seconds per decision; 0 removes the shot clock. */
   actionSeconds: number
   /** Dead money each hand: none, the big blind posts for everyone, or all do. */
@@ -647,6 +682,9 @@ export interface CreateRoomInput {
   /** Buy back in while the blinds are on this level or below. 0 is off. */
   rebuyLevels: number
   rebuysPerPlayer: number
+  /** What buying back in pays: the opening stack, the table average, or a set number. */
+  rebuyChips?: 'start' | 'average' | 'fixed'
+  rebuyChipsFixed?: number
   /** One extra top-up per player, inside the same window. */
   addOn: boolean
   /** Extra seconds each player gets for the whole tournament. 0 is off. */
@@ -733,6 +771,25 @@ export function clearJoinAttempt(roomId: string) {
 export const pokerApi = {
   createRoom: (input: CreateRoomInput) =>
     req<Session>('/api/rooms', { method: 'POST', body: JSON.stringify(input) }),
+
+  /**
+   * Agree the night, in the lobby, with the people who turned up.
+   *
+   * Refused by the server once the first hand is dealt, and that is the
+   * product decision rather than a limitation: house rules are settled before
+   * the cards come out.
+   */
+  setRules: (
+    roomId: string,
+    playerId: string,
+    rules: Record<string, unknown>,
+    token?: string,
+  ) =>
+    req<RoomView>(`/api/rooms/${roomId}/rules`, {
+      method: 'POST',
+      headers: auth(token),
+      body: JSON.stringify({ ...rules, playerId }),
+    }),
 
   joinRoom: (
     roomId: string,
