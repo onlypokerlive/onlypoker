@@ -38,7 +38,18 @@ function LobbySeatRail({ players, maxSeats }: { players: PlayerView[]; maxSeats:
 
   return (
     <div
-      className="lobby-seat-rail relative mx-auto aspect-[2.15/1] w-full max-w-xl"
+      /*
+       * `shrink-0`, and it is not decoration.
+       *
+       * This is a flex item in a scrolling column, and once the column overflows
+       * the browser is free to shrink it — `aspect-ratio` sets a shape, not a
+       * floor. Measured on Chrome on a Pixel at 360x526: 306x18. Eighteen
+       * pixels, with nine seats and "Waiting" stacked on top of each other in a
+       * brown smear. Desktop Chromium at the same width drew it at 306x142 and
+       * reported nothing, which is why this was only ever going to be found by
+       * looking at a phone.
+       */
+      className="lobby-seat-rail relative mx-auto aspect-[2.15/1] w-full max-w-xl shrink-0"
       role="img"
       aria-label={`${players.length} of ${maxSeats} seats filled`}
     >

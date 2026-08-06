@@ -81,7 +81,8 @@ async function measure(page: Page) {
       [...document.querySelectorAll('button, [role=status]')].find((el) =>
         re.test(el.textContent ?? ''),
       )
-    const rail = document.querySelector('.lobby-seat-rail')
+    const railEl = document.querySelector('.lobby-seat-rail')
+    const rail = railEl
     const invite = byText(/Invite players/)
     const action = byText(/Start game|One more player|Waiting for the host/)
     // The four formats are the middle of the screen, and the thing the two
@@ -117,6 +118,16 @@ async function measure(page: Page) {
       action: before.action,
       formats: box(formats),
       railTop: rail ? +rail.getBoundingClientRect().top.toFixed(1) : null,
+      /* The shape the ring is actually drawn at, not the one it asked for.
+         `aspect-ratio` on a flex item in a scrolling column is a shape, not a
+         floor: Chrome on a Pixel drew this 306 wide and *18* tall, nine seats
+         piled on top of each other, while desktop Chromium at the same width
+         drew it correctly and said nothing. */
+      railRatio: railEl
+        ? +(
+            railEl.getBoundingClientRect().width / railEl.getBoundingClientRect().height
+          ).toFixed(2)
+        : null,
       // The fine print that says who starts it and how many it takes.
       fineprint: [...document.querySelectorAll('p, span')].some((el) =>
         /Two is enough to deal/.test(el.textContent ?? ''),
@@ -179,6 +190,8 @@ for (const phone of PHONES) {
       // The seat ring starts on screen rather than above it. This is the one
       // that failed silently — cropped by an ancestor, with nothing to scroll.
       expect(m.railTop, 'the seat ring was cropped off the top').toBeGreaterThanOrEqual(0)
+      // And it is still a table rather than a stripe.
+      expect(m.railRatio, `the seat ring is drawn at ${m.railRatio}:1`).toBeCloseTo(2.15, 1)
 
       /* And the order is the approved one: ring, invite, the formats, and the
          one button that deals the cards on its own at the bottom.
