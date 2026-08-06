@@ -928,3 +928,917 @@
     display: none;
   }
 }
+
+/* ------------------------------------------------------------------------ *
+ * The hand on the home screen
+ *
+ * Thirteen seconds of an all-in, on a loop, above the form. Not decoration:
+ * it is the answer to "what is this", given before anybody reads a word — and
+ * an all-in is the right hand to answer with, because it is the one where the
+ * order of events is fixed and nobody has a decision left. The cards go face
+ * up BEFORE the flop and the board runs out in front of everyone, which is
+ * what a room does and what no product screenshot ever shows.
+ *
+ *   0.0–1.0   six cards go out, face down
+ *   1.3–2.0   Blinsky looks at his
+ *   2.3–3.2   ALL IN, and his stack crosses to the middle
+ *   3.4–4.3   Andylon calls
+ *   4.1–5.0   Alvariki calls
+ *   5.0–5.7   all three turn over — there is nothing left to decide
+ *   6.0       flop · 7.8 turn · 9.2 river
+ *   9.9–11.9  quads, and the pot goes back to Blinsky
+ *
+ * Every beat is a percentage of `--cycle`, so the whole scene retimes from one
+ * number. The materials are the app's own — `.rail`, `.baize`, `.card-face`,
+ * `.card-back` and the deck's four-colour ink — so this is the table the app
+ * actually draws rather than a picture of one.
+ * ------------------------------------------------------------------------ */
+.home-screen {
+  /* `size` and not `inline-size`: the table has to be able to ask how tall the
+     screen is, so a long phone grows the felt instead of leaving a hole
+     between the headline and the form. */
+  container-type: size;
+}
+
+/*
+ * The body: headline, subtitle, the hand, and the form pinned to the bottom.
+ *
+ * Everything is a share of the screen rather than a fixed size, because the
+ * one thing this page may never do is scroll — the button that opens a table
+ * has to be reachable on the shortest phone anybody owns, and a home screen
+ * that needs a swipe before it can be used has already lost the person it was
+ * written for.
+ */
+.home-body {
+  flex: 1 1 auto;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  padding: clamp(8px, 3cqi, 16px) clamp(13px, 4.3cqi, 20px) clamp(12px, 4cqi, 18px);
+  gap: clamp(5px, 2cqi, 10px);
+}
+.home-title {
+  font-size: clamp(23px, 8.4cqi, 34px);
+  line-height: 1.05;
+  letter-spacing: -0.015em;
+  flex: none;
+}
+.home-sub {
+  font-size: clamp(11px, 3.4cqi, 13.5px);
+  flex: none;
+}
+/* The stage takes whatever is left over… */
+.home-stage {
+  flex: 1 1 auto;
+  min-height: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+
+  /* Every measurement in the scene, in one place. */
+  --bc: clamp(18px, 6cqi, 26px); /* board card  */
+  --mc: clamp(30px, 10cqi, 42px); /* your card   */
+  --rc: clamp(14px, 4.7cqi, 20px); /* rival card  */
+  --ch: clamp(18px, 6.2cqi, 26px); /* chip        */
+  --av: clamp(23px, 7.7cqi, 31px); /* avatar      */
+  --cycle: 13s;
+}
+/* …and the form stays stuck to the bottom, whatever happens above it. */
+.home-form {
+  flex: none;
+  margin-top: auto;
+  padding-top: clamp(6px, 2.4cqi, 12px);
+}
+
+.home-table {
+  position: relative;
+  width: 100%;
+  aspect-ratio: 1.58 / 1;
+  max-height: 100%;
+}
+
+/* ---------- Cards ----------
+   Three layers on purpose. `.home-card` places and deals, `.home-flip` turns,
+   and the two faces hang off it. Dealing and turning both animate `transform`,
+   and on one element the second animation simply replaces the first.
+
+   The turn is a horizontal squeeze and a stepped swap of what is drawn — NOT
+   `preserve-3d` with `backface-visibility`, which is the arrangement this repo
+   already measured Safari leaving cards unpainted with. See `card-arrive`. */
+.home-card {
+  width: var(--w);
+  aspect-ratio: 5 / 7;
+  position: relative;
+  flex: none;
+}
+.home-flip {
+  position: absolute;
+  inset: 0;
+}
+.home-face,
+.home-back {
+  position: absolute;
+  inset: 0;
+  border-radius: calc(var(--w) * 0.13);
+  overflow: hidden;
+}
+.home-rank {
+  position: absolute;
+  top: 3%;
+  left: 8%;
+  font-size: calc(var(--w) * 0.36);
+  line-height: 1;
+  letter-spacing: -0.05em;
+  font-weight: 900;
+}
+.home-pip {
+  position: absolute;
+  right: 5%;
+  bottom: 0;
+  font-size: calc(var(--w) * 0.58);
+  line-height: 1;
+  opacity: 0.95;
+}
+
+/* ---------- The three seats ---------- */
+.home-seat {
+  position: absolute;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: calc(var(--av) * 0.16);
+  z-index: 3;
+}
+.home-seat[data-at='l'] {
+  left: 7%;
+  top: 0;
+}
+.home-seat[data-at='r'] {
+  right: 7%;
+  top: 0;
+}
+/* Yours is a row, not a column: the avatar beside the cards rather than under
+   them. Stacked, the avatar and the `+2,400` landed on top of each other and
+   the name of the hand landed on your own cards. */
+.home-seat[data-at='me'] {
+  left: 50%;
+  bottom: 0;
+  transform: translateX(-50%);
+  flex-direction: row;
+  align-items: flex-end;
+  gap: calc(var(--av) * 0.34);
+}
+.home-avatar {
+  width: var(--av);
+  aspect-ratio: 1;
+  border-radius: 999px;
+  overflow: hidden;
+  background: var(--secondary);
+  box-shadow:
+    0 0 0 1px var(--border),
+    0 3px 8px -3px rgba(0, 0, 0, 0.85);
+}
+.home-avatar img {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+.home-who {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: calc(var(--av) * 0.16);
+}
+/* With the name, not the initial: at a table of friends the one who shoved is
+   Blinsky, not "B". */
+.home-name {
+  font-size: calc(var(--av) * 0.36);
+  font-weight: 650;
+  line-height: 1;
+  letter-spacing: -0.01em;
+  white-space: nowrap;
+}
+.home-chips {
+  font-family: var(--font-mono, ui-monospace), monospace;
+  font-size: calc(var(--av) * 0.32);
+  color: var(--muted-foreground);
+  font-variant-numeric: tabular-nums;
+  line-height: 1;
+}
+.home-hand {
+  display: flex;
+  gap: calc(var(--rc) * 0.14);
+}
+/*
+ * The rivals' cards sit in front of them, on the cloth, not under their chin.
+ *
+ * They used to be centred under the avatar, and on a long phone — where the
+ * table is nearly round rather than flat — that put them off the felt entirely:
+ * an ellipse is narrow near its top, and at the height these cards land the
+ * cloth had already pulled in past them. Measured at 390x844, the outermost
+ * corner sat at 1.28 of the ellipse's radius, which is a card floating on the
+ * page background.
+ *
+ * The shift is in card widths and not pixels, so it tracks whatever size the
+ * scene is being drawn at. `e2e/home-hand.spec.ts` is what says it is enough.
+ */
+.home-seat[data-at='l'] .home-hand {
+  margin-left: calc(var(--rc) * 1.6);
+}
+.home-seat[data-at='r'] .home-hand {
+  margin-right: calc(var(--rc) * 1.6);
+}
+.home-seat[data-at='me'] .home-hand {
+  gap: calc(var(--mc) * 0.11);
+}
+
+/* ---------- The middle ---------- */
+.home-middle {
+  position: absolute;
+  left: 50%;
+  top: 45%;
+  transform: translate(-50%, -50%);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: calc(var(--bc) * 0.3);
+  z-index: 2;
+  --to-me: clamp(46px, 16cqi, 76px);
+}
+.home-board {
+  display: flex;
+  gap: calc(var(--bc) * 0.14);
+}
+
+/* ---------- Chips, seen edge-on ----------
+   A wide ellipse with the edge pastilles in a repeating conic gradient. That
+   is what makes it read as a casino chip rather than a stripe of colour. */
+.home-chip {
+  width: var(--ch);
+  height: calc(var(--ch) * 0.48);
+  position: relative;
+  flex: none;
+}
+/* The edge: a cylinder in silhouette is a rectangle with elliptical caps, so a
+   border-radius whose vertical radius is half the face height. The vertical
+   bands are the edge spots, which is what you see of a chip from the side. */
+.home-chip::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  border-radius: 50% / calc(var(--ch) * 0.17);
+  background:
+    repeating-linear-gradient(
+      90deg,
+      transparent 0 13%,
+      rgba(255, 255, 255, 0.5) 13% 20%,
+      transparent 20% 33%
+    ),
+    linear-gradient(180deg, var(--cr) 0 46%, color-mix(in srgb, var(--cr) 55%, #000) 100%);
+  box-shadow: 0 2px 3px -1px rgba(0, 0, 0, 0.75);
+}
+/* The face, foreshortened. The conic is spread over a box three times wider
+   than it is tall, so the spots come out already deformed by the perspective. */
+.home-chip::after {
+  content: '';
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: calc(var(--ch) * 0.34);
+  border-radius: 50%;
+  background:
+    radial-gradient(closest-side ellipse at 50% 50%, var(--cc) 0 40%, transparent 41%),
+    radial-gradient(
+      closest-side ellipse at 50% 50%,
+      transparent 0 45%,
+      rgba(255, 255, 255, 0.45) 46% 52%,
+      transparent 53%
+    ),
+    radial-gradient(
+      closest-side ellipse at 50% 50%,
+      transparent 0 85%,
+      color-mix(in srgb, var(--cr) 74%, #000) 86% 100%
+    ),
+    repeating-conic-gradient(from 12deg, var(--ivory) 0 15deg, transparent 15deg 45deg),
+    radial-gradient(closest-side ellipse at 50% 50%, var(--cr) 0 100%);
+  box-shadow:
+    inset 0 0 0 1px rgba(0, 0, 0, 0.4),
+    inset 0 1px 0 rgba(255, 255, 255, 0.4);
+}
+.home-chip[data-v='w'] {
+  --cr: #d6d0be;
+  --cc: #f6f2e7;
+}
+.home-chip[data-v='r'] {
+  --cr: #a8322a;
+  --cc: #cf4c41;
+}
+.home-chip[data-v='g'] {
+  --cr: #256b4a;
+  --cc: #35946a;
+}
+.home-chip[data-v='b'] {
+  --cr: #2b527d;
+  --cc: #3d72ab;
+}
+.home-chip[data-v='k'] {
+  --cr: #a97f2c;
+  --cc: #e0bb69;
+}
+.home-stack {
+  display: flex;
+  flex-direction: column-reverse;
+}
+/* The whole face overlaps: of each chip below, only its edge shows. */
+.home-stack .home-chip + .home-chip {
+  margin-bottom: calc(var(--ch) * -0.34);
+}
+.home-stack + .home-stack {
+  margin-left: calc(var(--ch) * -0.16);
+}
+.home-pot {
+  display: flex;
+  align-items: flex-end;
+}
+
+/* ---------- What the table says ---------- */
+/* Inside `.home-middle`, in flow under the pot: floating over the table it
+   landed squarely on your own cards. */
+.home-called {
+  white-space: nowrap;
+  font-weight: 700;
+  font-size: clamp(10px, 3.4cqi, 14px);
+  color: var(--inlay-hi);
+  letter-spacing: 0.02em;
+  /* Two shadows, because the pot crosses over it on the way to you: without
+     them the letters that fall on a chip disappear. */
+  text-shadow:
+    0 2px 8px rgba(0, 0, 0, 0.95),
+    0 0 5px rgba(0, 0, 0, 0.95);
+  opacity: 0;
+}
+/* And what got paid goes beside your avatar, out of flow so it does not push
+   your cards off centre. */
+.home-won {
+  position: absolute;
+  left: 100%;
+  bottom: 24%;
+  margin-left: calc(var(--av) * 0.26);
+  font-family: var(--font-mono, ui-monospace), monospace;
+  font-weight: 700;
+  font-size: clamp(10px, 3.2cqi, 13px);
+  color: var(--inlay-hi);
+  font-variant-numeric: tabular-nums;
+  text-shadow: 0 2px 8px rgba(0, 0, 0, 0.95);
+  white-space: nowrap;
+  opacity: 0;
+  z-index: 4;
+}
+
+/* 1 · The deal: each card leaves the middle for its seat. */
+.home-seat .home-card {
+  animation: home-dealt var(--cycle) cubic-bezier(0.2, 0.72, 0.3, 1) infinite;
+  animation-delay: calc(var(--d) * 85ms);
+}
+@keyframes home-dealt {
+  0% {
+    transform: translate(var(--fx), var(--fy)) scale(0.45) rotate(var(--fr));
+    opacity: 0;
+  }
+  2% {
+    opacity: 1;
+  }
+  7%,
+  93% {
+    transform: none;
+    opacity: 1;
+  }
+  97%,
+  100% {
+    transform: translateY(-7px);
+    opacity: 0;
+  }
+}
+.home-seat[data-at='l'] .home-card {
+  --fx: 76px;
+  --fy: 40px;
+  --fr: -24deg;
+}
+.home-seat[data-at='r'] .home-card {
+  --fx: -76px;
+  --fy: 40px;
+  --fr: 24deg;
+}
+.home-seat[data-at='me'] .home-card {
+  --fx: 0px;
+  --fy: -46px;
+  --fr: 10deg;
+}
+
+/* 2 · The turn. Yours the moment you get them; the rivals' when the all-in is
+      called rather than at showdown — with everybody in, there is nothing left
+      to protect. Squeeze on the wrapper, stepped swap on the back. */
+.home-flip[data-turn='mine'] {
+  animation: home-squeeze-mine var(--cycle) ease-in-out infinite;
+}
+.home-flip[data-turn='mine'] .home-back {
+  animation: home-hide-mine var(--cycle) step-end infinite;
+}
+.home-flip[data-turn='rival'] {
+  animation: home-squeeze-rival var(--cycle) ease-in-out infinite;
+}
+.home-flip[data-turn='rival'] .home-back {
+  animation: home-hide-rival var(--cycle) step-end infinite;
+}
+@keyframes home-squeeze-mine {
+  0%,
+  10% {
+    transform: scaleX(1);
+  }
+  12.5% {
+    transform: scaleX(0.06);
+  }
+  15%,
+  100% {
+    transform: scaleX(1);
+  }
+}
+@keyframes home-hide-mine {
+  0% {
+    opacity: 1;
+  }
+  12.5%,
+  100% {
+    opacity: 0;
+  }
+}
+@keyframes home-squeeze-rival {
+  0%,
+  38.5% {
+    transform: scaleX(1);
+  }
+  41.2% {
+    transform: scaleX(0.06);
+  }
+  44%,
+  100% {
+    transform: scaleX(1);
+  }
+}
+@keyframes home-hide-rival {
+  0% {
+    opacity: 1;
+  }
+  41.2%,
+  100% {
+    opacity: 0;
+  }
+}
+
+/* 3 · The betting. Each one says their piece and their stack leaves their seat
+      for the middle, so the pot is built in three goes instead of appearing
+      whole out of nothing. */
+.home-act {
+  position: absolute;
+  white-space: nowrap;
+  z-index: 5;
+  opacity: 0;
+  font-weight: 700;
+  line-height: 1;
+  font-size: clamp(9px, 3cqi, 12px);
+  padding: 0.28em 0.55em;
+  border-radius: 999px;
+  background: color-mix(in srgb, #0d0f0e 78%, transparent);
+  border: 1px solid color-mix(in srgb, var(--border) 90%, transparent);
+  color: var(--muted-foreground);
+  box-shadow: 0 3px 10px -4px rgba(0, 0, 0, 0.9);
+}
+.home-act[data-shove] {
+  color: var(--inlay-hi);
+  letter-spacing: 0.06em;
+  border-color: color-mix(in srgb, var(--inlay) 55%, transparent);
+  box-shadow:
+    0 0 12px -2px rgba(200, 168, 106, 0.45),
+    0 3px 10px -4px rgba(0, 0, 0, 0.9);
+}
+.home-seat[data-at='l'] .home-act {
+  left: 4%;
+  top: 104%;
+  animation: home-act-in var(--cycle) ease-out infinite;
+  animation-delay: 1100ms;
+}
+.home-seat[data-at='r'] .home-act {
+  right: 4%;
+  top: 104%;
+  animation: home-act-in var(--cycle) ease-out infinite;
+  animation-delay: 1800ms;
+}
+.home-seat[data-at='me'] .home-act {
+  left: 50%;
+  bottom: 112%;
+  animation: home-act-me var(--cycle) ease-out infinite;
+}
+@keyframes home-act-in {
+  0%,
+  17% {
+    opacity: 0;
+    transform: translateY(5px) scale(0.92);
+  }
+  20%,
+  34% {
+    opacity: 1;
+    transform: none;
+  }
+  39%,
+  100% {
+    opacity: 0;
+    transform: none;
+  }
+}
+@keyframes home-act-me {
+  0%,
+  17% {
+    opacity: 0;
+    transform: translate(-50%, 5px) scale(0.92);
+  }
+  20%,
+  34% {
+    opacity: 1;
+    transform: translate(-50%, 0) scale(1.06);
+  }
+  39%,
+  100% {
+    opacity: 0;
+    transform: translate(-50%, 0) scale(1.06);
+  }
+}
+
+/* Each stack comes from its owner's seat. */
+.home-stack {
+  animation: home-bet var(--cycle) cubic-bezier(0.24, 0.7, 0.32, 1) infinite;
+}
+.home-stack:nth-child(1) {
+  --bx: 0px;
+  --by: clamp(30px, 10cqi, 52px);
+}
+.home-stack:nth-child(2) {
+  --bx: calc(-1 * clamp(58px, 19cqi, 98px));
+  --by: calc(-1 * clamp(22px, 7cqi, 38px));
+  animation-delay: 1100ms;
+}
+.home-stack:nth-child(3) {
+  --bx: clamp(58px, 19cqi, 98px);
+  --by: calc(-1 * clamp(22px, 7cqi, 38px));
+  animation-delay: 1800ms;
+}
+@keyframes home-bet {
+  0%,
+  18% {
+    transform: translate(var(--bx), var(--by)) scale(0.4);
+    opacity: 0;
+  }
+  21% {
+    opacity: 1;
+  }
+  27%,
+  100% {
+    transform: none;
+    opacity: 1;
+  }
+}
+
+/* 4 · The board, dealt over hands that are already face up. Each street gets
+      its own keyframes rather than a delay: at delays of nearly three seconds
+      the river was still on screen inside the next hand. */
+.home-board .home-card:nth-child(-n + 3) {
+  animation: home-street-flop var(--cycle) cubic-bezier(0.2, 0.72, 0.3, 1) infinite;
+  animation-delay: calc(var(--s) * 1ms);
+}
+.home-board .home-card:nth-child(4) {
+  animation: home-street-turn var(--cycle) cubic-bezier(0.2, 0.72, 0.3, 1) infinite;
+}
+.home-board .home-card:nth-child(5) {
+  animation: home-street-river var(--cycle) cubic-bezier(0.2, 0.72, 0.3, 1) infinite;
+}
+@keyframes home-street-flop {
+  0%,
+  43% {
+    transform: translateY(-16px) scale(0.65);
+    opacity: 0;
+  }
+  47%,
+  93% {
+    transform: none;
+    opacity: 1;
+  }
+  97%,
+  100% {
+    opacity: 0;
+  }
+}
+@keyframes home-street-turn {
+  0%,
+  57% {
+    transform: translateY(-16px) scale(0.65);
+    opacity: 0;
+  }
+  61%,
+  93% {
+    transform: none;
+    opacity: 1;
+  }
+  97%,
+  100% {
+    opacity: 0;
+  }
+}
+@keyframes home-street-river {
+  0%,
+  68% {
+    transform: translateY(-16px) scale(0.65);
+    opacity: 0;
+  }
+  72%,
+  93% {
+    transform: none;
+    opacity: 1;
+  }
+  97%,
+  100% {
+    opacity: 0;
+  }
+}
+/* And each one lands face down and is turned by the dealer, which is what
+   happens at a table — they used to appear already open. */
+.home-board .home-card:nth-child(-n + 3) .home-flip {
+  animation: home-squeeze-flop var(--cycle) ease-in-out infinite;
+  animation-delay: calc(var(--s) * 1ms);
+}
+.home-board .home-card:nth-child(-n + 3) .home-back {
+  animation: home-hide-flop var(--cycle) step-end infinite;
+  animation-delay: calc(var(--s) * 1ms);
+}
+.home-board .home-card:nth-child(4) .home-flip {
+  animation: home-squeeze-turn var(--cycle) ease-in-out infinite;
+}
+.home-board .home-card:nth-child(4) .home-back {
+  animation: home-hide-turn var(--cycle) step-end infinite;
+}
+.home-board .home-card:nth-child(5) .home-flip {
+  animation: home-squeeze-river var(--cycle) ease-in-out infinite;
+}
+.home-board .home-card:nth-child(5) .home-back {
+  animation: home-hide-river var(--cycle) step-end infinite;
+}
+@keyframes home-squeeze-flop {
+  0%,
+  47% {
+    transform: scaleX(1);
+  }
+  49.5% {
+    transform: scaleX(0.06);
+  }
+  52%,
+  100% {
+    transform: scaleX(1);
+  }
+}
+@keyframes home-hide-flop {
+  0% {
+    opacity: 1;
+  }
+  49.5%,
+  100% {
+    opacity: 0;
+  }
+}
+@keyframes home-squeeze-turn {
+  0%,
+  61% {
+    transform: scaleX(1);
+  }
+  63.5% {
+    transform: scaleX(0.06);
+  }
+  66%,
+  100% {
+    transform: scaleX(1);
+  }
+}
+@keyframes home-hide-turn {
+  0% {
+    opacity: 1;
+  }
+  63.5%,
+  100% {
+    opacity: 0;
+  }
+}
+@keyframes home-squeeze-river {
+  0%,
+  72% {
+    transform: scaleX(1);
+  }
+  74.5% {
+    transform: scaleX(0.06);
+  }
+  77%,
+  100% {
+    transform: scaleX(1);
+  }
+}
+@keyframes home-hide-river {
+  0% {
+    opacity: 1;
+  }
+  74.5%,
+  100% {
+    opacity: 0;
+  }
+}
+
+/* 5 · The five that make the hand light up, and the rest step back. The dim
+      goes on the FACE alone: the back is already animating its own opacity for
+      the turn, and two animations on one property means only one of them
+      happens. */
+.home-card[data-win] .home-face {
+  animation: home-lit var(--cycle) ease-out infinite;
+}
+@keyframes home-lit {
+  0%,
+  74% {
+    box-shadow: none;
+  }
+  78%,
+  94% {
+    box-shadow:
+      0 0 0 2px var(--inlay),
+      0 0 14px rgba(200, 168, 106, 0.5);
+  }
+  98%,
+  100% {
+    box-shadow: none;
+  }
+}
+.home-card[data-lose] .home-face {
+  animation: home-dim var(--cycle) ease-out infinite;
+}
+@keyframes home-dim {
+  0%,
+  74% {
+    opacity: 1;
+  }
+  78%,
+  94% {
+    opacity: 0.28;
+  }
+  98%,
+  100% {
+    opacity: 1;
+  }
+}
+
+/* 6 · The pot crosses to whoever won it, growing as it comes. It does not move
+      until the hand has been called and read: starting earlier drags the chips
+      across the words exactly while they are being read. */
+.home-pot {
+  animation: home-pot-life var(--cycle) cubic-bezier(0.32, 0.72, 0.36, 1) infinite;
+}
+@keyframes home-pot-life {
+  0%,
+  16% {
+    transform: none;
+    opacity: 0;
+  }
+  19%,
+  89% {
+    transform: none;
+    opacity: 1;
+  }
+  95% {
+    transform: translateY(var(--to-me)) scale(1.16);
+    opacity: 1;
+  }
+  98%,
+  100% {
+    transform: translateY(var(--to-me)) scale(1.16);
+    opacity: 0;
+  }
+}
+
+/* 7 · What gets called, and what gets paid. */
+.home-called {
+  animation: home-say var(--cycle) ease-out infinite;
+}
+.home-won {
+  animation: home-say-won var(--cycle) ease-out infinite;
+}
+@keyframes home-say {
+  0%,
+  72% {
+    opacity: 0;
+    transform: translateY(5px);
+  }
+  76%,
+  86% {
+    opacity: 1;
+    transform: translateY(0);
+  }
+  90%,
+  100% {
+    opacity: 0;
+    transform: translateY(-4px);
+  }
+}
+@keyframes home-say-won {
+  0%,
+  89% {
+    opacity: 0;
+    transform: translateY(5px);
+  }
+  93%,
+  98% {
+    opacity: 1;
+    transform: translateY(0);
+  }
+  100% {
+    opacity: 0;
+    transform: translateY(-4px);
+  }
+}
+
+/* 8 · And the seat that takes it lights up. */
+.home-seat[data-at='me'] .home-avatar {
+  animation: home-take var(--cycle) ease-out infinite;
+}
+@keyframes home-take {
+  0%,
+  90% {
+    box-shadow:
+      0 0 0 1px var(--border),
+      0 3px 8px -3px rgba(0, 0, 0, 0.85);
+  }
+  94%,
+  99% {
+    box-shadow:
+      0 0 0 2px var(--inlay),
+      0 0 22px rgba(200, 168, 106, 0.55);
+  }
+  100% {
+    box-shadow:
+      0 0 0 1px var(--border),
+      0 3px 8px -3px rgba(0, 0, 0, 0.85);
+  }
+}
+
+/*
+ * On a long phone the table grows and the pieces with it, instead of leaving a
+ * crater between the headline and the form.
+ *
+ * Last in the file, and that is load-bearing: `@container` adds no specificity,
+ * so this block sitting above `.home-table` loses the tie to it and the table
+ * silently keeps the short phone's shape. Which is exactly what happened — a
+ * 390x844 screen drew a 1.58 table with 90px of nothing above and below it,
+ * while `--bc` and the rest of the variables in the very same block applied
+ * fine, because nothing else was setting those.
+ */
+@container (min-height: 700px) {
+  .home-table {
+    aspect-ratio: 1.14 / 1;
+  }
+  .home-stage {
+    --bc: clamp(22px, 7cqi, 30px);
+    --mc: clamp(36px, 11.6cqi, 48px);
+    --rc: clamp(17px, 5.5cqi, 23px);
+    --ch: clamp(22px, 7.2cqi, 30px);
+    --av: clamp(27px, 8.7cqi, 35px);
+  }
+}
+
+/*
+ * Motion off: the finished hand, held.
+ *
+ * Not a blank table. Somebody who has turned animation off should still be
+ * shown what this is — the board out, six cards face up, the pot in the middle
+ * — which is the last frame of the story rather than the first. Every back has
+ * to be told to go, because their opacity was only ever moved by an animation.
+ */
+@media (prefers-reduced-motion: reduce) {
+  .home-table *,
+  .home-table *::before,
+  .home-table *::after {
+    animation: none !important;
+  }
+  .home-back {
+    opacity: 0;
+  }
+  .home-called,
+  .home-won {
+    opacity: 1;
+  }
+  .home-act {
+    opacity: 0;
+  }
+}
