@@ -164,8 +164,12 @@ test('players talk while spectators read, with a non-reflowing mobile sheet', as
     const dismissTarget = await preview
       .getByRole('button', { name: 'Dismiss message preview' })
       .boundingBox()
-    expect(dismissTarget?.width).toBeGreaterThanOrEqual(44)
-    expect(dismissTarget?.height).toBeGreaterThanOrEqual(44)
+    // 44 is the touch target the control is built to, and `getBoundingClientRect`
+    // answers it as 43.999996 often enough to fail a run for four millionths of
+    // a pixel. The claim is "a thumb can hit this", so it is asserted with the
+    // tolerance a thumb has rather than the one a float does.
+    expect(dismissTarget?.width).toBeGreaterThan(43.5)
+    expect(dismissTarget?.height).toBeGreaterThan(43.5)
     const railAfterPreview = await fixedLayout(rail.page)
     expect(railAfterPreview.mainHeight).toBeCloseTo(railBeforePreview.mainHeight, 1)
     expect(railAfterPreview.ownTop).toBeCloseTo(railBeforePreview.ownTop, 1)

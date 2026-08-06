@@ -67,6 +67,21 @@ export const RUNOUT_STREET_MS = 1300
 /** And the card that decides it gets half a beat more. See §4.2 of the UX doc. */
 export const RUNOUT_RIVER_EXTRA_MS = 500
 
+/**
+ * The beat between one board finishing and the next one starting.
+ *
+ * Two boards are dealt **one after the other**, which is how a card room does
+ * it: the first board runs out, the table reacts to it, and only then does the
+ * second come. Side by side they are one event that happens to have ten cards
+ * in it; in sequence they are two answers to the same question, and the second
+ * one is being read against an answer everybody already has.
+ *
+ * Longer than a street and shorter than the lead-in. What it is paying for is
+ * not suspense — it is the moment where somebody says "well, that half is
+ * yours" before anybody looks down again.
+ */
+export const RUNOUT_SECOND_BOARD_MS = 1100
+
 /** Below this a card is a flicker rather than a card. */
 const MIN_STREET_MS = 140
 const MIN_LEAD_IN_MS = 200
@@ -79,6 +94,8 @@ const SHARE_OF_PAUSE = 0.66
 
 /** One board size and the moment it lands, measured from the hand ending. */
 export interface RunoutBeat {
+  /** Which board this street belongs to. Always 0 unless the hand ran twice. */
+  board: number
   size: number
   at: number
 }
@@ -106,17 +123,34 @@ export interface RunoutBeat {
 export function runoutBeats(
   from: number,
   to: number,
-  { pauseSeconds, handsUpMs = 0 }: { pauseSeconds: number; handsUpMs?: number },
+  {
+    pauseSeconds,
+    handsUpMs = 0,
+    boards = 1,
+  }: { pauseSeconds: number; handsUpMs?: number; boards?: number },
 ): RunoutBeat[] {
   const steps = runoutSteps(from, to)
   if (!steps.length) return []
 
+  // One run of streets per board, one board after the other. See
+  // `RUNOUT_SECOND_BOARD_MS`: this is the order a card room deals them in, and
+  // the second board is worth watching precisely because the first one has
+  // already been answered.
+  const run = Array.from({ length: Math.max(1, boards) }, (_, board) =>
+    steps.map((size, i) => ({ board, size, opens: i === 0 })),
+  ).flat()
+
   // The wait *before* each card, because that is where the tension is: the
   // river is the card that decides, so what it earns is a longer hold before it
-  // lands and not a longer look at it afterwards. The first card's wait is the
-  // lead-in, so it has no gap of its own.
-  const gaps = steps.map((size, i) =>
-    i === 0 ? 0 : RUNOUT_STREET_MS + (size === 5 ? RUNOUT_RIVER_EXTRA_MS : 0),
+  // lands and not a longer look at it afterwards. The very first card's wait is
+  // the lead-in, so it has no gap of its own; the first card of a *later* board
+  // waits out the board before it instead.
+  const gaps = run.map((street, i) =>
+    i === 0
+      ? 0
+      : street.opens
+        ? RUNOUT_SECOND_BOARD_MS
+        : RUNOUT_STREET_MS + (street.size === 5 ? RUNOUT_RIVER_EXTRA_MS : 0),
   )
   const flexible = RUNOUT_LEAD_IN_MS + gaps.reduce((a, b) => a + b, 0)
   // Zero is a real answer here — the deal is already due — and it has to mean
@@ -127,9 +161,9 @@ export function runoutBeats(
   const scale = Math.min(1, Math.max(0, budget) / flexible)
 
   let at = handsUpMs + Math.max(MIN_LEAD_IN_MS, RUNOUT_LEAD_IN_MS * scale)
-  return steps.map((size, i) => {
+  return run.map((street, i) => {
     if (i > 0) at += Math.max(MIN_STREET_MS, gaps[i] * scale)
-    return { size, at }
+    return { board: street.board, size: street.size, at }
   })
 }
 

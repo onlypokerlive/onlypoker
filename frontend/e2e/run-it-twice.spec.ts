@@ -1,7 +1,7 @@
 import { expect, test, type Page } from '@playwright/test'
 
 /**
- * Two boards, on the felt, where they happen.
+ * Two boards, one after the other, on the felt where they happen.
  *
  * The server has always sent both. The table drew `boards[0]` and nothing else,
  * so a hand run twice showed one run-out and then a results panel announcing
@@ -168,7 +168,7 @@ for (const viewport of [
     type Shot = Awaited<ReturnType<typeof felt>> & { at: number }
     const shots: Shot[] = []
     const start = Date.now()
-    while (Date.now() - start < 14_000) {
+    while (Date.now() - start < 22_000) {
       shots.push({ at: Date.now() - start, ...(await felt(page)) })
       await page.waitForTimeout(50)
     }
@@ -178,19 +178,35 @@ for (const viewport of [
     const twoRows = shots.filter((s) => s.boards.length === 2)
     expect(twoRows.length, 'the second board never appeared').toBeGreaterThan(0)
 
-    // Both run out together, street by street. Dealt one after the other it is
-    // eight seconds of a table nobody can act on, and it answers the question
-    // twice instead of once.
+    // One board, then the other — the order a card room deals them in. Side by
+    // side they are one event that happens to have ten cards in it; in sequence
+    // they are two answers to the same question, and the second is read against
+    // one everybody already has.
+    //
+    // Asserted as "the second never runs ahead of the first, and the first was
+    // finished alone at some point", which is the claim. Asserting the exact
+    // pair on every frame would be asserting how busy the machine is.
     for (const shot of twoRows) {
       expect(
-        shot.boards[0].cards,
+        shot.boards[1].cards,
         `boards were ${shot.boards.map((b) => b.cards).join(' and ')} at ${shot.at}ms`,
-      ).toBe(shot.boards[1].cards)
+      ).toBeLessThanOrEqual(shot.boards[0].cards)
     }
-    const sizes = [...new Set(twoRows.map((s) => s.boards[0].cards))]
-    expect(sizes).toContain(3)
-    expect(sizes).toContain(4)
-    expect(sizes).toContain(5)
+    const aloneOnTheRiver = twoRows.filter(
+      (s) => s.boards[0].cards === 5 && s.boards[1].cards === 0,
+    )
+    expect(
+      aloneOnTheRiver.length,
+      'the second board was being dealt before the first had finished',
+    ).toBeGreaterThan(0)
+
+    // And each of them ran out street by street rather than appearing whole.
+    for (const b of [0, 1]) {
+      const sizes = [...new Set(twoRows.map((s) => s.boards[b].cards))]
+      expect(sizes, `board ${b + 1} skipped a street`).toContain(3)
+      expect(sizes).toContain(4)
+      expect(sizes).toContain(5)
+    }
 
     // And nothing covers anything, on every frame — which is the claim jsdom
     // cannot make. The second row lands in the narrowest part of the ring.
