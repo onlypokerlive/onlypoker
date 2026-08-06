@@ -82,12 +82,73 @@ async function measure(page: Page) {
         re.test(el.textContent ?? ''),
       )
     const rail = document.querySelector('.lobby-seat-rail')
+    const invite = byText(/Invite players/)
+    const action = byText(/Start game|One more player|Waiting for the host/)
+    // The four formats are the middle of the screen, and the thing the two
+    // buttons have to sit either side of.
+    const formats = [...document.querySelectorAll('button')].filter((el) =>
+      /^(Fast|Classic|Chaos|The 7-2)/.test(el.textContent?.trim() ?? ''),
+    )
+    const box = (els: Element[]) => {
+      if (!els.length) return null
+      const rects = els.map((el) => el.getBoundingClientRect())
+      return {
+        top: +Math.min(...rects.map((r) => r.top)).toFixed(1),
+        bottom: +Math.max(...rects.map((r) => r.bottom)).toFixed(1),
+      }
+    }
+
+    /* Pinned or in flow, answered by scrolling rather than by reading CSS.
+       Walk up from the formats to whatever actually scrolls, run it to the
+       end, and see which of the two buttons came along. */
+    let scroller: Element | null = formats[0] ?? null
+    while (scroller && scroller.scrollHeight <= scroller.clientHeight + 1) {
+      scroller = scroller.parentElement
+    }
+    const before = { invite: seen(invite), action: seen(action) }
+    if (scroller) scroller.scrollTop = scroller.scrollHeight
+    const after = { invite: seen(invite), action: seen(action) }
+    if (scroller) scroller.scrollTop = 0
+
     return {
       pageScrolls: de.scrollHeight > de.clientHeight,
-      invite: seen(byText(/Invite players/)),
+      invite: before.invite,
       // Whichever of the three the host is being shown.
-      action: seen(byText(/Start game|One more player|Waiting for the host/)),
+      action: before.action,
+      formats: box(formats),
       railTop: rail ? +rail.getBoundingClientRect().top.toFixed(1) : null,
+      // The fine print that says who starts it and how many it takes.
+      fineprint: [...document.querySelectorAll('p, span')].some((el) =>
+        /Two is enough to deal/.test(el.textContent ?? ''),
+      ),
+      scrolls: Boolean(scroller),
+      /* Order asked of the DOM, not of the geometry. The formats live inside
+         the scroll area, so once the list is longer than the box their rects
+         carry on past the pinned footer even though nothing is drawn there —
+         comparing those two numbers measures the overflow, not the order. */
+      order:
+        invite && formats[0] && action
+          ? {
+              inviteBeforeFormats: Boolean(
+                invite.compareDocumentPosition(formats[0]) &
+                  Node.DOCUMENT_POSITION_FOLLOWING,
+              ),
+              formatsBeforeAction: Boolean(
+                formats[formats.length - 1]!.compareDocumentPosition(action) &
+                  Node.DOCUMENT_POSITION_FOLLOWING,
+              ),
+            }
+          : null,
+      movedOnScroll: {
+        invite:
+          before.invite && after.invite
+            ? +Math.abs(after.invite.top - before.invite.top).toFixed(1)
+            : null,
+        action:
+          before.action && after.action
+            ? +Math.abs(after.action.top - before.action.top).toFixed(1)
+            : null,
+      },
     }
   })
 }
@@ -118,6 +179,34 @@ for (const phone of PHONES) {
       // The seat ring starts on screen rather than above it. This is the one
       // that failed silently — cropped by an ancestor, with nothing to scroll.
       expect(m.railTop, 'the seat ring was cropped off the top').toBeGreaterThanOrEqual(0)
+
+      /* And the order is the approved one: ring, invite, the formats, and the
+         one button that deals the cards on its own at the bottom.
+         Invite belongs to the ring — it is what you do about the empty seats
+         you are looking at — and it stops being that the moment it is filed
+         next to "Start game", where it reads as the other half of a choice
+         nobody is making. */
+      expect(m.formats, 'the four formats were not rendered').not.toBeNull()
+      expect(m.order, 'could not find all three of ring, invite and action').not.toBeNull()
+      expect(m.order!.inviteBeforeFormats, 'the invite is below the formats').toBe(true)
+      expect(m.order!.formatsBeforeAction, 'the action is above the formats').toBe(true)
+      // And on screen the invite really is under the ring rather than beside
+      // something else: it starts below where the seats end.
+      expect(
+        m.invite!.top,
+        `invite at ${m.invite!.top}, ring ends at ${m.railTop}+`,
+      ).toBeGreaterThan(m.railTop!)
+
+      // Pinned, and the invite is not: scrolling to the bottom moves one and
+      // leaves the other exactly where it was.
+      if (m.scrolls) {
+        expect(m.movedOnScroll.action, 'the start action is not pinned').toBeLessThanOrEqual(0.5)
+        expect(m.movedOnScroll.invite, 'the invite is pinned too').toBeGreaterThan(0.5)
+      }
+
+      // "You start it. Two is enough to deal." — the line that answers the
+      // two questions a host has while staring at eight empty seats.
+      if (seats === 1) expect(m.fineprint, 'the fine print under the button is missing').toBe(true)
     })
   }
 }
