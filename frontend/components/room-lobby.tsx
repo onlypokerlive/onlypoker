@@ -28,10 +28,16 @@ function seatPosition(seat: number, maxSeats: number) {
 /**
  * The table, seen from above, with the empty seats showing.
  *
- * This is the roster — there is no list beside it. A ring that says nine seats
- * and a list that says the same nine names is one fact drawn twice, and the
- * second copy is what pushed the button that deals the cards off the bottom of
- * the phone.
+ * This is the roster — there is no list drawn beside it. A ring that says nine
+ * seats and a list that says the same nine names is one fact drawn twice, and
+ * the second copy is what pushed the button that deals the cards off the bottom
+ * of the phone.
+ *
+ * But a picture of a table is a picture, and this one is the only thing on the
+ * screen that says who turned up. So the same roster is *written* underneath
+ * it for anybody not looking at it — see `SeatRoster`. That is not a courtesy:
+ * with the list gone, a screen reader was being told "5 of 9 seats filled" and
+ * nothing else, which is less than it knew before this screen was touched.
  */
 function LobbySeatRail({ players, maxSeats }: { players: PlayerView[]; maxSeats: number }) {
   const playersBySeat = new Map(players.map((player) => [player.seat, player]))
@@ -79,6 +85,13 @@ function LobbySeatRail({ players, maxSeats }: { players: PlayerView[]; maxSeats:
                 ♛
               </span>
             ) : null}
+            {/* Whether they are still there. Worth two pixels on the seat and
+                nothing in the layout: "why isn't it starting" is usually
+                somebody whose phone went to sleep, and the answer used to be
+                on the list this ring replaced. */}
+            {player && !player.connected ? (
+              <span className="absolute -bottom-0.5 -right-0.5 size-2 rounded-full bg-muted-foreground/60 ring-2 ring-background" />
+            ) : null}
           </span>
         )
       })}
@@ -89,6 +102,38 @@ function LobbySeatRail({ players, maxSeats }: { players: PlayerView[]; maxSeats:
           {players.length}/{maxSeats} seats
         </span>
       </div>
+    </div>
+  )
+}
+
+/**
+ * The same roster, in words, for anybody who cannot see the ring.
+ *
+ * `sr-only`, so it costs nothing on a screen that has no room to spare — which
+ * is the whole reason the visible list went. It says everything the list said:
+ * the seat, the name, who is running the table, which one is you, how many
+ * chips they will sit down behind, and whether they are still connected.
+ *
+ * Not an afterthought and not a duplicate. The ring is a drawing, and a drawing
+ * announces itself as "5 of 9 seats filled" and stops. Somebody using a screen
+ * reader was being handed a number where everybody else got five faces.
+ */
+function SeatRoster({ players, maxSeats }: { players: PlayerView[]; maxSeats: number }) {
+  return (
+    <div className="sr-only">
+      <h3>Who is at the table</h3>
+      <ul>
+        {players.map((player) => (
+          <li key={player.id}>
+            {`Seat ${player.seat + 1}: ${player.name}`}
+            {player.isHost ? ', host' : ''}
+            {player.isYou ? ', you' : ''}
+            {`, ${player.chips.toLocaleString()} chips`}
+            {player.connected ? '' : ', disconnected'}
+          </li>
+        ))}
+      </ul>
+      <p>{`${maxSeats - players.length} seats still open.`}</p>
     </div>
   )
 }
@@ -136,6 +181,7 @@ export function RoomLobby({
 
       <div className="-mx-1 flex min-h-0 flex-1 flex-col gap-2.5 overflow-y-auto px-1">
         <LobbySeatRail players={view.players} maxSeats={view.maxSeats} />
+        <SeatRoster players={view.players} maxSeats={view.maxSeats} />
 
         <InviteShareButton
           roomId={view.roomId}

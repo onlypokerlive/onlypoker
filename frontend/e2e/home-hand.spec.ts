@@ -29,6 +29,16 @@ const CYCLE_MS = 13_000
  * — and it is a real gap on purpose, not a rounding artefact.
  */
 const BEFORE_FLOP_MS = CYCLE_MS * 0.425
+/**
+ * The last moment the river is still face down.
+ *
+ * 74%: the river's back steps away at 74.5% (`home-hide-river`). Nothing about
+ * the result — not the name of the hand, not the glow on the winning five — is
+ * allowed to have started here. It had: "Quad sevens" began fading in at 72%
+ * and the glow at 74%, so the scene announced quad sevens over a face-down
+ * river for the best part of a third of a second.
+ */
+const BEFORE_RIVER_MS = CYCLE_MS * 0.74
 /** After the river has turned and the winning hand has lit. */
 const SHOWDOWN_MS = CYCLE_MS * 0.82
 
@@ -115,6 +125,17 @@ async function readScene(page: Page) {
       boardShown: board.filter(shown).length,
       boardFaceUp: board.filter(faceUp).length,
       lit: document.querySelectorAll('.home-card[data-win]').length,
+      // Anything on screen at all. At the very first frame this must be zero:
+      // a card with `animation-delay` and no `backwards` fill shows its base
+      // style — in place and fully opaque — until its turn comes round.
+      cardsShowing: [...document.querySelectorAll('.home-card')].filter(shown).length,
+      // What the table is saying about the result, and how lit the winners are.
+      called: +getComputedStyle(document.querySelector('.home-called')!).opacity,
+      won: +getComputedStyle(document.querySelector('.home-won')!).opacity,
+      riverFaceUp: faceUp(board[4]!),
+      winnerGlow: getComputedStyle(
+        document.querySelector('.home-card[data-win] .home-face')!,
+      ).boxShadow,
       photos: [...document.querySelectorAll('.home-avatar img')].map(
         (img) => (img as HTMLImageElement).naturalWidth,
       ),
@@ -127,6 +148,14 @@ for (const phone of PHONES) {
     await page.setViewportSize({ width: phone.width, height: phone.height })
     await page.goto('/')
     await expect(page.getByRole('button', { name: /Create table/ })).toBeVisible()
+
+    // ── Nothing has been dealt yet, so nothing is on the table.
+    await freezeAt(page, 0)
+    const atStart = await readScene(page)
+    expect(
+      atStart.cardsShowing,
+      `${atStart.cardsShowing} cards were already on the table at the first frame`,
+    ).toBe(0)
 
     // ── The flop is about to land, and the hands are already turned over.
     await freezeAt(page, BEFORE_FLOP_MS)
@@ -147,6 +176,16 @@ for (const phone of PHONES) {
     expect(atFlop.holeCardsFaceUp, 'the hands are not up before the flop').toBe(6)
     expect(atFlop.boardShown, 'the board arrived before the hands turned over').toBe(0)
 
+    /* ── The river is still face down, so the table has not said a word about
+       who won. A hand that is named before its last card turns over is the
+       ending read out over the ending. */
+    await freezeAt(page, BEFORE_RIVER_MS)
+    const beforeRiver = await readScene(page)
+    expect(beforeRiver.riverFaceUp, 'the river turned early').toBe(false)
+    expect(beforeRiver.called, `"Quad sevens" is at ${beforeRiver.called}`).toBeLessThan(0.01)
+    expect(beforeRiver.won, `the payout is at ${beforeRiver.won}`).toBeLessThan(0.01)
+    expect(beforeRiver.winnerGlow, 'the winning cards are already lit').toBe('none')
+
     // ── After the river, with the winning hand lit.
     await freezeAt(page, SHOWDOWN_MS)
     const atShowdown = await readScene(page)
@@ -155,6 +194,8 @@ for (const phone of PHONES) {
     expect(atShowdown.boardFaceUp, 'a board card is still face down').toBe(5)
     // Four sevens and the ace kicker.
     expect(atShowdown.lit, 'the winning five are not marked').toBe(5)
+    expect(atShowdown.riverFaceUp, 'the river never turned').toBe(true)
+    expect(atShowdown.called, 'the hand was never named').toBeGreaterThan(0.9)
 
     /* And nothing is lying off the cloth. An ellipse pulls in as it rises, so
        a card can be well inside the table's box and still be on the page

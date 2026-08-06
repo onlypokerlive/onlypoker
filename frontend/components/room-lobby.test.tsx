@@ -54,11 +54,20 @@ describe('RoomLobby', () => {
         busy={false}
       />)
 
-    // One seat per chair and no list beside it. The list said the same nine
-    // names the ring already showed, and the two hundred pixels it cost were
-    // what pushed the button that deals the cards off the bottom of the phone.
+    // One seat per chair, and nothing drawn beside it. The visible list said
+    // the same nine names the ring already shows, and the two hundred pixels it
+    // cost were what pushed the button that deals the cards off the phone.
     expect(container.querySelectorAll('.lobby-seat-rail [title^="Seat "]')).toHaveLength(9)
-    expect(screen.queryByRole('list')).not.toBeInTheDocument()
+    expect(container.querySelector('ul:not(.sr-only ul)')).toBeNull()
+
+    // But the roster is still *said*, at no cost in height. A drawing announces
+    // itself as "2 of 9 seats filled" and stops, and that is less than this
+    // screen knew before the list was taken out of it.
+    const roster = screen.getByRole('list')
+    expect(roster.closest('.sr-only')).not.toBeNull()
+    expect(roster).toHaveTextContent('Seat 1: Alex, host, you')
+    expect(roster).toHaveTextContent('Seat 5: Sam')
+    expect(screen.getByText('7 seats still open.')).toBeInTheDocument()
 
     // The host wears a crown, which is the whole of how you know whose table
     // it is: no room taken, nothing moved, nothing to read.

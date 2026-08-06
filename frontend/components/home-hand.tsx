@@ -1,3 +1,7 @@
+'use client'
+
+import { useEffect, useState } from 'react'
+
 import { baizeOf, deckOf } from '@/lib/table-style'
 
 /**
@@ -18,6 +22,19 @@ import { baizeOf, deckOf } from '@/lib/table-style'
  * The choreography is in globals.css, where the beats are percentages of one
  * `--cycle`. This file is the cast: who is sitting where, holding what.
  */
+
+/** One turn round the scene, from `--cycle` in globals.css. */
+const CYCLE_MS = 13_000
+/**
+ * How many times it plays before it stops for good.
+ *
+ * Two. Somebody arriving mid-hand gets a whole one from the top, and a screen
+ * still animating on the twentieth loop is spending a phone's battery to say
+ * something it finished saying at the fourth second. It settles on the frame
+ * where the hand was decided — see the `data-settled` block in globals.css —
+ * which is a table with a story on it rather than a table that stopped.
+ */
+const CYCLES = 2
 
 /** Four-colour, same as the deck the app deals with. */
 const INK: Record<string, string> = {
@@ -109,11 +126,51 @@ function Stack({ chips }: { chips: string[] }) {
 }
 
 export function HomeHand() {
+  const [settled, setSettled] = useState(false)
+  const [hidden, setHidden] = useState(false)
+
+  useEffect(() => {
+    /* The clock only runs while somebody is looking. A tab left open in the
+       background would otherwise reach the end of its two turns without
+       anybody having seen one, and come back already finished. */
+    let elapsed = 0
+    let since = Date.now()
+    let timer: ReturnType<typeof setTimeout> | undefined
+
+    const stopIn = (ms: number) => {
+      timer = setTimeout(() => setSettled(true), ms)
+    }
+    const onVisibility = () => {
+      const away = document.hidden
+      setHidden(away)
+      if (away) {
+        elapsed += Date.now() - since
+        clearTimeout(timer)
+      } else {
+        since = Date.now()
+        stopIn(Math.max(0, CYCLE_MS * CYCLES - elapsed))
+      }
+    }
+
+    /* No `setHidden` here: a synchronous setState in an effect is a cascading
+       render, and mounting into an already-hidden tab needs no attribute —
+       browsers throttle animations in background tabs on their own, and the
+       first `visibilitychange` puts the state right before anybody sees it. */
+    if (!document.hidden) stopIn(CYCLE_MS * CYCLES)
+    document.addEventListener('visibilitychange', onVisibility)
+    return () => {
+      clearTimeout(timer)
+      document.removeEventListener('visibilitychange', onVisibility)
+    }
+  }, [])
+
   return (
     <div
       className="home-table"
       data-baize={baizeOf(null)}
       data-deck={deckOf(null)}
+      data-settled={settled ? '' : undefined}
+      data-paused={hidden ? '' : undefined}
       role="img"
       aria-label="Blinsky goes all in with seven-deuce, is called by two big pairs, and the board gives him four sevens."
     >

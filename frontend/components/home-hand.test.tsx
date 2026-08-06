@@ -1,5 +1,5 @@
-import { render, screen } from '@testing-library/react'
-import { describe, expect, it } from 'vitest'
+import { act, render, screen } from '@testing-library/react'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import { HomeHand } from '@/components/home-hand'
 
@@ -42,5 +42,49 @@ describe('HomeHand', () => {
     ).toBeInTheDocument()
     // Three faces, and none of them announces itself separately.
     expect(screen.queryAllByRole('img', { name: /photo/i })).toHaveLength(0)
+  })
+
+  describe('and stops when it has said its piece', () => {
+    afterEach(() => vi.useRealTimers())
+
+    it('holds the decided hand after two turns round', () => {
+      vi.useFakeTimers()
+      const { container } = render(<HomeHand />)
+      const table = container.querySelector('.home-table')!
+
+      expect(table).not.toHaveAttribute('data-settled')
+      act(() => void vi.advanceTimersByTime(13_000 * 2 - 1))
+      expect(table, 'settled before the second turn finished').not.toHaveAttribute('data-settled')
+
+      act(() => void vi.advanceTimersByTime(1))
+      // Fifty-one infinite animations on the screen somebody types their name
+      // into is a phone's battery spent repeating a thirteen-second story.
+      expect(table).toHaveAttribute('data-settled')
+    })
+
+    it('does not run the clock down while the tab is in the background', () => {
+      vi.useFakeTimers()
+      const { container } = render(<HomeHand />)
+      const table = container.querySelector('.home-table')!
+
+      const hide = (hidden: boolean) => {
+        vi.spyOn(document, 'hidden', 'get').mockReturnValue(hidden)
+        act(() => void document.dispatchEvent(new Event('visibilitychange')))
+      }
+
+      act(() => void vi.advanceTimersByTime(5_000))
+      hide(true)
+      expect(table).toHaveAttribute('data-paused')
+
+      // Twenty minutes away. Somebody coming back deserves the rest of the
+      // hand, not a table that finished without them.
+      act(() => void vi.advanceTimersByTime(20 * 60_000))
+      expect(table).not.toHaveAttribute('data-settled')
+
+      hide(false)
+      expect(table).not.toHaveAttribute('data-paused')
+      act(() => void vi.advanceTimersByTime(13_000 * 2 - 5_000))
+      expect(table).toHaveAttribute('data-settled')
+    })
   })
 })

@@ -1299,7 +1299,7 @@
 
 /* 1 · The deal: each card leaves the middle for its seat. */
 .home-seat .home-card {
-  animation: home-dealt var(--cycle) cubic-bezier(0.2, 0.72, 0.3, 1) infinite;
+  animation: home-dealt var(--cycle) cubic-bezier(0.2, 0.72, 0.3, 1) infinite backwards;
   animation-delay: calc(var(--d) * 85ms);
 }
 @keyframes home-dealt {
@@ -1426,13 +1426,13 @@
 .home-seat[data-at='l'] .home-act {
   left: 4%;
   top: 104%;
-  animation: home-act-in var(--cycle) ease-out infinite;
+  animation: home-act-in var(--cycle) ease-out infinite backwards;
   animation-delay: 1100ms;
 }
 .home-seat[data-at='r'] .home-act {
   right: 4%;
   top: 104%;
-  animation: home-act-in var(--cycle) ease-out infinite;
+  animation: home-act-in var(--cycle) ease-out infinite backwards;
   animation-delay: 1800ms;
 }
 .home-seat[data-at='me'] .home-act {
@@ -1477,7 +1477,7 @@
 
 /* Each stack comes from its owner's seat. */
 .home-stack {
-  animation: home-bet var(--cycle) cubic-bezier(0.24, 0.7, 0.32, 1) infinite;
+  animation: home-bet var(--cycle) cubic-bezier(0.24, 0.7, 0.32, 1) infinite backwards;
 }
 .home-stack:nth-child(1) {
   --bx: 0px;
@@ -1513,7 +1513,7 @@
       its own keyframes rather than a delay: at delays of nearly three seconds
       the river was still on screen inside the next hand. */
 .home-board .home-card:nth-child(-n + 3) {
-  animation: home-street-flop var(--cycle) cubic-bezier(0.2, 0.72, 0.3, 1) infinite;
+  animation: home-street-flop var(--cycle) cubic-bezier(0.2, 0.72, 0.3, 1) infinite backwards;
   animation-delay: calc(var(--s) * 1ms);
 }
 .home-board .home-card:nth-child(4) {
@@ -1573,11 +1573,11 @@
 /* And each one lands face down and is turned by the dealer, which is what
    happens at a table — they used to appear already open. */
 .home-board .home-card:nth-child(-n + 3) .home-flip {
-  animation: home-squeeze-flop var(--cycle) ease-in-out infinite;
+  animation: home-squeeze-flop var(--cycle) ease-in-out infinite backwards;
   animation-delay: calc(var(--s) * 1ms);
 }
 .home-board .home-card:nth-child(-n + 3) .home-back {
-  animation: home-hide-flop var(--cycle) step-end infinite;
+  animation: home-hide-flop var(--cycle) step-end infinite backwards;
   animation-delay: calc(var(--s) * 1ms);
 }
 .home-board .home-card:nth-child(4) .home-flip {
@@ -1668,10 +1668,10 @@
 }
 @keyframes home-lit {
   0%,
-  74% {
+  76% {
     box-shadow: none;
   }
-  78%,
+  79%,
   94% {
     box-shadow:
       0 0 0 2px var(--inlay),
@@ -1687,10 +1687,10 @@
 }
 @keyframes home-dim {
   0%,
-  74% {
+  76% {
     opacity: 1;
   }
-  78%,
+  79%,
   94% {
     opacity: 0.28;
   }
@@ -1737,16 +1737,16 @@
 }
 @keyframes home-say {
   0%,
-  72% {
+  76% {
     opacity: 0;
     transform: translateY(5px);
   }
-  76%,
-  86% {
+  80%,
+  88% {
     opacity: 1;
     transform: translateY(0);
   }
-  90%,
+  92%,
   100% {
     opacity: 0;
     transform: translateY(-4px);
@@ -1818,12 +1818,23 @@
 }
 
 /*
- * Motion off: the finished hand, held.
+ * The hand, held on the moment it was decided.
  *
- * Not a blank table. Somebody who has turned animation off should still be
- * shown what this is — the board out, six cards face up, the pot in the middle
- * — which is the last frame of the story rather than the first. Every back has
- * to be told to go, because their opacity was only ever moved by an animation.
+ * One frame, used by three different reasons to stop: motion turned off, the
+ * loop having run its course, and — via `data-paused` — the tab not being
+ * looked at. It is deliberately not a blank table and deliberately not the
+ * last keyframe either: at 100% the cards have already flown away, so holding
+ * *that* would leave an empty felt.
+ *
+ * The frame is the second after the river turns: board out, six cards face up,
+ * the winning five lit, the rest stepped back, the hand named, and the pot
+ * still in the middle. `+2,400` stays hidden because the pot has not travelled
+ * yet — showing both at once was the incoherence the old version had, half
+ * before the payout and half after.
+ *
+ * Every back has to be told to go, and every face told what it is: their
+ * opacity and shadow were only ever moved by an animation, so switching the
+ * animations off returns them to a base style that is a face-down table.
  */
 @media (prefers-reduced-motion: reduce) {
   .home-table *,
@@ -1831,14 +1842,55 @@
   .home-table *::after {
     animation: none !important;
   }
+}
+.home-table[data-settled] *,
+.home-table[data-settled] *::before,
+.home-table[data-settled] *::after {
+  animation: none !important;
+}
+
+@media (prefers-reduced-motion: reduce) {
   .home-back {
     opacity: 0;
   }
-  .home-called,
-  .home-won {
+  .home-called {
     opacity: 1;
   }
-  .home-act {
-    opacity: 0;
+  .home-card[data-win] .home-face {
+    box-shadow:
+      0 0 0 2px var(--inlay),
+      0 0 14px rgba(200, 168, 106, 0.5);
   }
+  .home-card[data-lose] .home-face {
+    opacity: 0.28;
+  }
+}
+.home-table[data-settled] .home-back {
+  opacity: 0;
+}
+.home-table[data-settled] .home-called {
+  opacity: 1;
+}
+.home-table[data-settled] .home-card[data-win] .home-face {
+  box-shadow:
+    0 0 0 2px var(--inlay),
+    0 0 14px rgba(200, 168, 106, 0.5);
+}
+.home-table[data-settled] .home-card[data-lose] .home-face {
+  opacity: 0.28;
+}
+
+/*
+ * Nothing runs while nobody is looking.
+ *
+ * Fifty-one infinite animations is what this scene costs, and the screen it
+ * lives on is the one somebody sits on while typing their name in. Paused on a
+ * hidden tab, and stopped for good after a couple of turns round — a home
+ * screen that is still animating on the twentieth loop is spending a phone's
+ * battery to tell somebody something they were told at the fourth second.
+ */
+.home-table[data-paused] *,
+.home-table[data-paused] *::before,
+.home-table[data-paused] *::after {
+  animation-play-state: paused !important;
 }
