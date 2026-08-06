@@ -5,6 +5,7 @@ import './globals.css'
 
 import { AuthProvider } from '@/components/auth-provider'
 import { Toaster } from '@/components/ui/sonner'
+import { APP_NAME } from '@/lib/app-name'
 
 const geistSans = Geist({
   subsets: ['latin'],
@@ -33,9 +34,9 @@ const metadataBase = new URL(
 
 export const metadata: Metadata = {
   metadataBase,
-  title: 'Felt & Gold — Private Texas Hold’em',
+  title: `${APP_NAME} — Private Texas Hold\u2019em`,
   description:
-    'Set up a private No-Limit Texas Hold’em table and invite your friends with one link. No account or download needed.',
+    'Set up a private No-Limit Texas Hold\u2019em table and invite your friends with one link. No account or download needed.',
 }
 
 export const viewport: Viewport = {

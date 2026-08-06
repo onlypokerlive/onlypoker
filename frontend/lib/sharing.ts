@@ -1,3 +1,5 @@
+import { APP_NAME } from '@/lib/app-name'
+
 export type InviteShareResult = 'native' | 'clipboard' | 'cancelled'
 
 export function buildInviteUrl(origin: string, roomId: string): string {
@@ -17,7 +19,7 @@ export async function shareInvite({
 }): Promise<InviteShareResult> {
   const url = buildInviteUrl(window.location.origin, roomId)
   const data: ShareData = {
-    title: `${roomName} · Felt & Gold`,
+    title: `${roomName} · ${APP_NAME}`,
     text: `Take a seat at ${roomName}. No account or download needed.`,
     url,
   }

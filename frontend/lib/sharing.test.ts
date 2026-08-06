@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import { buildInviteUrl, shareInvite } from './sharing'
+import { APP_NAME } from './app-name'
 
 describe('invitation sharing', () => {
   afterEach(() => vi.restoreAllMocks())
@@ -20,7 +21,7 @@ describe('invitation sharing', () => {
     ).resolves.toBe('native')
     expect(share).toHaveBeenCalledWith(
       expect.objectContaining({
-        title: 'Thursday Poker · Felt & Gold',
+        title: `Thursday Poker · ${APP_NAME}`,
         url: `${window.location.origin}/join/ABC123`,
       }),
     )
