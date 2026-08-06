@@ -101,13 +101,11 @@
   }
 }
 
-@media (max-width: 639px) and (max-height: 600px) {
-  .compact-phone-copy {
-    /* The title and form carry the same promise on the shortest supported
-       phones; reserving this paragraph would push the actual action offscreen. */
-    display: none;
-  }
-}
+/* The subtitle used to be hidden below 600px of height, because reserving it
+   pushed "Create table" off the screen. The form is now four fields instead of
+   twenty and the button sits 150px clear of the fold on a 320×568 phone, so
+   the line comes back on every phone that supports the app. Measured, not
+   assumed: `e2e/host-conversion.spec.ts` holds the button to the fold. */
 
 @media (prefers-reduced-motion: reduce) {
   html:focus-within {

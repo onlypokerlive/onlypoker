@@ -122,7 +122,9 @@ export function NightRules({
             <dt className="text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
               {line.label}
             </dt>
-            <dd className="min-w-0 truncate text-xs text-card-foreground">{line.value}</dd>
+            {/* Wraps rather than truncating. Chaos has four extras on and the
+                one line worth reading was ending in an ellipsis. */}
+            <dd className="min-w-0 text-xs text-card-foreground">{line.value}</dd>
           </div>
         ))}
       </dl>
