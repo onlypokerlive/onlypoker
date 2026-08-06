@@ -7,6 +7,7 @@ import { LogOut, Spade } from 'lucide-react'
 import { useAuth } from '@/components/auth-provider'
 import { PlayerAvatar } from '@/components/player-avatar'
 import { Button } from '@/components/ui/button'
+import { APP_NAME } from '@/lib/app-name'
 
 function GoogleMark() {
   return (
@@ -36,7 +37,7 @@ export function SiteHeader() {
           <span className="flex size-7 items-center justify-center rounded-md bg-primary/15 text-primary">
             <Spade className="size-4" />
           </span>
-          OnlyPoker
+          {APP_NAME}
         </Link>
 
         {loading ? (
