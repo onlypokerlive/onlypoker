@@ -93,10 +93,31 @@ CHAT_BURST_SECONDS = 10
 CHAT_WINDOW_MESSAGES = 20
 CHAT_WINDOW_SECONDS = 60
 
-# Blind ladder expressed as multipliers of the table's opening blinds, so the
+# Blind ladders expressed as multipliers of the table's opening blinds, so the
 # host only picks the starting stakes and how long a level lasts. The ratio the
 # host chose between small and big blind is preserved at every level.
-BLIND_MULTIPLIERS = (1, 2, 3, 4, 6, 8, 12, 16, 24, 32, 48, 64, 96, 128)
+#
+# Three of them, because "how long is this going to take" is not the same
+# question as "how long is a level". A level length says how often the blinds
+# move; the ladder says how far. A table that wants a short night and one that
+# wants a long one were both being handed the same climb, and the only lever was
+# the clock — which is why a five-minute level felt identical to a ten-minute
+# one with twice the hands.
+#
+# Integers on purpose. A ×1.5 rung reads well in a spec and produces 7.5/15 at
+# 5/10 stakes, and a blind nobody can make out of the chips in front of them is
+# a rule the table has to house-rule its way around. Every rung here lands on a
+# number you can stack.
+BLIND_LADDERS: dict[str, tuple[int, ...]] = {
+    # Doubles about every four levels. A deep stack stays deep for a while.
+    "gentle": (1, 2, 3, 4, 5, 6, 8, 10, 12, 15, 20, 25, 30, 40),
+    # Doubles about every two. The one every table here has played until now,
+    # and still the default: changing it under existing rooms is not a feature.
+    "standard": (1, 2, 3, 4, 6, 8, 12, 16, 24, 32, 48, 64, 96, 128),
+    # Doubles every level to start with. Made to end.
+    "beast": (1, 2, 4, 8, 16, 24, 40, 64, 100, 160, 250, 400, 640, 1000),
+}
+DEFAULT_BLIND_LADDER = "standard"
 
 # Grace added to the shot clock before auto-acting, so a decision sent right on
 # the buzzer is not lost to network latency.
@@ -853,18 +874,20 @@ class ChatSendBody(BaseModel):
     requestId: str = Field(min_length=1, max_length=64)
 
 
-class CreateRoomBody(BaseModel):
+class TableRules(BaseModel):
+    """Everything the host decides about the night, and nothing about who they are.
+
+    Its own model because these are now set twice: once when the table is made
+    and again from the lobby, before a card is dealt. Two copies of this list
+    would drift the first time one of them gained a rule — and the half that
+    drifted would be the half that silently accepts a value the other one
+    rejects, which is the expensive direction.
+    """
+
     name: str = Field(min_length=1, max_length=40)
-    hostName: str = Field(min_length=1, max_length=20)
-    # Optional signed photo URL, prefilled from a signed-in player's profile or
-    # a guest's uploaded selfie. Rendered as an <img src> at the table.
-    hostAvatarUrl: str | None = Field(
-        default=None, max_length=1000, pattern=r"^https://.+"
-    )
     startingChips: int = Field(ge=1)
     smallBlind: int = Field(ge=1)
     bigBlind: int = Field(ge=1)
-    password: str = Field(min_length=4, max_length=64)
     # What the table is made of. Cosmetic and shared: a poker table is one
     # object everybody is sitting at, so this belongs to the room and not to
     # each player's settings. Validated against a list rather than taken as
@@ -874,6 +897,8 @@ class CreateRoomBody(BaseModel):
     deck: str = Field(default="clasica", pattern="^(clasica|casino|bloque|marfil)$")
     # 0 disables the blind clock (blinds stay where they started).
     levelMinutes: int = Field(default=10, ge=0, le=120)
+    # How far the blinds move when they move, as opposed to how often.
+    blindLadder: str = Field(default=DEFAULT_BLIND_LADDER, pattern="^(gentle|standard|beast)$")
     # 0 disables the shot clock.
     actionSeconds: int = Field(default=20, ge=0, le=120)
     # Dead money on every hand. "bb" is the modern big-blind ante (one player
@@ -904,6 +929,16 @@ class CreateRoomBody(BaseModel):
     # below. 0 turns rebuys off.
     rebuyLevels: int = Field(default=0, ge=0, le=99)
     rebuysPerPlayer: int = Field(default=1, ge=1, le=10)
+    # What buying back in gets you. "start" is the stack everybody began with,
+    # "average" is what the table is carrying now, "fixed" is a number the host
+    # picked. The same argument as ``lateEntryChips``, and for the same reason:
+    # at level nine a starting stack is a handful of big blinds, so a rebuy that
+    # always pays the opening stack is a rebuy nobody takes.
+    rebuyChips: str = Field(default="start", pattern="^(start|average|fixed)$")
+    # Only read when ``rebuyChips`` is "fixed"; ignored otherwise rather than
+    # rejected, so switching the mode back and forth in the sheet does not have
+    # to clear it.
+    rebuyChipsFixed: int = Field(default=0, ge=0)
     # One extra top-up per player inside the same window, for anyone who still
     # has chips. Off unless the host asks for it.
     addOn: bool = False
@@ -912,6 +947,22 @@ class CreateRoomBody(BaseModel):
     timeBankSeconds: int = Field(default=0, ge=0, le=600)
     # Offer the all-in players a second board. Everybody left in has to agree.
     runItTwice: bool = False
+
+
+class CreateRoomBody(TableRules):
+    hostName: str = Field(min_length=1, max_length=20)
+    # Optional signed photo URL, prefilled from a signed-in player's profile or
+    # a guest's uploaded selfie. Rendered as an <img src> at the table.
+    hostAvatarUrl: str | None = Field(
+        default=None, max_length=1000, pattern=r"^https://.+"
+    )
+    password: str = Field(min_length=4, max_length=64)
+
+
+class SetRulesBody(TableRules):
+    """The same rules again, from the lobby, by whoever is holding the table."""
+
+    playerId: str = Field(min_length=1, max_length=64)
 
 
 class JoinBody(BaseModel):
@@ -954,7 +1005,9 @@ class ActionBody(BaseModel):
 # --------------------------------------------------------------------------- #
 # Blind ladder
 # --------------------------------------------------------------------------- #
-def build_blind_schedule(small_blind: int, big_blind: int) -> list[dict[str, int]]:
+def build_blind_schedule(
+    small_blind: int, big_blind: int, ladder: str = DEFAULT_BLIND_LADDER
+) -> list[dict[str, int]]:
     """Blind levels derived from the opening stakes.
 
     Multiplying both blinds by the same ladder keeps the host's chosen ratio
@@ -962,7 +1015,7 @@ def build_blind_schedule(small_blind: int, big_blind: int) -> list[dict[str, int
     """
     return [
         {"smallBlind": small_blind * m, "bigBlind": big_blind * m}
-        for m in BLIND_MULTIPLIERS
+        for m in BLIND_LADDERS.get(ladder, BLIND_LADDERS[DEFAULT_BLIND_LADDER])
     ]
 
 
@@ -1193,19 +1246,45 @@ def _issue_chips(room: dict[str, Any], player_id: str, amount: int) -> None:
     room["chipsIssued"] = int(room.get("chipsIssued", 0)) + amount
 
 
+def _average_live_stack(room: dict[str, Any]) -> int | None:
+    """What the players still in are carrying, or None if nobody is.
+
+    Over the players still in, because averaging in the busted would hand
+    whoever is arriving less than anybody actually has.
+    """
+    live = [room["players"][pid]["chips"] for pid in _eligible_player_ids(room)]
+    return round(sum(live) / len(live)) if live else None
+
+
 def _entry_stack(room: dict[str, Any]) -> int:
     """What somebody turning up mid-tournament sits down behind.
 
     The average is not sentiment: by level nine a starting stack is a handful
-    of big blinds, so somebody arriving on it is not really playing. It is
-    taken over the players still in, because averaging in the busted would hand
-    the latecomer less than anybody actually has.
+    of big blinds, so somebody arriving on it is not really playing.
     """
     start = int(room["startingChips"])
     if room.get("lateEntryChips") != "average":
         return start
-    live = [room["players"][pid]["chips"] for pid in _eligible_player_ids(room)]
-    return max(start, round(sum(live) / len(live))) if live else start
+    average = _average_live_stack(room)
+    return max(start, average) if average is not None else start
+
+
+def _rebuy_stack(room: dict[str, Any]) -> int:
+    """What buying back in puts in front of you.
+
+    Same argument as ``_entry_stack`` and the same floor: never below the
+    opening stack, because a rebuy that hands you less than you started with is
+    a rebuy that reads as a punishment. Rooms made before this was a choice
+    carry no ``rebuyChips`` and get the opening stack, which is what they had.
+    """
+    start = int(room["startingChips"])
+    mode = room.get("rebuyChips") or "start"
+    if mode == "fixed":
+        return max(1, int(room.get("rebuyChipsFixed") or 0) or start)
+    if mode == "average":
+        average = _average_live_stack(room)
+        return max(start, average) if average is not None else start
+    return start
 
 
 def _rebuys_left(room: dict[str, Any], player: dict[str, Any]) -> int:
@@ -3011,12 +3090,26 @@ def _build_view(room: dict[str, Any], viewer_id: str | None) -> dict[str, Any]:
             # No hand after this one. Shown to everybody, not just the host:
             # knowing it is the last hand changes how it is played.
             "lastHand": bool(room.get("lastHand")),
+            # How far the blinds move when they move. Rooms made before there
+            # was a choice climbed the standard one, which is still its name.
+            "blindLadder": room.get("blindLadder") or DEFAULT_BLIND_LADDER,
             # Coming and going, and whether either door is still open.
             "allowLeaving": bool(room.get("allowLeaving", True)),
             "lateEntryOpen": _late_entry_open(room, now),
             "rebuyOpen": _rebuy_open(room, now),
             "addOn": bool(room.get("addOn")),
             "timeBankSeconds": int(room.get("timeBankSeconds") or 0),
+            # The settings themselves, not just what they currently allow. The
+            # lobby has to render the rules back to the host — and let them
+            # change their mind — so the numbers they chose have to survive the
+            # round trip, not only their effect on this instant.
+            "lateEntryLevels": int(room.get("lateEntryLevels") or 0),
+            "lateEntryChips": room.get("lateEntryChips") or "start",
+            "rebuyLevels": int(room.get("rebuyLevels") or 0),
+            "rebuysPerPlayer": int(room.get("rebuysPerPlayer") or 0),
+            "rebuyChips": room.get("rebuyChips") or "start",
+            "rebuyChipsFixed": int(room.get("rebuyChipsFixed") or 0),
+            "runItTwice": bool(room.get("runItTwice")),
         },
         # The decision on the table is being paid for out of the actor's bank.
         # Everybody sees it, because "they are into their time bank" is what
@@ -3175,14 +3268,70 @@ async def room_preview(room_id: str) -> dict[str, Any]:
     }
 
 
-@app.post("/rooms")
-async def create_room(body: CreateRoomBody) -> dict[str, Any]:
-    if body.bigBlind <= body.smallBlind:
+def _check_rules(rules: TableRules) -> None:
+    """The two things a valid ruleset cannot be, whoever is setting it."""
+    if rules.bigBlind <= rules.smallBlind:
         raise fastapi.HTTPException(400, "Big blind must be larger than small blind.")
-    if body.startingChips < body.bigBlind * 2:
+    if rules.startingChips < rules.bigBlind * 2:
         raise fastapi.HTTPException(
             400, "Starting chips should be at least twice the big blind."
         )
+
+
+def _restack(room: dict[str, Any], starting_chips: int) -> None:
+    """Set the opening stack and put it in front of everybody waiting.
+
+    Only ever called in the lobby, where every seat holds exactly one opening
+    stack and nothing has been bet. Rewriting the stacks *and* the issue count
+    in the same place is what keeps ``_chips_balance`` true — a table whose
+    books stop adding up is the one failure this ledger exists to catch.
+    """
+    room["startingChips"] = starting_chips
+    for pid in room["order"]:
+        room["players"][pid]["chips"] = starting_chips
+    room["chipsIssued"] = starting_chips * len(room["order"])
+    room["chipsWithdrawn"] = 0
+
+
+def _apply_rules(room: dict[str, Any], rules: TableRules) -> None:
+    """Write the host's decisions onto a table that has not dealt a card yet.
+
+    One function for both the moment the table is made and the moment the host
+    changes their mind in the lobby, so the two cannot answer differently.
+    """
+    room["name"] = rules.name
+    room["smallBlind"] = rules.smallBlind
+    room["bigBlind"] = rules.bigBlind
+    room["blindLadder"] = rules.blindLadder
+    room["blindSchedule"] = build_blind_schedule(
+        rules.smallBlind, rules.bigBlind, rules.blindLadder
+    )
+    room["levelMinutes"] = rules.levelMinutes
+    room["actionSeconds"] = rules.actionSeconds
+    room["anteMode"] = rules.anteMode
+    room["straddle"] = rules.straddle
+    room["bombPotEvery"] = rules.bombPotEvery
+    room["sevenDeuce"] = rules.sevenDeuce
+    room["baize"] = rules.baize
+    room["deck"] = rules.deck
+    room["breakEveryLevels"] = rules.breakEveryLevels
+    room["breakMinutes"] = rules.breakMinutes
+    room["lateEntryLevels"] = rules.lateEntryLevels
+    room["lateEntryChips"] = rules.lateEntryChips
+    room["allowLeaving"] = rules.allowLeaving
+    room["rebuyLevels"] = rules.rebuyLevels
+    room["rebuysPerPlayer"] = rules.rebuysPerPlayer
+    room["rebuyChips"] = rules.rebuyChips
+    room["rebuyChipsFixed"] = rules.rebuyChipsFixed
+    room["addOn"] = rules.addOn
+    room["timeBankSeconds"] = rules.timeBankSeconds
+    room["runItTwice"] = rules.runItTwice
+    _restack(room, rules.startingChips)
+
+
+@app.post("/rooms")
+async def create_room(body: CreateRoomBody) -> dict[str, Any]:
+    _check_rules(body)
 
     room_id = _new_id()
     host_id = secrets.token_urlsafe(12)
@@ -3191,15 +3340,11 @@ async def create_room(body: CreateRoomBody) -> dict[str, Any]:
     now = time.time()
     room = {
         "id": room_id,
-        "name": body.name,
         "hostId": host_id,
         "passwordHash": _hash_password(body.password),
         # A second device can recover host authority only with this one-time
         # backup secret. The shared room password is deliberately insufficient.
         "hostRecoveryHash": _hash_password(recovery_code),
-        "smallBlind": body.smallBlind,
-        "bigBlind": body.bigBlind,
-        "startingChips": body.startingChips,
         "phase": "lobby",
         "handNumber": 0,
         "tournamentNumber": 1,
@@ -3210,7 +3355,8 @@ async def create_room(body: CreateRoomBody) -> dict[str, Any]:
                 "name": body.hostName,
                 "avatarUrl": body.hostAvatarUrl,
                 "seat": 0,
-                "chips": body.startingChips,
+                # Filled by `_apply_rules` below, along with the books.
+                "chips": 0,
                 "token": host_token,
                 "sittingOut": False,
                 "lastSeen": now,
@@ -3221,20 +3367,13 @@ async def create_room(body: CreateRoomBody) -> dict[str, Any]:
         "stateB64": None,
         "lastResults": [],
         "createdAt": now,
-        # Tournament clocks.
-        "blindSchedule": build_blind_schedule(body.smallBlind, body.bigBlind),
-        "levelMinutes": body.levelMinutes,
+        # Every rule below is written by `_apply_rules` at the end, which is
+        # also what the lobby calls when the host changes their mind. What is
+        # left here is the machinery those rules drive.
         "levelIndex": 0,
         # Stays None until the first hand is dealt, so waiting in the lobby
         # never burns a blind level.
         "levelStartedAt": None,
-        "actionSeconds": body.actionSeconds,
-        "anteMode": body.anteMode,
-        "straddle": body.straddle,
-        "bombPotEvery": body.bombPotEvery,
-        "sevenDeuce": body.sevenDeuce,
-        "baize": body.baize,
-        "deck": body.deck,
         "actionDeadline": None,
         "autoDealSeconds": AUTO_DEAL_SECONDS,
         "autoDealAt": None,
@@ -3242,22 +3381,11 @@ async def create_room(body: CreateRoomBody) -> dict[str, Any]:
         "paused": False,
         "autoDealPaused": False,
         "pausedAt": None,
-        "breakEveryLevels": body.breakEveryLevels,
-        "breakMinutes": body.breakMinutes,
         "breakUntil": None,
         "breaksTaken": 0,
         # The host has called it: no hand after the one being played.
         "lastHand": False,
         "lastHandNumber": None,
-        # Coming and going. See "Chips on and off the table".
-        "lateEntryLevels": body.lateEntryLevels,
-        "lateEntryChips": body.lateEntryChips,
-        "allowLeaving": body.allowLeaving,
-        "rebuyLevels": body.rebuyLevels,
-        "rebuysPerPlayer": body.rebuysPerPlayer,
-        "addOn": body.addOn,
-        "timeBankSeconds": body.timeBankSeconds,
-        "runItTwice": body.runItTwice,
         # When the offer of a second board expires and the hand runs once.
         "runoutDeadline": None,
         # Whether the decision on the table is being paid for out of the
@@ -3265,8 +3393,8 @@ async def create_room(body: CreateRoomBody) -> dict[str, Any]:
         "bankRunning": False,
         # Every chip ever put on this table, and every chip taken off it. What
         # replaces "starting stack times players" once people can arrive, leave
-        # and buy back in — see ``_chips_balance``.
-        "chipsIssued": body.startingChips,
+        # and buy back in — see ``_chips_balance``. Opened by `_apply_rules`.
+        "chipsIssued": 0,
         "chipsWithdrawn": 0,
         # Set when the tournament would be over but somebody can still buy back
         # in. See ``_scheduled_close``.
@@ -3279,6 +3407,7 @@ async def create_room(body: CreateRoomBody) -> dict[str, Any]:
         # reading the table needs the same key as sitting at it.
         "watchToken": _new_token(),
     }
+    _apply_rules(room, body)
     await save_room(room)
     # A room code is meant to name one private room for its whole lifetime.
     # `_new_id` collisions are rare, but carrying a separate old chat into a
@@ -3292,6 +3421,41 @@ async def create_room(body: CreateRoomBody) -> dict[str, Any]:
         "isHost": True,
         "recoveryCode": recovery_code,
     }
+
+
+@app.post("/rooms/{room_id}/rules")
+async def set_rules(
+    room_id: str,
+    body: SetRulesBody,
+    x_player_token: str | None = fastapi.Header(default=None),
+) -> dict[str, Any]:
+    """Change what kind of night this is, before it starts.
+
+    Only in the lobby, and that is not a limitation being apologised for — it
+    is the product decision. House rules are agreed before the cards come out;
+    a host who can move the blinds up in the middle of a tournament is a host
+    who can move them up on the hand they are losing, and a table of friends
+    should never have to wonder about that.
+
+    In the lobby nothing has been bet and every seat holds one opening stack,
+    so re-stacking everybody is arithmetic rather than surgery. After the first
+    deal it would be neither.
+    """
+    async with _RoomLock(room_id):
+        room = await load_room(room_id)
+        if not room:
+            raise fastapi.HTTPException(404, "Room not found.")
+        _authenticate(room, body.playerId, x_player_token)
+        if body.playerId != room["hostId"]:
+            raise fastapi.HTTPException(403, "Only the host can set the rules.")
+        if room["phase"] != "lobby":
+            raise fastapi.HTTPException(
+                400, "The rules are set before the first hand, not during."
+            )
+        _check_rules(body)
+        _apply_rules(room, body)
+        await save_room(room)
+        return _build_view(room, body.playerId)
 
 
 @app.post("/rooms/{room_id}/join")
@@ -3605,7 +3769,14 @@ async def rebuy(
         else:
             raise fastapi.HTTPException(400, f"Unknown purchase: {body.action}")
 
-        _issue_chips(room, body.playerId, int(room["startingChips"]))
+        # The add-on is a top-up on a stack that is still alive, so it is the
+        # opening stack by definition; only a rebuy is buying back in, and only
+        # a rebuy asks what a fresh stack is worth at this level.
+        _issue_chips(
+            room,
+            body.playerId,
+            int(room["startingChips"]) if body.action == "add-on" else _rebuy_stack(room),
+        )
         # A table that had given up waiting has a game again.
         room["closeAt"] = None
         if room["phase"] == "handover" and len(_eligible_player_ids(room)) >= 2:
